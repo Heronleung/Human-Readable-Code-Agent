@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hrca"
+version = "0.1.0"
+description = "Deterministic static scanner for a human-readable code twin (Phase 1 baseline)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Heronleung" }]
+keywords = ["ast", "static-analysis", "scanner", "code-twin"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Quality Assurance",
+]
+# No runtime dependencies: the parser baseline is the standard library ast module.
+dependencies = []
+
+[project.scripts]
+hrca-scan = "hrca.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Heronleung/Human-Readable-Code-Agent"
+
+[tool.setuptools.packages.find]
+where = ["src"]
