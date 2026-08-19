@@ -10,15 +10,22 @@ This is **not** an IDE, an LLM agent, or a general-purpose analysis tool. It is
 a small, bounded foundation: it extracts structure and emits only what the
 source actually says.
 
-## Install
+## Setup (uv)
 
-Requires Python 3.9+.
+Requires Python 3.9+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e .
+uv sync
 ```
+
+`uv sync` creates or refreshes the project `.venv` and installs the project
+(editable) with its dependencies from `uv.lock`.
+
+> **Why not `pip`?** On many managed Python distributions, `pip install` into
+> the system interpreter is blocked by
+> [PEP 668](https://peps.python.org/pep-0668/) ("externally-managed-
+> environment"). Use `uv` (or an explicit virtualenv) instead — never pass
+> `--break-system-packages`.
 
 There are no runtime dependencies — the parser baseline is the standard
 library.
@@ -26,8 +33,8 @@ library.
 ## Usage
 
 ```bash
-python -m hrca fixtures             # scan the fixture corpus
-hrca-scan fixtures                  # equivalent console script
+uv run python -m hrca fixtures      # scan the fixture corpus
+uv run hrca-scan fixtures           # equivalent, via console script
 ```
 
 Output is canonical JSON on stdout (indented, keys sorted, records sorted).
@@ -35,7 +42,7 @@ Output is canonical JSON on stdout (indented, keys sorted, records sorted).
 ## Test
 
 ```bash
-python -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
 ```
 
 The suite runs with the standard-library `unittest` runner only (no pytest

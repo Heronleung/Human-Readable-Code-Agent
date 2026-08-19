@@ -12,11 +12,14 @@ execution at scan time.
 
 ## Commands
 
+Use [uv](https://docs.astral.sh/uv/) for the environment. System `pip` may be
+blocked on managed Python distributions by PEP 668 ("externally-managed-
+environment"); never pass `--break-system-packages`.
+
 ```bash
-pip install -e .
-python -m unittest discover -s tests -v   # run the test suite
-python -m hrca fixtures                   # scan the corpus, JSON to stdout
-hrca-scan fixtures                        # equivalent, via console script
+uv sync                                        # create/refresh .venv, install the project
+uv run python -m unittest discover -s tests -v  # run the test suite
+uv run python -m hrca fixtures                  # scan the corpus, JSON to stdout
 ```
 
 ## Contract (Phase 1)
@@ -43,6 +46,8 @@ dependency injection, or runtime monkey-patching.
 ## Conventions
 
 - Keep the scanner dependency-free (stdlib only).
+- Use `uv` for the environment (see Commands); do not use system `pip` or
+  `--break-system-packages`.
 - When extending the record schema, bump `SCHEMA_VERSION` and add a fixture +
   test that exercises the change.
 - Never commit secrets or generated artefacts; respect `.gitignore`.
