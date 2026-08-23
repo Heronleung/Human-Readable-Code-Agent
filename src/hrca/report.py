@@ -76,9 +76,10 @@ def build_report(
 
     ``scanner_doc`` is the document produced by
     :func:`hrca.scanner.scan_directory`. ``task_metadata`` supplies the
-    task-level fields: ``task_id``, ``plan``, ``next_action``, and a
-    ``repository_context`` mapping with ``branch``, ``head_sha``, and
-    ``base_sha``.
+    task-level fields: ``task_id``, ``plan`` (a structured list of P2.1 plan
+    entries, each with ``step``, ``action``, ``requires_approval``, and
+    ``expected_evidence``), ``next_action``, and a ``repository_context``
+    mapping with ``branch``, ``head_sha``, and ``base_sha``.
     """
     repo_context = task_metadata.get("repository_context", {})
     report: Dict[str, Any] = {

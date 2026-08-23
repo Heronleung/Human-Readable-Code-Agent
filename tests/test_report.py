@@ -6,6 +6,7 @@ import json
 import os
 import unittest
 
+from hrca.planning import build_plan
 from hrca.report import REPORT_VERSION, build_report
 from hrca.scanner import scan_directory
 
@@ -15,16 +16,34 @@ FIXTURES = os.path.normpath(os.path.join(_HERE, "..", "fixtures"))
 BASE_SHA = "16a5d217d5751722b98adb251ca63b134badfa86"
 
 
-def _metadata() -> dict:
+def _task() -> dict:
+    """Return a valid read-only task whose plan feeds the report metadata."""
     return {
         "task_id": "P2.2",
-        "plan": "Read-only validation of the Phase 1 scanner demonstration.",
-        "next_action": "Proceed to code-twin content generation on origin/main.",
+        "title": "Validate the Phase 1 scanner report",
+        "request": "Read the fixture corpus and produce a no-change structured report.",
         "repository_context": {
+            "status": "Verified",
+            "commit_sha": BASE_SHA,
             "branch": "feat/p2.2-structured-report",
             "head_sha": BASE_SHA,
             "base_sha": BASE_SHA,
         },
+        "allowed_actions": ["read", "analyze"],
+        "constraints": ["Read-only"],
+        "acceptance_criteria": ["Report plan is a structured list"],
+        "risk_level": "low",
+        "approval_required": False,
+    }
+
+
+def _metadata() -> dict:
+    task = _task()
+    return {
+        "task_id": task["task_id"],
+        "plan": build_plan(task),
+        "next_action": "Proceed to code-twin content generation on origin/main.",
+        "repository_context": task["repository_context"],
     }
 
 
@@ -53,6 +72,18 @@ class ReportBuilderTests(unittest.TestCase):
     def test_contains_required_fields(self):
         report = _report()
         self.assertTrue(REQUIRED_FIELDS <= set(report))
+
+    def test_plan_is_structured_p21_list(self):
+        report = _report()
+        plan = report["plan"]
+        self.assertIsInstance(plan, list)
+        self.assertTrue(plan)
+        for entry in plan:
+            self.assertEqual(
+                set(entry),
+                {"step", "action", "requires_approval", "expected_evidence"},
+            )
+        self.assertTrue(all(entry["requires_approval"] is False for entry in plan))
 
     def test_outcome_is_no_change_with_empty_files(self):
         report = _report()
