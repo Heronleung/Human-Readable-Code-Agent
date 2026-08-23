@@ -108,13 +108,25 @@ def _require_string_list(value: Any, field: str) -> List[str]:
     return list(value)
 
 
-def _require_repository_context(value: Any) -> Dict[str, Any]:
-    """Validate the ``repository_context`` mapping.
+def _require_optional_string(value: Any, field: str) -> None:
+    """Reject a supplied empty or non-string (non-null) optional value."""
+    if value is None:
+        return
+    if not isinstance(value, str):
+        raise TaskValidationError(f"{field!r} must be a string or null")
+    if not value.strip():
+        raise TaskValidationError(f"{field!r} must be a non-empty string when supplied")
 
-    ``status`` must be one of the bounded verification statuses and
-    ``commit_sha`` a non-empty commit identifier. ``branch``, ``head_sha``, and
-    ``base_sha`` remain optional additional evidence and never substitute for
-    ``status`` or ``commit_sha``.
+
+def _require_repository_context(value: Any) -> Dict[str, Any]:
+    """Validate the ``repository_context`` mapping against the P2.1 contract.
+
+    ``status`` must be one of the bounded verification statuses. A ``Verified``
+    context requires non-empty ``branch`` and ``commit_sha`` strings; an
+    ``Unverified`` context may omit ``branch``/``commit_sha`` or set them to
+    ``None``, but a supplied value must be a non-empty string. ``head_sha`` and
+    ``base_sha`` are optional snapshot evidence only and never substitute for
+    ``branch`` or ``commit_sha``.
     """
     if not isinstance(value, dict):
         raise TaskValidationError("'repository_context' must be a mapping")
@@ -126,11 +138,23 @@ def _require_repository_context(value: Any) -> Dict[str, Any]:
             f"{sorted(_REPOSITORY_STATUSES)}"
         )
 
+    branch = value.get("branch")
     commit_sha = value.get("commit_sha")
-    if not isinstance(commit_sha, str) or not commit_sha.strip():
-        raise TaskValidationError(
-            "'repository_context' must contain a non-empty 'commit_sha' string"
-        )
+
+    if status == "Verified":
+        if not isinstance(branch, str) or not branch.strip():
+            raise TaskValidationError(
+                "'repository_context' with status 'Verified' requires a "
+                "non-empty 'branch' string"
+            )
+        if not isinstance(commit_sha, str) or not commit_sha.strip():
+            raise TaskValidationError(
+                "'repository_context' with status 'Verified' requires a "
+                "non-empty 'commit_sha' string"
+            )
+    else:
+        _require_optional_string(branch, "branch")
+        _require_optional_string(commit_sha, "commit_sha")
 
     return value
 

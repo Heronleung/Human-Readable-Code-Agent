@@ -85,16 +85,6 @@ class TaskValidationTests(unittest.TestCase):
         with self.assertRaises(TaskValidationError):
             validate_task(_valid_task(repository_context="not-a-mapping"))
 
-    def test_valid_verified_repository_context(self):
-        validate_task(
-            _valid_task(repository_context={"status": "Verified", "commit_sha": BASE_SHA})
-        )
-
-    def test_valid_unverified_repository_context(self):
-        validate_task(
-            _valid_task(repository_context={"status": "Unverified", "commit_sha": BASE_SHA})
-        )
-
     def test_repository_context_missing_status(self):
         ctx = _valid_task()["repository_context"]
         del ctx["status"]
@@ -107,16 +97,90 @@ class TaskValidationTests(unittest.TestCase):
                 _valid_task(repository_context={"status": "Confirmed", "commit_sha": BASE_SHA})
             )
 
-    def test_repository_context_missing_commit_sha(self):
-        ctx = _valid_task()["repository_context"]
-        del ctx["commit_sha"]
-        with self.assertRaises(TaskValidationError):
-            validate_task(_valid_task(repository_context=ctx))
+    def test_valid_verified_repository_context(self):
+        validate_task(
+            _valid_task(
+                repository_context={"status": "Verified", "branch": "main", "commit_sha": BASE_SHA}
+            )
+        )
 
-    def test_repository_context_empty_commit_sha(self):
+    def test_verified_missing_branch_rejected(self):
         with self.assertRaises(TaskValidationError):
             validate_task(
-                _valid_task(repository_context={"status": "Verified", "commit_sha": "  "})
+                _valid_task(repository_context={"status": "Verified", "commit_sha": BASE_SHA})
+            )
+
+    def test_verified_missing_commit_sha_rejected(self):
+        with self.assertRaises(TaskValidationError):
+            validate_task(
+                _valid_task(repository_context={"status": "Verified", "branch": "main"})
+            )
+
+    def test_verified_empty_commit_sha_rejected(self):
+        with self.assertRaises(TaskValidationError):
+            validate_task(
+                _valid_task(
+                    repository_context={"status": "Verified", "branch": "main", "commit_sha": "  "}
+                )
+            )
+
+    def test_unverified_null_evidence_accepted(self):
+        validate_task(
+            _valid_task(
+                repository_context={"status": "Unverified", "branch": None, "commit_sha": None}
+            )
+        )
+
+    def test_unverified_omitted_evidence_accepted(self):
+        validate_task(_valid_task(repository_context={"status": "Unverified"}))
+
+    def test_unverified_supplied_evidence_valid(self):
+        validate_task(
+            _valid_task(
+                repository_context={"status": "Unverified", "branch": "main", "commit_sha": BASE_SHA}
+            )
+        )
+
+    def test_unverified_empty_evidence_rejected(self):
+        with self.assertRaises(TaskValidationError):
+            validate_task(
+                _valid_task(
+                    repository_context={"status": "Unverified", "branch": "", "commit_sha": None}
+                )
+            )
+
+    def test_unverified_non_string_evidence_rejected(self):
+        with self.assertRaises(TaskValidationError):
+            validate_task(
+                _valid_task(
+                    repository_context={"status": "Unverified", "branch": None, "commit_sha": 42}
+                )
+            )
+
+    def test_head_base_sha_do_not_substitute_verified_branch(self):
+        with self.assertRaises(TaskValidationError):
+            validate_task(
+                _valid_task(
+                    repository_context={
+                        "status": "Verified",
+                        "commit_sha": BASE_SHA,
+                        "head_sha": BASE_SHA,
+                        "base_sha": BASE_SHA,
+                    }
+                )
+            )
+
+    def test_head_base_sha_do_not_substitute_verified_commit_sha(self):
+        with self.assertRaises(TaskValidationError):
+            validate_task(
+                _valid_task(
+                    repository_context={
+                        "status": "Verified",
+                        "branch": "main",
+                        "head_sha": BASE_SHA,
+                        "base_sha": BASE_SHA,
+                    }
+                )
             )
 
     def test_invalid_action_rejected(self):
