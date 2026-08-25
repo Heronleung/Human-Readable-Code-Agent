@@ -134,10 +134,10 @@ Build a one-folder distribution that bundles the fixture corpus. PyInstaller's
 package-relative imports:
 
 ```bash
-uv sync --extra packaging                # installs PyInstaller (optional)
-uv run pyinstaller --noconfirm --name hrca-app `
-  --paths src `
-  --add-data "fixtures;fixtures" `
+uv sync --extra desktop --extra packaging   # installs PySide6 + PyInstaller
+uv run pyinstaller --noconfirm --clean --name hrca-app \
+  --paths src \
+  --add-data "fixtures;fixtures" \
   packaging/launcher.py
 ```
 

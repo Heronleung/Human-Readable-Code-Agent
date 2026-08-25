@@ -1,4 +1,4 @@
- """PyInstaller entry point for the P3.1 frozen slice.
+"""PyInstaller entry point for the P3.1 frozen slice.
 
 Bundles the single unified entry ``hrca.app`` so that one frozen executable
 serves both roles: desktop client by default, headless boundary with
