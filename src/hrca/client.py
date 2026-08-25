@@ -56,6 +56,7 @@ from .client_core import (
     LineBuffer,
     ResponseRouter,
     build_request,
+    default_fixture_root,
     resolve_backend_command,
 )
 
@@ -66,7 +67,7 @@ REASON_NON_JSON = "non_json_output"
 REASON_BACKEND_EXITED = "backend_exited"
 REASON_LAUNCH_FAILED = "launch_failed"
 
-_DEFAULT_SCAN_PATH = "fixtures"
+_DEFAULT_SCAN_PATH = default_fixture_root()
 _DEFAULT_TIMEOUT_MS = 15000
 
 _PY_KEYWORDS = (

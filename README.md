@@ -108,9 +108,14 @@ client by default, and the headless boundary when invoked with `--serve`.
 
 ```bash
 uv sync --extra desktop                 # installs PySide6 (optional)
-uv run python -m hrca.client fixtures   # launch the desktop window
-uv run python -m hrca.client --scan-once fixtures   # headless supervised scan
+uv run python -m hrca.client            # launch the desktop window (defaults to repo fixtures)
+uv run python -m hrca.client --scan-once   # headless supervised scan (defaults to repo fixtures)
 ```
+
+The default scan root is resolved by `hrca.client_core.default_fixture_root`:
+in source mode it is the repository `fixtures/` directory (found relative to the
+module, not the current working directory); in a frozen build it is the bundled
+fixture data under `sys._MEIPASS`. An explicit path argument overrides it.
 
 To exercise the boundary directly, without the graphical interface, pipe one
 request per line:
@@ -121,14 +126,38 @@ printf '%s\n' \
   | uv run python -m hrca.boundary --serve
 ```
 
-### Frozen build
+### Frozen build (Windows)
+
+Build a one-folder distribution that bundles the fixture corpus. PyInstaller's
+`--add-data` separator is `;` on Windows (`:` on Linux/macOS). The launcher
+(`packaging/launcher.py`) is needed because `src/hrca/app.py` uses
+package-relative imports:
 
 ```bash
 uv sync --extra packaging                # installs PyInstaller (optional)
-uv run pyinstaller --noconfirm --name hrca-app src/hrca/app.py
-./dist/hrca-app --scan-once fixtures     # supervised scan through the frozen exe
-./dist/hrca-app --serve                  # frozen headless boundary
+uv run pyinstaller --noconfirm --name hrca-app `
+  --paths src `
+  --add-data "fixtures;fixtures" `
+  packaging/launcher.py
 ```
+
+The result is a complete, self-contained folder; the executable and its bundled
+fixtures must stay together:
+
+- executable: `dist\hrca-app\hrca-app.exe`
+- bundled fixtures: `dist\hrca-app\_internal\fixtures\`
+
+Run the frozen artifact from its folder:
+
+```bash
+dist\hrca-app\hrca-app.exe --scan-once   # supervised scan (non-empty evidence)
+dist\hrca-app\hrca-app.exe --serve       # frozen headless boundary
+```
+
+Do not copy `hrca-app.exe` out of `dist\hrca-app` and run it standalone: the
+one-folder build relies on `_internal\` (including the bundled fixtures) being
+present next to the executable. Double-click `dist\hrca-app\hrca-app.exe` to
+open the GUI, then click **Run read-only scan**.
 
 ## Scope and limitations
 

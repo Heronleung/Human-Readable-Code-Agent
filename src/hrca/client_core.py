@@ -138,6 +138,33 @@ def build_request(correlation_id: str, scan_path: str) -> Dict[str, Any]:
     )
 
 
+def default_fixture_root(frozen: Optional[bool] = None) -> str:
+    """Return the deterministic default fixture corpus root.
+
+    The root is resolved from the *module location*, never the current working
+    directory, so it is stable regardless of where the process is launched:
+
+    * **source mode** — the repository ``fixtures`` directory, found two parents
+      up from this module (``src/hrca/client_core.py`` -> repository root);
+    * **frozen mode** — the PyInstaller resource directory ``sys._MEIPASS``,
+      where ``--add-data`` bundles the corpus into the distribution artifact.
+
+    ``frozen`` may be overridden for tests.
+    """
+    is_frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    if is_frozen:
+        # One-folder build: bundled data lives under sys._MEIPASS (the
+        # ``_internal`` directory). Fall back to the executable's directory
+        # only if that resource marker is absent.
+        base = getattr(sys, "_MEIPASS", None) or os.path.dirname(
+            os.path.abspath(sys.executable)
+        )
+        return os.path.join(base, "fixtures")
+    here = os.path.dirname(os.path.abspath(__file__))
+    repository_root = os.path.dirname(os.path.dirname(here))
+    return os.path.join(repository_root, "fixtures")
+
+
 def resolve_backend_command(frozen: Optional[bool] = None) -> List[str]:
     """Return the command that launches the headless backend.
 
@@ -169,5 +196,6 @@ __all__ = [
     "ResponseRouter",
     "build_fixture_task",
     "build_request",
+    "default_fixture_root",
     "resolve_backend_command",
 ]

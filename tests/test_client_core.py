@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 from hrca import contract
 from hrca.client_core import (
@@ -12,6 +14,7 @@ from hrca.client_core import (
     ResponseRouter,
     build_fixture_task,
     build_request,
+    default_fixture_root,
     resolve_backend_command,
 )
 
@@ -113,6 +116,49 @@ class BackendCommandTests(unittest.TestCase):
             resolve_backend_command(frozen=True),
             [sys.executable, contract.SERVE_SENTINEL],
         )
+
+
+class DefaultFixtureRootTests(unittest.TestCase):
+    def test_source_resolution_points_into_repository(self):
+        root = default_fixture_root(frozen=False)
+        self.assertTrue(os.path.isabs(root))
+        self.assertTrue(os.path.isdir(root), root)
+        self.assertTrue(root.endswith(os.path.join("Human-Readable-Code-Agent", "fixtures")))
+
+    def test_source_resolution_is_cwd_independent(self):
+        root_a = default_fixture_root(frozen=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.getcwd()
+            os.chdir(tmp)
+            try:
+                root_b = default_fixture_root(frozen=False)
+            finally:
+                os.chdir(old)
+        self.assertEqual(root_a, root_b)
+
+    def test_frozen_resolution_uses_meipass(self):
+        with mock.patch.object(sys, "_MEIPASS", "/fake/meipass", create=True):
+            root = default_fixture_root(frozen=True)
+        self.assertEqual(os.path.normpath(root), os.path.normpath("/fake/meipass/fixtures"))
+
+    def test_frozen_resolution_is_not_cwd_relative(self):
+        cwd = os.path.abspath(os.getcwd())
+        with mock.patch.object(sys, "_MEIPASS", "/fake/meipass", create=True):
+            root = default_fixture_root(frozen=True)
+        self.assertFalse(root.startswith(cwd + os.sep))
+
+    def test_default_corpus_directory_is_present_and_nonempty(self):
+        root = default_fixture_root(frozen=False)
+        self.assertTrue(os.path.isdir(root), root)
+        self.assertGreater(len(os.listdir(root)), 0)
+
+    def test_default_corpus_produces_nonempty_scanner_evidence(self):
+        from hrca.scanner import scan_directory
+
+        root = default_fixture_root(frozen=False)
+        doc = scan_directory(root)
+        self.assertGreater(len(doc["files"]), 0)
+        self.assertGreater(len(doc["symbols"]), 0)
 
 
 if __name__ == "__main__":
