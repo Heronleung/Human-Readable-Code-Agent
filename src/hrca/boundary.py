@@ -1,18 +1,23 @@
-"""Headless local application boundary (P3.1).
+"""Headless local application boundary (P3.2).
 
 The boundary is the single place that turns a versioned desktop-to-core request
-into the deterministic read-only pipeline. It:
+into the deterministic read-only result. It:
 
 * reads newline-delimited JSON requests from stdin,
 * validates each request and rejects unknown contract versions and
   non-allowlisted actions with bounded, sanitized errors,
-* invokes only the existing task intake (:mod:`hrca.planning`), planner,
+* dispatches scan-pipeline actions (``scan`` / ``read`` / ``analyze`` /
+  ``inspect`` / ``plan``) to the task intake (:mod:`hrca.planning`), planner,
   scanner (:mod:`hrca.scanner`) and report builder (:mod:`hrca.report`),
+* dispatches workspace actions (``open_project`` / ``get_tree`` /
+  ``get_document``) to the read-only filesystem policy in
+  :mod:`hrca.workspace`,
 * writes exactly one JSON response line per request to stdout.
 
 The boundary is a review and safety *workflow* boundary, not an
 operating-system privilege boundary: it owns contract validation, action
-allowlisting, orchestration of the deterministic core, and bounded error
+allowlisting, the accepted-project-root session, orchestration of the
+deterministic core, path containment for workspace access, and bounded error
 mapping — but it performs no repository write, Git operation, command
 execution, network access, or provider call.
 
@@ -27,7 +32,7 @@ from __future__ import annotations
 import sys
 from typing import Any, Dict, Optional, TextIO, Sequence
 
-from . import contract
+from . import contract, workspace
 from .planning import TaskValidationError, build_plan, validate_task
 from .report import build_report
 from .scanner import scan_directory
@@ -35,6 +40,25 @@ from .scanner import scan_directory
 # Fixed, read-only next action reported by this slice: the boundary never
 # performs a repository action.
 _NEXT_ACTION = "Report only; no repository action performed."
+
+
+class WorkspaceSession:
+    """In-memory accepted-project state owned by one boundary loop (P3.2).
+
+    ``open_project`` sets the accepted root; ``get_tree`` and ``get_document``
+    operate relative to it. The session is per-``run_loop`` invocation, so a
+    fresh boundary process (or a fresh test loop) always starts with no project
+    accepted.
+    """
+
+    def __init__(self) -> None:
+        self.root: Optional[str] = None
+
+    def open(self, root: str) -> None:
+        self.root = root
+
+    def close(self) -> None:
+        self.root = None
 
 
 def _configure_stdio(stream: TextIO) -> TextIO:
@@ -64,8 +88,11 @@ def run_loop(stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
     """Read requests from ``stdin``, write one response line per request.
 
     ``stderr`` is accepted for interface parity and reserved for diagnostics;
-    the boundary emits none in normal operation.
+    the boundary emits none in normal operation. One :class:`WorkspaceSession`
+    is shared across the whole loop so ``open_project`` establishes the root
+    that later ``get_tree`` / ``get_document`` requests use.
     """
+    session = WorkspaceSession()
     for raw in stdin:
         line = raw[:-1] if raw.endswith("\n") else raw
         if line == "":
@@ -78,7 +105,7 @@ def run_loop(stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
         except (ValueError, UnicodeDecodeError):
             _emit(stdout, contract.build_error(None, "malformed_request"))
             continue
-        _emit(stdout, handle_request(request))
+        _emit(stdout, handle_request(request, session))
     return 0
 
 
@@ -109,17 +136,20 @@ def _correlation_id(request: Any) -> Optional[str]:
     return None
 
 
-def handle_request(request: Any) -> Dict[str, Any]:
+def handle_request(request: Any, session: Optional[WorkspaceSession] = None) -> Dict[str, Any]:
     """Validate and process one request, returning a result or error envelope.
 
     This is the boundary's single, testable core: it never raises, and always
     returns exactly one envelope. Failures are mapped to bounded codes with
     messages drawn from the contract catalogue, so no caller text or file
-    content leaks.
+    content leaks. ``session`` carries the accepted project root; when omitted
+    a fresh session is used so the function remains usable standalone.
     """
+    if session is None:
+        session = WorkspaceSession()
     correlation_id = _correlation_id(request)
     try:
-        return _process(request)
+        return _process(request, session)
     except contract.ContractError as exc:
         return contract.build_error(correlation_id, exc.code)
     except Exception:
@@ -128,8 +158,8 @@ def handle_request(request: Any) -> Dict[str, Any]:
         return contract.build_error(correlation_id, "internal_error")
 
 
-def _process(request: Any) -> Dict[str, Any]:
-    """Run the validated read-only pipeline for one request envelope."""
+def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
+    """Validate and dispatch one request envelope to its read-only handler."""
     if not isinstance(request, dict):
         raise contract.ContractError("invalid_request")
 
@@ -140,6 +170,24 @@ def _process(request: Any) -> Dict[str, Any]:
     if action not in contract.ALLOWED_ACTIONS:
         raise contract.ContractError("action_not_allowed")
 
+    correlation_id = _correlation_id(request)
+
+    if action in contract.SCAN_ACTIONS:
+        result = _scan_result(request)
+    elif action == contract.ACTION_OPEN_PROJECT:
+        result = _open_project_result(request, session)
+    elif action == contract.ACTION_GET_TREE:
+        result = _get_tree_result(request, session)
+    elif action == contract.ACTION_GET_DOCUMENT:
+        result = _get_document_result(request, session)
+    else:  # pragma: no cover - guarded by the allowlist above
+        raise contract.ContractError("action_not_allowed")
+
+    return contract.build_success(correlation_id, result)
+
+
+def _scan_result(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Run the deterministic scan -> plan -> report pipeline (P3.1)."""
     path = request.get("path")
     if not isinstance(path, str) or not path.strip():
         raise contract.ContractError("invalid_request")
@@ -172,17 +220,43 @@ def _process(request: Any) -> Dict[str, Any]:
         },
     )
 
-    result = {
+    return {
         "task_id": task["task_id"],
         "title": task["title"],
         "report": report,
         "evidence": scanner_doc,
     }
-    return contract.build_success(_correlation_id(request), result)
+
+
+def _open_project_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Validate and accept a project root."""
+    path = request.get("path")
+    if not isinstance(path, str) or not path.strip():
+        raise contract.ContractError("invalid_request")
+    root = workspace.resolve_root(path)
+    session.open(root)
+    return {"root": root, "repository_state": "Unverified"}
+
+
+def _get_tree_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the filtered tree for the accepted project root."""
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    return workspace.build_tree(session.root)
+
+
+def _get_document_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return one permitted document below the accepted project root."""
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    rel_path = request.get("path")
+    if not isinstance(rel_path, str) or not rel_path.strip():
+        raise contract.ContractError("invalid_request")
+    return workspace.read_document(session.root, rel_path)
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["main", "run_loop", "handle_request"]
+__all__ = ["main", "run_loop", "handle_request", "WorkspaceSession"]

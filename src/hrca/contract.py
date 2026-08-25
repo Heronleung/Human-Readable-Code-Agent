@@ -1,4 +1,4 @@
-"""Qt-free application-boundary contract (P3.1).
+"""Qt-free application-boundary contract (P3.2).
 
 This module is the single, versioned contract shared by every client — the
 PySide6 desktop window today, and any future IDE plugin — so that no client
@@ -10,9 +10,10 @@ It defines, and only defines:
 * the contract version constant,
 * the request and result payload envelopes,
 * the correlation identifier rules,
-* the allowed read-only action names,
+* the allowed read-only action names (scan pipeline and workspace actions),
 * the bounded error codes and their fixed messages,
-* the maximum inbound/outbound message size, and
+* the maximum inbound/outbound message size,
+* the workspace size/depth limits (tree, file and document bytes), and
 * the ``--serve`` sentinel used to launch the headless boundary.
 
 The module is deliberately dependency-free (standard library only) and Qt-free.
@@ -29,7 +30,7 @@ from typing import Any, Dict, Optional
 # The version of the desktop-to-core contract. A boundary rejects any request
 # whose ``contract_version`` differs from this constant with a bounded
 # ``unknown_contract_version`` error.
-CONTRACT_VERSION = "3.1.0"
+CONTRACT_VERSION = "3.2.0"
 
 # Correlation identifier: a client-generated opaque string that the boundary
 # echoes verbatim so a client can match each response to its in-flight request.
@@ -40,10 +41,22 @@ CORRELATION_ID_MAX_CHARS = 64
 # Request-level action names the boundary accepts. Every name here is
 # read-only; write, Git, command, network and provider actions are absent from
 # this set and are therefore rejected with a bounded ``action_not_allowed``
-# error. In this slice every allowed action runs the same read-only
-# scan -> plan -> report pipeline.
+# error.
+#
+# * ``SCAN_ACTIONS`` run the deterministic scan -> plan -> report pipeline and
+#   require a ``task`` payload (the P2.3 intake shape).
+# * ``WORKSPACE_ACTIONS`` are the P3.2 read-only workspace/document actions that
+#   open a project root, list a filtered tree, and read one permitted document.
 ACTION_SCAN = "scan"
-ALLOWED_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
+ACTION_OPEN_PROJECT = "open_project"
+ACTION_GET_TREE = "get_tree"
+ACTION_GET_DOCUMENT = "get_document"
+
+SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
+WORKSPACE_ACTIONS = frozenset(
+    {ACTION_OPEN_PROJECT, ACTION_GET_TREE, ACTION_GET_DOCUMENT}
+)
+ALLOWED_ACTIONS = SCAN_ACTIONS | WORKSPACE_ACTIONS
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
 # names a mutating action (edit / commit / remote) is rejected even though the
@@ -54,6 +67,24 @@ READ_ONLY_TASK_ACTIONS = frozenset({"read", "analyze", "scan", "inspect", "plan"
 # Maximum inbound and outbound message size, in UTF-8 bytes. Enforced by the
 # boundary on inbound requests and by the client on inbound backend output.
 MAX_MESSAGE_BYTES = 1_048_576  # 1 MiB
+
+# Workspace size/depth limits (P3.2). These bound the read-only tree and
+# document surface so a single request can never produce unbounded output:
+#
+# * ``MAX_TREE_ENTRIES`` — maximum number of entries (directories + files) the
+#   tree walk will emit; the walk stops and marks the tree ``truncated``.
+# * ``MAX_TREE_DEPTH`` — maximum directory depth (path components below the
+#   root) the walk will descend into; deeper directories are listed but not
+#   expanded.
+# * ``MAX_FILE_BYTES`` — files larger than this are omitted from the tree.
+# * ``MAX_DOCUMENT_BYTES`` — a document read larger than this is rejected with
+#   a bounded ``file_too_large`` error. It is kept well below
+#   ``MAX_MESSAGE_BYTES`` so an escaped (non-ASCII) document still fits on the
+#   wire.
+MAX_TREE_ENTRIES = 2000
+MAX_TREE_DEPTH = 32
+MAX_FILE_BYTES = 64 * 1024  # 64 KiB
+MAX_DOCUMENT_BYTES = 64 * 1024  # 64 KiB
 
 # Argument sentinel that turns the unified entry executable into the headless
 # boundary. A frozen build launches ``[sys.executable, "--serve"]``; a source
@@ -71,6 +102,14 @@ _ERROR_MESSAGES = {
     "action_not_allowed": "action is not allowed by the read-only boundary",
     "message_too_large": "message exceeds the maximum allowed size",
     "internal_error": "backend internal error",
+    # Workspace/path errors (P3.2). Messages are fixed and never interpolate a
+    # requested path or file content, so caller text cannot leak.
+    "project_not_open": "no project root has been accepted",
+    "path_not_found": "the requested path does not exist",
+    "path_not_allowed": "the path escapes the accepted project root or is excluded",
+    "path_not_readable": "the path exists but is not a readable regular file",
+    "unsupported_type": "the file type is not supported by the workspace",
+    "file_too_large": "the file exceeds the maximum allowed size",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)
@@ -168,9 +207,18 @@ __all__ = [
     "CONTRACT_VERSION",
     "CORRELATION_ID_MAX_CHARS",
     "ACTION_SCAN",
+    "ACTION_OPEN_PROJECT",
+    "ACTION_GET_TREE",
+    "ACTION_GET_DOCUMENT",
+    "SCAN_ACTIONS",
+    "WORKSPACE_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",
+    "MAX_TREE_ENTRIES",
+    "MAX_TREE_DEPTH",
+    "MAX_FILE_BYTES",
+    "MAX_DOCUMENT_BYTES",
     "SERVE_SENTINEL",
     "ERROR_CODES",
     "error_message",

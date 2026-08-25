@@ -38,6 +38,17 @@ def _first_response(*raw_lines):
     return loads(responses[0])
 
 
+def _workspace_request(action, **overrides):
+    """Build a P3.2 workspace-action request envelope."""
+    req = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": "cid-ws",
+        "action": action,
+    }
+    req.update(overrides)
+    return req
+
+
 class BoundarySuccessTests(unittest.TestCase):
     def test_valid_request_round_trips(self):
         req = _request()
@@ -203,6 +214,80 @@ class BoundaryStdioDisciplineTests(unittest.TestCase):
         self.assertTrue(env["ok"])
         # Round-trippable and deterministic.
         self.assertEqual(loads(dumps(env)), env)
+
+
+class BoundaryWorkspaceTests(unittest.TestCase):
+    def test_open_project_then_get_tree(self):
+        req_open = _workspace_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        req_tree = _workspace_request(contract.ACTION_GET_TREE)
+        _, responses, _ = _run(dumps(req_open), dumps(req_tree))
+        open_env = loads(responses[0])
+        tree_env = loads(responses[1])
+        self.assertTrue(open_env["ok"])
+        self.assertEqual(open_env["result"]["root"], os.path.realpath(FIXTURES))
+        self.assertEqual(open_env["result"]["repository_state"], "Unverified")
+        self.assertTrue(tree_env["ok"])
+        self.assertEqual(tree_env["result"]["root"], os.path.realpath(FIXTURES))
+        self.assertIn("children", tree_env["result"])
+
+    def test_get_tree_without_open_project_rejected(self):
+        env = _first_response(dumps(_workspace_request(contract.ACTION_GET_TREE)))
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "project_not_open")
+
+    def test_get_document_without_open_project_rejected(self):
+        req = _workspace_request(contract.ACTION_GET_DOCUMENT, path="app/main.py")
+        env = _first_response(dumps(req))
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "project_not_open")
+
+    def test_open_project_flow_reads_document(self):
+        req_open = _workspace_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        req_doc = _workspace_request(contract.ACTION_GET_DOCUMENT, path="app/main.py")
+        _, responses, _ = _run(dumps(req_open), dumps(req_doc))
+        doc_env = loads(responses[1])
+        self.assertTrue(doc_env["ok"])
+        self.assertEqual(doc_env["result"]["path"], "app/main.py")
+        self.assertIn("print", doc_env["result"]["content"])
+
+    def test_open_project_missing_path_rejected(self):
+        missing = os.path.join(FIXTURES, "does-not-exist")
+        req = _workspace_request(contract.ACTION_OPEN_PROJECT, path=missing)
+        env = _first_response(dumps(req))
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "path_not_found")
+
+    def test_open_project_non_directory_rejected(self):
+        req = _workspace_request(
+            contract.ACTION_OPEN_PROJECT, path=os.path.join(FIXTURES, "app", "main.py")
+        )
+        env = _first_response(dumps(req))
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "path_not_found")
+
+    def test_get_document_traversal_rejected(self):
+        req_open = _workspace_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        req_doc = _workspace_request(contract.ACTION_GET_DOCUMENT, path="../secret.py")
+        _, responses, _ = _run(dumps(req_open), dumps(req_doc))
+        doc_env = loads(responses[1])
+        self.assertFalse(doc_env["ok"])
+        self.assertEqual(doc_env["error"]["code"], "path_not_allowed")
+
+    def test_workspace_session_does_not_leak_across_loops(self):
+        # Each run_loop owns a fresh WorkspaceSession; opening in one loop must
+        # not make a later loop's get_tree succeed.
+        _run(dumps(_workspace_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)))
+        env = _first_response(dumps(_workspace_request(contract.ACTION_GET_TREE)))
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "project_not_open")
+
+    def test_workspace_error_does_not_echo_path(self):
+        req = _workspace_request(
+            contract.ACTION_OPEN_PROJECT, path=os.path.join(FIXTURES, "secret-token")
+        )
+        env = _first_response(dumps(req))
+        self.assertFalse(env["ok"])
+        self.assertNotIn("secret-token", dumps(env))
 
 
 if __name__ == "__main__":

@@ -10,10 +10,28 @@ from unittest import mock
 
 from hrca import contract
 from hrca.client_core import (
+    PROVIDER_UNAVAILABLE,
+    REPOSITORY_UNVERIFIED,
+    TWIN_AVAILABLE,
+    TWIN_CONFLICT,
+    TWIN_EMPTY,
+    TWIN_LOADING,
+    TWIN_STALE,
+    TWIN_UNSUPPORTED,
+    TWIN_STATES,
+    VALIDATION_FAILED,
+    VALIDATION_IDLE,
+    VALIDATION_OK,
+    VALIDATION_RUNNING,
     LineBuffer,
     ResponseRouter,
     build_fixture_task,
+    build_get_document_request,
+    build_get_tree_request,
+    build_open_project_request,
     build_request,
+    build_scan_request,
+    build_scan_task,
     default_fixture_root,
     resolve_backend_command,
 )
@@ -159,6 +177,63 @@ class DefaultFixtureRootTests(unittest.TestCase):
         doc = scan_directory(root)
         self.assertGreater(len(doc["files"]), 0)
         self.assertGreater(len(doc["symbols"]), 0)
+
+
+class WorkspaceRequestBuilderTests(unittest.TestCase):
+    def test_open_project_request_shape(self):
+        req = build_open_project_request("cid-1", "some/root")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_OPEN_PROJECT)
+        self.assertEqual(req["path"], os.path.abspath("some/root"))
+
+    def test_get_tree_request_has_no_path(self):
+        req = build_get_tree_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_TREE)
+        self.assertNotIn("path", req)
+
+    def test_get_document_request_shape(self):
+        req = build_get_document_request("cid-1", "app/main.py")
+        self.assertEqual(req["action"], contract.ACTION_GET_DOCUMENT)
+        self.assertEqual(req["path"], "app/main.py")
+
+    def test_scan_request_uses_generic_task(self):
+        req = build_scan_request("cid-1", "some/root")
+        self.assertEqual(req["action"], contract.ACTION_SCAN)
+        self.assertEqual(req["task"]["task_id"], "P3.2")
+        self.assertEqual(
+            req["task"]["repository_context"]["status"], REPOSITORY_UNVERIFIED
+        )
+
+    def test_scan_task_is_read_only(self):
+        task = build_scan_task("some/root")
+        self.assertTrue(
+            set(task["allowed_actions"]) <= contract.READ_ONLY_TASK_ACTIONS
+        )
+
+
+class ClientStateConstantsTests(unittest.TestCase):
+    def test_twin_states_are_bounded(self):
+        self.assertEqual(
+            TWIN_STATES,
+            {
+                TWIN_EMPTY,
+                TWIN_LOADING,
+                TWIN_AVAILABLE,
+                TWIN_STALE,
+                TWIN_CONFLICT,
+                TWIN_UNSUPPORTED,
+            },
+        )
+        for state in TWIN_STATES:
+            self.assertIsInstance(state, str)
+
+    def test_validation_states(self):
+        self.assertIn(VALIDATION_IDLE, {VALIDATION_IDLE, VALIDATION_RUNNING, VALIDATION_OK, VALIDATION_FAILED})
+
+    def test_provider_and_repository_defaults(self):
+        self.assertEqual(PROVIDER_UNAVAILABLE, "unavailable")
+        self.assertEqual(REPOSITORY_UNVERIFIED, "Unverified")
 
 
 if __name__ == "__main__":

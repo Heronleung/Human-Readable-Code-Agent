@@ -1,11 +1,29 @@
-"""Minimal PySide6 desktop client for the P3.1 read-only vertical slice.
+"""PySide6 IDE workspace shell for the P3.2 read-only desktop slice.
 
-The client is a *client only*: it supervises a headless backend process, submits
-one bounded read-only task, and renders the returned plan, scanner evidence,
-limitations, validation status and explicit no-change result. It never imports
-the scanner, planner, report builder, provider protocol, Git tooling or any
-command-execution code, and it never decides that an action is permitted — that
-decision belongs to the boundary.
+The client is a *client only*: it supervises a headless backend process through
+the versioned NDJSON boundary, submits bounded read-only workspace actions
+(``open_project`` / ``get_tree`` / ``get_document``) plus the read-only scan
+pipeline, and renders the results in a read-only IDE-style layout. It never
+imports the scanner, planner, report builder, provider protocol, Git tooling or
+any command-execution code, never enumerates or reads project files directly
+(all filesystem access is mediated by the boundary), and never decides that an
+action is permitted — that decision belongs to the boundary.
+
+Layout (presentation only, no semantics invented):
+
+* **Project Explorer** — a :class:`QTreeView` populated from the boundary's
+  filtered ``get_tree`` response (never :class:`QFileSystemModel`, never a
+  direct directory walk);
+* **Source Code** — closable, read-only :class:`QPlainTextEdit` tabs opened via
+  ``get_document``; a document is never read by the client;
+* **Human-Readable Twin** — a presentation-only surface that can display the
+  bounded empty / loading / available / stale / conflict / unsupported states;
+  in this slice no Twin entity exists, so the honest default is ``empty``;
+* **Agent Chat** — a disabled composer and send action, labelled as
+  provider-backed chat unavailable; no provider, credential, network or
+  inference call is ever made;
+* **Plan / Diff / Problems / Tests / Evidence** — secondary surfaces that carry
+  the P3.1 plan, raw result, validation, limitations and outcome data.
 
 Supervision constraints honoured here:
 
@@ -27,35 +45,65 @@ The wire protocol stays ASCII (``ensure_ascii=True``); only the *display* uses
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+from functools import partial
 from typing import Any, Dict, List, Optional, Sequence
 
-from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QProcess, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QSyntaxHighlighter, QTextCharFormat
+from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QProcess, QTimer, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontDatabase,
+    QStandardItem,
+    QStandardItemModel,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+)
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
+    QSplitter,
     QTabWidget,
+    QTextEdit,
+    QTreeView,
     QVBoxLayout,
     QWidget,
 )
 
 from . import contract
 from .client_core import (
+    PROVIDER_UNAVAILABLE,
+    REPOSITORY_UNVERIFIED,
     STATE_BLOCKED,
     STATE_FAILED,
     STATE_IDLE,
     STATE_RUNNING,
     STATE_SUCCESS,
     STATE_UNAVAILABLE,
+    TWIN_AVAILABLE,
+    TWIN_CONFLICT,
+    TWIN_EMPTY,
+    TWIN_LOADING,
+    TWIN_STALE,
+    TWIN_UNSUPPORTED,
+    VALIDATION_FAILED,
+    VALIDATION_IDLE,
+    VALIDATION_OK,
+    VALIDATION_RUNNING,
     LineBuffer,
     ResponseRouter,
+    build_get_document_request,
+    build_get_tree_request,
+    build_open_project_request,
     build_request,
+    build_scan_request,
     default_fixture_root,
     resolve_backend_command,
 )
@@ -69,6 +117,18 @@ REASON_LAUNCH_FAILED = "launch_failed"
 
 _DEFAULT_SCAN_PATH = default_fixture_root()
 _DEFAULT_TIMEOUT_MS = 15000
+
+# Fixed, honest one-line descriptions for each bounded Twin presentation state.
+# No Twin entity exists in P3.2, so none of these is derived from source; they
+# are the only text the surface ever shows and are not persisted.
+_TWIN_LABELS = {
+    TWIN_EMPTY: "No Human-Readable Twin has been generated for this project.",
+    TWIN_LOADING: "Twin synchronization is in progress.",
+    TWIN_AVAILABLE: "A Human-Readable Twin is available.",
+    TWIN_STALE: "The Human-Readable Twin is stale relative to the source.",
+    TWIN_CONFLICT: "The Human-Readable Twin conflicts with the source.",
+    TWIN_UNSUPPORTED: "Human-Readable Twin generation is unsupported for this project.",
+}
 
 _PY_KEYWORDS = (
     "and", "as", "assert", "async", "await", "break", "class", "continue",
@@ -159,15 +219,20 @@ class BackendSupervisor(QObject):
 
     # -- public ----------------------------------------------------------
 
-    def submit(self, correlation_id: str, scan_path: str) -> bool:
-        """Submit one read-only scan request; returns False if already busy."""
+    def submit(self, correlation_id: str, request: Dict[str, Any]) -> bool:
+        """Submit one pre-built request envelope; returns False if already busy.
+
+        The caller builds the envelope (with :mod:`hrca.client_core` builders)
+        so the supervisor never decides what action to take; it only carries the
+        bytes across the boundary and matches the response by correlation id.
+        """
         if self._current is not None:
             return False
         self._current = correlation_id
         self._router.track(correlation_id)
         self._ensure_started()
 
-        line = contract.dumps(build_request(correlation_id, scan_path)) + "\n"
+        line = contract.dumps(request) + "\n"
         if self._started:
             self._write(line)
         else:
@@ -307,11 +372,19 @@ def _json_text(value: Any) -> str:
 
 
 class MainWindow(QMainWindow):
-    """Render the plan, evidence, limitations, validation and no-change result."""
+    """Render the IDE workspace shell (P3.2 presentation-only surface)."""
 
-    def __init__(self, scan_path: str = _DEFAULT_SCAN_PATH, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self._scan_path = scan_path
+        self._root: Optional[str] = None
+        self._repository_state: str = REPOSITORY_UNVERIFIED
+        self._twin_state: str = TWIN_EMPTY
+        self._provider_state: str = PROVIDER_UNAVAILABLE
+        self._validation_state: str = VALIDATION_IDLE
+        self._current_document: Optional[str] = None
+        self._tree: Optional[Dict[str, Any]] = None
+        self._open_tabs: Dict[str, CodeView] = {}
+        self._pending: Dict[str, tuple] = {}
         self._supervisor = BackendSupervisor()
         self._supervisor.completed.connect(self._on_completed)
         self._supervisor.failed.connect(self._on_failed)
@@ -319,37 +392,118 @@ class MainWindow(QMainWindow):
         self._supervisor.unavailable.connect(self._on_unavailable)
         self._build_ui()
         self._set_status(STATE_IDLE, "ready")
+        self._set_twin_state(TWIN_EMPTY)
+        self._update_status()
+
+    # -- UI construction -------------------------------------------------
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("Human-Readable Code Agent — P3.1 read-only slice")
-        self.resize(900, 600)
+        self.setWindowTitle("Human-Readable Code Agent — IDE Workspace Shell")
+        self.resize(1100, 700)
 
         central = QWidget(self)
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
+        # Toolbar row: open a project (directory chooser only) and run a scan.
         top = QHBoxLayout()
-        self.run_button = QPushButton("Run read-only scan")
-        self.run_button.clicked.connect(self._submit)
-        top.addWidget(self.run_button)
-        self.status_label = QLabel("")
-        top.addWidget(self.status_label, stretch=1)
+        self.open_project_button = QPushButton("Open Project")
+        self.open_project_button.clicked.connect(self._on_open_project)
+        self.scan_button = QPushButton("Run read-only scan")
+        self.scan_button.clicked.connect(self._on_run_scan)
+        top.addWidget(self.open_project_button)
+        top.addWidget(self.scan_button)
+        top.addStretch(1)
         layout.addLayout(top)
 
-        self._tabs = QTabWidget(central)
+        # Main splitter: project explorer on the left, workspace on the right.
+        splitter = QSplitter(Qt.Horizontal, central)
+
+        explorer = QWidget(splitter)
+        explorer_layout = QVBoxLayout(explorer)
+        explorer_layout.addWidget(QLabel("Project Explorer"))
+        self._tree_model = QStandardItemModel()
+        self._tree_model.setHorizontalHeaderLabels(["Name"])
+        self._tree_view = QTreeView()
+        self._tree_view.setModel(self._tree_model)
+        self._tree_view.setHeaderHidden(False)
+        self._tree_view.clicked.connect(self._on_tree_clicked)
+        explorer_layout.addWidget(self._tree_view)
+        self._project_label = QLabel("No project open")
+        self._project_label.setWordWrap(True)
+        explorer_layout.addWidget(self._project_label)
+        splitter.addWidget(explorer)
+
+        right = QSplitter(Qt.Vertical, splitter)
+
+        # Source code: closable, read-only document tabs.
+        self._source_tabs = QTabWidget(right)
+        self._source_tabs.setTabsClosable(True)
+        self._source_tabs.setMovable(True)
+        self._source_tabs.tabCloseRequested.connect(self._close_tab)
+        right.addWidget(self._source_tabs)
+
+        # Twin / chat / secondary surfaces.
+        self._bottom_tabs = QTabWidget(right)
+        self._twin_view = CodeView(self._bottom_tabs)
+        self._bottom_tabs.addTab(self._twin_view, "Human-Readable Twin")
+        self._chat_panel = self._build_chat_panel()
+        self._bottom_tabs.addTab(self._chat_panel, "Agent Chat")
         self._views: Dict[str, CodeView] = {}
         for key, label in (
-            ("result", "Result"),
             ("plan", "Plan"),
+            ("diff", "Diff"),
+            ("problems", "Problems"),
+            ("tests", "Tests"),
             ("evidence", "Evidence"),
-            ("limitations", "Limitations"),
-            ("validation", "Validation"),
-            ("outcome", "Outcome"),
         ):
-            view = CodeView(self._tabs)
+            view = CodeView(self._bottom_tabs)
             self._views[key] = view
-            self._tabs.addTab(view, label)
-        layout.addWidget(self._tabs)
+            self._bottom_tabs.addTab(view, label)
+        right.addWidget(self._bottom_tabs)
+
+        splitter.addWidget(right)
+        layout.addWidget(splitter)
+
+        # Status fields: primary supervision status plus the P3.2 status labels.
+        status_row = QHBoxLayout()
+        self.status_label = QLabel("")
+        status_row.addWidget(self.status_label, stretch=2)
+        self._root_label = QLabel("")
+        self._repo_label = QLabel("")
+        self._file_label = QLabel("")
+        self._twin_label = QLabel("")
+        self._provider_label = QLabel("")
+        self._validation_label = QLabel("")
+        for lbl in (
+            self._root_label,
+            self._repo_label,
+            self._file_label,
+            self._twin_label,
+            self._provider_label,
+            self._validation_label,
+        ):
+            status_row.addWidget(lbl)
+        layout.addLayout(status_row)
+
+    def _build_chat_panel(self) -> QWidget:
+        """Build the disabled, provider-unavailable agent-chat surface."""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        label = QLabel("Provider-backed chat is unavailable in this read-only slice.")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        self._chat_composer = QTextEdit()
+        self._chat_composer.setPlaceholderText("Chat input is disabled.")
+        self._chat_composer.setEnabled(False)
+        layout.addWidget(self._chat_composer)
+        self._chat_send = QPushButton("Send")
+        self._chat_send.setEnabled(False)
+        layout.addWidget(self._chat_send)
+        layout.addStretch(1)
+        return panel
+
+    # -- status helpers --------------------------------------------------
 
     def _set_status(self, state: str, detail: str = "") -> None:
         self._status = state
@@ -358,30 +512,213 @@ class MainWindow(QMainWindow):
             text += f" — {detail}"
         self.status_label.setText(text)
 
-    def _submit(self) -> None:
-        correlation_id = contract.new_correlation_id()
-        if not self._supervisor.submit(correlation_id, self._scan_path):
-            self._set_status(STATE_FAILED, "a scan is already in progress")
-            return
-        self._set_status(STATE_RUNNING, correlation_id)
+    def _set_twin_state(self, state: str) -> None:
+        self._twin_state = state
+        self._twin_view.setPlainText(self._twin_text(state))
+        self._update_status()
 
-    def _render(self, result: Dict[str, Any]) -> None:
+    def _set_validation_state(self, state: str) -> None:
+        self._validation_state = state
+        self._update_status()
+
+    def _twin_text(self, state: str) -> str:
+        label = _TWIN_LABELS.get(state, "")
+        return f"Twin state: {state}\n\n{label}"
+
+    def _update_status(self) -> None:
+        self._root_label.setText(f"Root: {self._root or 'none'}")
+        self._repo_label.setText(f"Repo: {self._repository_state}")
+        self._file_label.setText(f"File: {self._current_document or 'none'}")
+        self._twin_label.setText(f"Twin: {self._twin_state}")
+        self._provider_label.setText(f"Provider: {self._provider_state}")
+        self._validation_label.setText(f"Validation: {self._validation_state}")
+
+    # -- request plumbing ------------------------------------------------
+
+    def _send(self, request: Dict[str, Any], on_success, on_error) -> bool:
+        """Submit ``request`` and remember its success/error callbacks."""
+        cid = request.get("correlation_id")
+        if self._supervisor.submit(cid, request):
+            self._pending[cid] = (on_success, on_error)
+            return True
+        return False
+
+    # -- actions ---------------------------------------------------------
+
+    def _on_open_project(self) -> None:
+        start = self._root or os.path.expanduser("~")
+        path = QFileDialog.getExistingDirectory(self, "Open Project", start)
+        if not path:
+            return
+        cid = contract.new_correlation_id()
+        request = build_open_project_request(cid, path)
+        self._set_status(STATE_RUNNING, "opening project")
+        if not self._send(request, self._on_project_opened, self._on_open_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_run_scan(self) -> None:
+        if not self._root:
+            self._set_status(STATE_FAILED, "no project open")
+            return
+        cid = contract.new_correlation_id()
+        request = build_scan_request(cid, self._root)
+        self._set_status(STATE_RUNNING, "scanning")
+        self._set_validation_state(VALIDATION_RUNNING)
+        if not self._send(request, self._on_scan_completed, self._on_scan_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+            self._set_validation_state(VALIDATION_IDLE)
+
+    def _open_document(self, rel_path: str) -> None:
+        cid = contract.new_correlation_id()
+        request = build_get_document_request(cid, rel_path)
+        self._set_status(STATE_RUNNING, f"opening {rel_path}")
+        on_success = partial(self._on_document_opened, rel_path)
+        if not self._send(request, on_success, self._on_document_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    # -- action result handlers -----------------------------------------
+
+    def _on_project_opened(self, result: Dict[str, Any]) -> None:
+        self._root = result.get("root")
+        self._repository_state = result.get("repository_state", REPOSITORY_UNVERIFIED)
+        self._project_label.setText(self._root or "No project open")
+        self._update_status()
+        cid = contract.new_correlation_id()
+        request = build_get_tree_request(cid)
+        if self._send(request, self._on_tree_loaded, self._on_tree_failed):
+            self._set_status(STATE_RUNNING, "loading project tree")
+
+    def _on_tree_loaded(self, tree: Dict[str, Any]) -> None:
+        self._tree = tree
+        self._populate_tree(tree)
+        self._set_status(STATE_SUCCESS, "project open")
+        self._set_validation_state(VALIDATION_OK)
+
+    def _on_document_opened(self, rel_path: str, doc: Dict[str, Any]) -> None:
+        content = doc.get("content", "")
+        name = doc.get("name", rel_path)
+        view = self._open_tabs.get(rel_path)
+        if view is None:
+            view = CodeView(self._source_tabs)
+            view.setPlainText(content)
+            index = self._source_tabs.addTab(view, name)
+            self._open_tabs[rel_path] = view
+            self._source_tabs.setCurrentIndex(index)
+        else:
+            view.setPlainText(content)
+            self._source_tabs.setCurrentWidget(view)
+        self._current_document = rel_path
+        self._set_status(STATE_SUCCESS, f"opened {rel_path}")
+        self._update_status()
+
+    def _on_scan_completed(self, result: Dict[str, Any]) -> None:
+        self._render_scan(result)
+        self._set_status(STATE_SUCCESS, "scan complete")
+        self._set_validation_state(VALIDATION_OK)
+
+    # -- action error handlers ------------------------------------------
+
+    def _on_open_failed(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+        self._set_validation_state(VALIDATION_FAILED)
+
+    def _on_tree_failed(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+        self._set_validation_state(VALIDATION_FAILED)
+
+    def _on_document_failed(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+
+    def _on_scan_failed(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+        self._set_validation_state(VALIDATION_FAILED)
+
+    # -- rendering -------------------------------------------------------
+
+    def _render_scan(self, result: Dict[str, Any]) -> None:
+        """Map the scan result onto the secondary evidence surfaces."""
         report = result.get("report", {})
-        self._views["result"].setPlainText(_json_text(result))
+        evidence = result.get("evidence", {})
         self._views["plan"].setPlainText(_json_text(report.get("plan", [])))
-        self._views["evidence"].setPlainText(_json_text(result.get("evidence", {})))
-        self._views["limitations"].setPlainText(_json_text(report.get("limitations", [])))
-        self._views["validation"].setPlainText(_json_text(report.get("validation", {})))
-        self._views["outcome"].setPlainText(_json_text(report.get("outcome", {})))
+        self._views["diff"].setPlainText(_json_text(report.get("outcome", {})))
+        self._views["problems"].setPlainText(
+            _json_text(
+                {
+                    "limitations": report.get("limitations", []),
+                    "parse_errors": evidence.get("parse_errors", []),
+                }
+            )
+        )
+        self._views["tests"].setPlainText(
+            "No test execution is available in this read-only slice."
+        )
+        self._views["evidence"].setPlainText(
+            _json_text(
+                {
+                    "validation": report.get("validation", {}),
+                    "scanner_evidence": evidence,
+                    "raw_result": result,
+                }
+            )
+        )
+
+    def _populate_tree(self, tree: Dict[str, Any]) -> None:
+        self._tree_model.clear()
+        self._tree_model.setHorizontalHeaderLabels(["Name"])
+        self._add_tree_nodes(self._tree_model.invisibleRootItem(), tree.get("children", []))
+
+    def _add_tree_nodes(self, parent: QStandardItem, nodes: List[Dict[str, Any]]) -> None:
+        for node in nodes:
+            item = QStandardItem(node.get("name", ""))
+            item.setEditable(False)
+            item.setData(node.get("path"), Qt.UserRole)
+            item.setData(node.get("type"), Qt.UserRole + 1)
+            parent.appendRow(item)
+            if node.get("type") == "dir":
+                self._add_tree_nodes(item, node.get("children", []))
+
+    def _on_tree_clicked(self, index) -> None:
+        item = self._tree_model.itemFromIndex(index)
+        if item is None:
+            return
+        if item.data(Qt.UserRole + 1) != "file":
+            return
+        rel_path = item.data(Qt.UserRole)
+        if not rel_path:
+            return
+        self._open_document(rel_path)
+
+    def _close_tab(self, index: int) -> None:
+        widget = self._source_tabs.widget(index)
+        if widget is None:
+            return
+        self._source_tabs.removeTab(index)
+        for rel_path, view in list(self._open_tabs.items()):
+            if view is widget:
+                del self._open_tabs[rel_path]
+        widget.deleteLater()
+        if self._current_document not in self._open_tabs:
+            self._current_document = None
+        self._update_status()
+
+    # -- supervisor signal handlers -------------------------------------
 
     def _on_completed(self, correlation_id: str, result: Dict[str, Any]) -> None:
-        self._render(result)
-        self._set_status(STATE_SUCCESS, correlation_id)
+        callbacks = self._pending.pop(correlation_id, None)
+        if callbacks is None:
+            return
+        on_success, _ = callbacks
+        on_success(result)
 
     def _on_failed(self, correlation_id: str, reason: str) -> None:
-        self._set_status(STATE_FAILED, f"{correlation_id}: {reason}")
+        callbacks = self._pending.pop(correlation_id, None)
+        if callbacks is None:
+            return
+        _, on_error = callbacks
+        on_error(reason)
 
     def _on_blocked(self, correlation_id: str) -> None:
+        self._pending.pop(correlation_id, None)
         self._set_status(STATE_BLOCKED, correlation_id)
 
     def _on_unavailable(self, message: str) -> None:
@@ -401,7 +738,7 @@ def run_gui(argv: Optional[Sequence[str]] = None) -> int:
     """Create and run the desktop window; returns the application exit code."""
     args = list(sys.argv[1:] if argv is None else argv)
     app = QApplication.instance() or QApplication(args)
-    window = MainWindow(scan_path=_parse_scan_path(args))
+    window = MainWindow()
     window.show()
     return app.exec()
 
@@ -431,7 +768,7 @@ def run_scan_once(
     )
 
     correlation_id = contract.new_correlation_id()
-    supervisor.submit(correlation_id, scan_path)
+    supervisor.submit(correlation_id, build_request(correlation_id, scan_path))
     loop.exec()
 
     if outcome.get("status") == STATE_SUCCESS:

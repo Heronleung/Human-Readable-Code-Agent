@@ -1,4 +1,4 @@
-"""Tests for the Qt-free application-boundary contract (P3.1)."""
+"""Tests for the Qt-free application-boundary contract (P3.2)."""
 
 from __future__ import annotations
 
@@ -7,13 +7,22 @@ import unittest
 
 from hrca import contract
 from hrca.contract import (
+    ACTION_GET_DOCUMENT,
+    ACTION_GET_TREE,
+    ACTION_OPEN_PROJECT,
     ACTION_SCAN,
     ALLOWED_ACTIONS,
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
+    MAX_DOCUMENT_BYTES,
+    MAX_FILE_BYTES,
     MAX_MESSAGE_BYTES,
+    MAX_TREE_DEPTH,
+    MAX_TREE_ENTRIES,
     READ_ONLY_TASK_ACTIONS,
+    SCAN_ACTIONS,
     SERVE_SENTINEL,
+    WORKSPACE_ACTIONS,
     ContractError,
     build_error,
     build_request,
@@ -31,7 +40,7 @@ _FORBIDDEN_ACTIONS = ("write", "git", "commit", "command", "exec", "network",
 
 class ContractVersionTests(unittest.TestCase):
     def test_contract_version_is_pinned(self):
-        self.assertEqual(CONTRACT_VERSION, "3.1.0")
+        self.assertEqual(CONTRACT_VERSION, "3.2.0")
 
     def test_serve_sentinel(self):
         self.assertEqual(SERVE_SENTINEL, "--serve")
@@ -40,12 +49,26 @@ class ContractVersionTests(unittest.TestCase):
         self.assertGreater(MAX_MESSAGE_BYTES, 0)
         self.assertGreater(CORRELATION_ID_MAX_CHARS, 0)
 
+    def test_workspace_limits_are_positive(self):
+        self.assertGreater(MAX_TREE_ENTRIES, 0)
+        self.assertGreater(MAX_TREE_DEPTH, 0)
+        self.assertGreater(MAX_FILE_BYTES, 0)
+        self.assertGreater(MAX_DOCUMENT_BYTES, 0)
+        # A document is bounded to fit on the wire even when every byte escapes.
+        self.assertLessEqual(MAX_DOCUMENT_BYTES, MAX_MESSAGE_BYTES)
+
 
 class AllowedActionTests(unittest.TestCase):
     def test_allowed_actions_are_read_only(self):
         self.assertEqual(
             ALLOWED_ACTIONS,
-            frozenset({"scan", "read", "analyze", "inspect", "plan"}),
+            SCAN_ACTIONS | WORKSPACE_ACTIONS,
+        )
+
+    def test_workspace_actions_are_allowlisted(self):
+        self.assertEqual(
+            WORKSPACE_ACTIONS,
+            frozenset({ACTION_OPEN_PROJECT, ACTION_GET_TREE, ACTION_GET_DOCUMENT}),
         )
 
     def test_no_forbidden_action_is_allowed(self):

@@ -1,4 +1,4 @@
-"""Tests for the PySide6 desktop client (P3.1), run offscreen.
+"""Tests for the PySide6 desktop client (P3.2), run offscreen.
 
 These tests import PySide6 and are skipped when it is not installed, so the
 core and its tests remain installable without Qt. Every test runs with
@@ -17,12 +17,14 @@ try:
     from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtWidgets import QApplication
 
+    from hrca import contract
     from hrca.client import (
         BackendSupervisor,
         CodeView,
         MainWindow,
         PythonHighlighter,
     )
+    from hrca.client_core import TWIN_STALE, VALIDATION_OK, build_request
 
     HAS_PYSIDE6 = True
 except ImportError:  # pragma: no cover - exercised in the no-Qt environment
@@ -38,7 +40,7 @@ def _app() -> "QApplication":
 
 def _sample_result() -> dict:
     return {
-        "task_id": "P3.1",
+        "task_id": "P3.2",
         "title": "掃描與分析範例程式碼",
         "report": {
             "outcome": {"status": "no_change", "changed_files": []},
@@ -46,7 +48,24 @@ def _sample_result() -> dict:
             "limitations": [{"kind": "static_analysis"}],
             "plan": [{"step": 1, "action": "read"}],
         },
-        "evidence": {"files": [{"path": "app/main.py"}]},
+        "evidence": {"files": [{"path": "app/main.py"}], "parse_errors": []},
+    }
+
+
+def _sample_tree() -> dict:
+    return {
+        "root": "/some/root",
+        "truncated": False,
+        "children": [
+            {
+                "name": "app",
+                "type": "dir",
+                "path": "app",
+                "children": [
+                    {"name": "main.py", "type": "file", "path": "app/main.py", "size": 10},
+                ],
+            },
+        ],
     }
 
 
@@ -74,7 +93,7 @@ def _run_supervisor(command, timeout_ms=8000, test_timeout_ms=12000):
     safety.timeout.connect(lambda: done("test_timeout"))
     safety.start(test_timeout_ms)
 
-    supervisor.submit("cid-test", "fixtures")
+    supervisor.submit("cid-test", build_request("cid-test", "fixtures"))
     loop.exec()
     safety.stop()
     supervisor.terminate()
@@ -83,6 +102,9 @@ def _run_supervisor(command, timeout_ms=8000, test_timeout_ms=12000):
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class CodeViewTests(unittest.TestCase):
+    def setUp(self):
+        _app()
+
     def test_code_view_and_highlighter(self):
         view = CodeView()
         view.setPlainText("def f():\n    return 1  # comment\n")
@@ -91,32 +113,107 @@ class CodeViewTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class MainWindowTests(unittest.TestCase):
-    def test_window_renders_no_change_result(self):
-        window = MainWindow(scan_path="fixtures")
-        window._on_completed("cid-1", _sample_result())
-        self.assertTrue(window.status_label.text().startswith("Status: success"))
-        self.assertIn("no_change", window._views["outcome"].toPlainText())
+class MainWindowLayoutTests(unittest.TestCase):
+    def setUp(self):
+        _app()
+
+    def test_window_starts_with_no_project(self):
+        window = MainWindow()
+        self.assertIsNone(window._root)
+        self.assertEqual(window._project_label.text(), "No project open")
+
+    def test_default_status_fields(self):
+        window = MainWindow()
+        self.assertIn("none", window._root_label.text())
+        self.assertIn("Unverified", window._repo_label.text())
+        self.assertIn("unavailable", window._provider_label.text())
+        self.assertIn("idle", window._validation_label.text())
+        self.assertIn("empty", window._twin_label.text())
+
+    def test_twin_default_state_is_empty(self):
+        window = MainWindow()
+        self.assertIn("empty", window._twin_view.toPlainText())
+
+    def test_twin_state_transitions(self):
+        window = MainWindow()
+        window._set_twin_state(TWIN_STALE)
+        self.assertIn("stale", window._twin_view.toPlainText())
+
+    def test_chat_composer_and_send_disabled(self):
+        window = MainWindow()
+        self.assertFalse(window._chat_composer.isEnabled())
+        self.assertFalse(window._chat_send.isEnabled())
+
+    def test_secondary_surfaces_present(self):
+        window = MainWindow()
+        for key in ("plan", "diff", "problems", "tests", "evidence"):
+            self.assertIn(key, window._views)
+
+    def test_open_project_sets_root_and_requests_tree(self):
+        window = MainWindow()
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        window._on_project_opened({"root": "/some/root", "repository_state": "Unverified"})
+        self.assertEqual(window._root, "/some/root")
+        self.assertEqual(window._project_label.text(), "/some/root")
+        self.assertEqual(sent[0]["action"], contract.ACTION_GET_TREE)
+
+    def test_tree_load_populates_model(self):
+        window = MainWindow()
+        window._on_tree_loaded(_sample_tree())
+        self.assertEqual(window._tree_model.rowCount(), 1)
+        self.assertEqual(window._tree_model.item(0, 0).text(), "app")
+
+    def test_tree_click_requests_document(self):
+        window = MainWindow()
+        window._on_tree_loaded(_sample_tree())
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        file_item = window._tree_model.item(0, 0).child(0)
+        index = window._tree_model.indexFromItem(file_item)
+        window._on_tree_clicked(index)
+        self.assertEqual(sent[0]["action"], contract.ACTION_GET_DOCUMENT)
+        self.assertEqual(sent[0]["path"], "app/main.py")
+
+    def test_document_open_adds_tab(self):
+        window = MainWindow()
+        window._on_document_opened(
+            "app/main.py",
+            {"path": "app/main.py", "name": "main.py", "size": 10, "content": "print('hi')\n"},
+        )
+        self.assertEqual(window._source_tabs.count(), 1)
+        self.assertEqual(window._current_document, "app/main.py")
+
+    def test_scan_renders_secondary_surfaces(self):
+        window = MainWindow()
+        window._on_scan_completed(_sample_result())
+        self.assertIn("no_change", window._views["diff"].toPlainText())
         self.assertIn("app/main.py", window._views["evidence"].toPlainText())
+        self.assertIn("掃描與分析", window._views["evidence"].toPlainText())
+        self.assertEqual(window._validation_state, VALIDATION_OK)
 
-    def test_window_renders_non_ascii_title(self):
-        window = MainWindow(scan_path="fixtures")
-        window._on_completed("cid-1", _sample_result())
-        self.assertIn("掃描與分析", window._views["result"].toPlainText())
-
-    def test_window_failed_state(self):
-        window = MainWindow(scan_path="fixtures")
-        window._on_failed("cid-1", "action_not_allowed")
+    def test_failed_state(self):
+        window = MainWindow()
+        window._on_open_failed("path_not_found")
         self.assertIn("failed", window.status_label.text())
-        self.assertIn("action_not_allowed", window.status_label.text())
 
-    def test_window_blocked_state(self):
-        window = MainWindow(scan_path="fixtures")
+    def test_blocked_state(self):
+        window = MainWindow()
         window._on_blocked("cid-1")
         self.assertIn("blocked", window.status_label.text())
 
-    def test_window_unavailable_state(self):
-        window = MainWindow(scan_path="fixtures")
+    def test_unavailable_state(self):
+        window = MainWindow()
         window._on_unavailable("backend failed to start")
         self.assertIn("unavailable", window.status_label.text())
 

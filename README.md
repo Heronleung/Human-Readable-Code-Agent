@@ -65,26 +65,54 @@ Symbols carry a `source_range` (`lineno`/`col_offset`/`end_lineno`/
 `app.service.Service.handle`. Relations carry the literal `target` name as
 written in source, plus a `status` (`resolved` / `unresolved` / `recorded`).
 
-## Desktop client (P3.1)
+## Desktop client (P3.2)
 
-A minimal, read-only PySide6 desktop window submits one bounded scan task to a
-headless **application boundary** over newline-delimited JSON on stdin/stdout,
-and renders the deterministic plan, scanner evidence, limitations, validation
-status and explicit no-change result. The boundary is the only place that
-imports the deterministic core (`scanner`, `planning`, `report`); the client
-consumes only the versioned contract in `hrca.contract`.
+A read-only PySide6 **IDE workspace shell** supervises a headless **application
+boundary** over newline-delimited JSON on stdin/stdout. It opens a project root
+through the boundary, lists a filtered, bounded project tree, opens documents
+read-only, and still submits the deterministic read-only scan. The boundary is
+the only place that imports the deterministic core (`scanner`, `planning`,
+`report`) and the workspace filesystem policy; the client consumes only the
+versioned contract in `hrca.contract`.
+
+The shell presents (all presentation-only; no semantics are invented):
+
+- **Project Explorer** — a `QTreeView` populated from the boundary's filtered
+  `get_tree` response (never a direct directory walk or `QFileSystemModel`),
+- **Source Code** — closable, read-only `QPlainTextEdit` + `QSyntaxHighlighter`
+  tabs opened via `get_document` (the client never reads files itself),
+- **Human-Readable Twin** — a surface that can display the bounded
+  `empty` / `loading` / `available` / `stale` / `conflict` / `unsupported`
+  states; in P3.2 no Twin entity exists, so the honest default is `empty`,
+- **Agent Chat** — a disabled composer and send action labelled
+  "provider-backed chat unavailable"; no provider, credential, network or
+  inference call is ever made,
+- **Plan / Diff / Problems / Tests / Evidence** — secondary surfaces carrying
+  the P3.1 plan, raw result, validation, limitations and outcome data.
 
 The contract (`hrca/contract.py`) defines:
 
-- `CONTRACT_VERSION` (`3.1.0`) — any other version is rejected,
+- `CONTRACT_VERSION` (`3.2.0`) — any other version is rejected,
 - the request/result envelopes and the client-generated `correlation_id`
   echoed verbatim in every response,
-- the allowed read-only action names (`scan`, `read`, `analyze`, `inspect`,
-  `plan`) — every write/Git/command/network/provider action is rejected,
+- the allowed read-only action names — the scan pipeline (`scan`, `read`,
+  `analyze`, `inspect`, `plan`) plus the workspace actions (`open_project`,
+  `get_tree`, `get_document`); every write/Git/command/network/provider action
+  is rejected,
 - the bounded error codes (`malformed_request`, `invalid_request`,
   `unknown_contract_version`, `action_not_allowed`, `message_too_large`,
-  `internal_error`) whose messages never echo caller text,
-- `MAX_MESSAGE_BYTES` (1 MiB) for inbound and outbound messages.
+  `internal_error`, `project_not_open`, `path_not_found`, `path_not_allowed`,
+  `path_not_readable`, `unsupported_type`, `file_too_large`) whose messages
+  never echo caller text, requested paths or file contents,
+- `MAX_MESSAGE_BYTES` (1 MiB) plus the workspace limits `MAX_TREE_ENTRIES`,
+  `MAX_TREE_DEPTH`, `MAX_FILE_BYTES` and `MAX_DOCUMENT_BYTES` (64 KiB each)
+  that bound tree and document output.
+
+The workspace policy (`hrca/workspace.py`) filters to `.py`, `.pyi`,
+`pyproject.toml`, `README.md` and `README.rst`, excludes `.git`, `.venv`,
+`__pycache__`, `node_modules`, `build` and `dist`, resolves symlinks, and
+rejects `..` traversal, symlink escape outside the accepted root, and missing,
+unreadable, unsupported and oversized paths with bounded errors.
 
 The boundary writes exactly one JSON line per request, reserves stdout for
 protocol messages only, and keeps `ensure_ascii=True` so the wire is pure
@@ -108,23 +136,34 @@ client by default, and the headless boundary when invoked with `--serve`.
 
 ```bash
 uv sync --extra desktop                 # installs PySide6 (optional)
-uv run python -m hrca.client            # launch the desktop window (defaults to repo fixtures)
+uv run python -m hrca.client            # launch the IDE workspace shell
 uv run python -m hrca.client --scan-once   # headless supervised scan (defaults to repo fixtures)
 ```
 
-The default scan root is resolved by `hrca.client_core.default_fixture_root`:
-in source mode it is the repository `fixtures/` directory (found relative to the
-module, not the current working directory); in a frozen build it is the bundled
-fixture data under `sys._MEIPASS`. An explicit path argument overrides it.
+The GUI starts with no project open; click **Open Project** to choose a root
+with a directory chooser. The boundary validates the root, returns the filtered
+tree, and each tree click opens a read-only document via `get_document`. The
+**Run read-only scan** button scans the opened root.
+
+The default scan root for `--scan-once` is resolved by
+`hrca.client_core.default_fixture_root`: in source mode it is the repository
+`fixtures/` directory (found relative to the module, not the current working
+directory); in a frozen build it is the bundled fixture data under
+`sys._MEIPASS`. An explicit path argument overrides it.
 
 To exercise the boundary directly, without the graphical interface, pipe one
 request per line:
 
 ```bash
 printf '%s\n' \
-  '{"contract_version":"3.1.0","correlation_id":"demo","action":"scan","path":"fixtures","task":{"task_id":"P3.1","title":"t","request":"r","repository_context":{"status":"Unverified"},"allowed_actions":["read","analyze","scan"],"constraints":["Read-only"],"acceptance_criteria":["no-change"],"risk_level":"low","approval_required":false}}' \
+  '{"contract_version":"3.2.0","correlation_id":"demo","action":"scan","path":"fixtures","task":{"task_id":"P3.2","title":"t","request":"r","repository_context":{"status":"Unverified"},"allowed_actions":["read","analyze","scan"],"constraints":["Read-only"],"acceptance_criteria":["no-change"],"risk_level":"low","approval_required":false}}' \
+  '{"contract_version":"3.2.0","correlation_id":"demo2","action":"open_project","path":"fixtures"}' \
+  '{"contract_version":"3.2.0","correlation_id":"demo3","action":"get_tree"}' \
   | uv run python -m hrca.boundary --serve
 ```
+
+The `open_project` accepts the root; the later `get_tree` in the same loop
+lists it — the boundary keeps one accepted root per process.
 
 ### Frozen build (Windows)
 
@@ -157,7 +196,8 @@ dist\hrca-app\hrca-app.exe --serve       # frozen headless boundary
 Do not copy `hrca-app.exe` out of `dist\hrca-app` and run it standalone: the
 one-folder build relies on `_internal\` (including the bundled fixtures) being
 present next to the executable. Double-click `dist\hrca-app\hrca-app.exe` to
-open the GUI, then click **Run read-only scan**.
+open the GUI, then click **Open Project** to choose a project root (the bundled
+`fixtures` folder, or any local project).
 
 ## Scope and limitations
 

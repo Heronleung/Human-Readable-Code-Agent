@@ -28,6 +28,10 @@ _CLIENT_MODULES = {
 # The shared contract is Qt-free and must not import the core either.
 _CONTRACT_MODULE = os.path.join(_SRC, "contract.py")
 
+# The workspace policy is boundary-side: it may import stdlib and the contract,
+# but never the deterministic core.
+_WORKSPACE_MODULE = os.path.join(_SRC, "workspace.py")
+
 # Top-level module names that a client or contract module must never import.
 _FORBIDDEN_TOP_LEVEL = frozenset(
     {"scanner", "planning", "report", "provider", "subprocess", "git"}
@@ -65,6 +69,22 @@ class ClientArchitectureTests(unittest.TestCase):
     def test_contract_module_does_not_import_core(self):
         imported = _imported_top_level_names(_CONTRACT_MODULE)
         self.assertTrue(imported.isdisjoint(_FORBIDDEN_TOP_LEVEL))
+
+    def test_workspace_module_does_not_import_core(self):
+        imported = _imported_top_level_names(_WORKSPACE_MODULE)
+        self.assertTrue(imported.isdisjoint(_FORBIDDEN_TOP_LEVEL))
+
+    def test_client_modules_do_not_import_workspace(self):
+        # The workspace policy owns path containment on the boundary side; a
+        # client that imported it would gain direct filesystem access.
+        for module, path in _CLIENT_MODULES.items():
+            with self.subTest(module=module):
+                imported = _imported_top_level_names(path)
+                self.assertNotIn(
+                    "workspace",
+                    imported,
+                    f"{module} imports the boundary-side workspace policy",
+                )
 
     def test_client_modules_exist(self):
         for path in _CLIENT_MODULES.values():

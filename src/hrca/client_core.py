@@ -1,4 +1,4 @@
-"""Qt-free client supervision logic (P3.1).
+"""Qt-free client supervision logic (P3.2).
 
 The deterministic, testable half of the PySide6 client. It depends only on the
 standard library and :mod:`hrca.contract` — it never imports the scanner,
@@ -11,9 +11,13 @@ It provides:
   newline-delimited lines, with a maximum-message-size guard,
 * ``ResponseRouter`` — correlation-id matching so stale responses are
   discarded and abandoned requests are marked blocked rather than failed,
-* ``build_fixture_task`` — the fixed, read-only task the client submits,
+* ``build_fixture_task`` / ``build_scan_task`` — the fixed read-only tasks,
+* ``build_request`` / ``build_scan_request`` / ``build_open_project_request`` /
+  ``build_get_tree_request`` / ``build_get_document_request`` — the request
+  envelopes a client sends (scan and workspace actions),
 * ``resolve_backend_command`` — the documented source/frozen launch rule,
-* bounded client-side state labels.
+* bounded client-side state labels (supervision, Twin, provider, repository
+  and validation states).
 """
 
 from __future__ import annotations
@@ -33,6 +37,33 @@ STATE_SUCCESS = "success"
 STATE_FAILED = "failed"
 STATE_BLOCKED = "blocked"
 STATE_UNAVAILABLE = "unavailable"
+
+# Human-Readable Twin presentation states (P3.2). The Twin surface can display
+# any of these; in P3.2 no Twin entity exists, so the honest default is
+# ``empty`` and no semantic description is fabricated.
+TWIN_EMPTY = "empty"
+TWIN_LOADING = "loading"
+TWIN_AVAILABLE = "available"
+TWIN_STALE = "stale"
+TWIN_CONFLICT = "conflict"
+TWIN_UNSUPPORTED = "unsupported"
+TWIN_STATES = frozenset(
+    {TWIN_EMPTY, TWIN_LOADING, TWIN_AVAILABLE, TWIN_STALE, TWIN_CONFLICT, TWIN_UNSUPPORTED}
+)
+
+# Provider readiness (P3.2): the agent-chat surface is always unavailable and
+# never makes a provider, credential, network or inference call.
+PROVIDER_UNAVAILABLE = "unavailable"
+
+# Repository state the client reports; always ``Unverified`` until a later
+# approved boundary capability supplies real repository state.
+REPOSITORY_UNVERIFIED = "Unverified"
+
+# Validation state for the scan pipeline surfaced in the status area.
+VALIDATION_IDLE = "idle"
+VALIDATION_RUNNING = "running"
+VALIDATION_OK = "ok"
+VALIDATION_FAILED = "failed"
 
 
 class LineBuffer:
@@ -185,6 +216,75 @@ def resolve_backend_command(frozen: Optional[bool] = None) -> List[str]:
     return [sys.executable, "-m", "hrca.boundary", contract.SERVE_SENTINEL]
 
 
+def build_scan_task(scan_path: str) -> Dict[str, Any]:
+    """Return a generic read-only scan task for an opened project (P3.2)."""
+    return {
+        "task_id": "P3.2",
+        "title": "Read-only scan of the opened project",
+        "request": (
+            "Produce a deterministic, no-change structured report without "
+            "modifying anything."
+        ),
+        "repository_context": {
+            "status": REPOSITORY_UNVERIFIED,
+            "branch": None,
+            "commit_sha": None,
+        },
+        "allowed_actions": ["read", "analyze", "scan"],
+        "constraints": ["Read-only: do not modify any file."],
+        "acceptance_criteria": ["A no-change structured report is produced."],
+        "risk_level": "low",
+        "approval_required": False,
+    }
+
+
+def build_scan_request(correlation_id: str, scan_path: str) -> Dict[str, Any]:
+    """Build a generic read-only scan request envelope (P3.2).
+
+    Unlike :func:`build_request` (the P3.1 fixture scan), this uses a
+    project-neutral task and is used to scan an externally opened root.
+    """
+    return contract.build_request(
+        correlation_id=correlation_id,
+        action=contract.ACTION_SCAN,
+        path=os.path.abspath(scan_path),
+        task=build_scan_task(scan_path),
+    )
+
+
+def build_open_project_request(correlation_id: str, root_path: str) -> Dict[str, Any]:
+    """Build an ``open_project`` request for a user-selected root.
+
+    The client collects the root with a directory chooser only; the boundary is
+    the authority that validates and accepts it.
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_OPEN_PROJECT,
+        "path": os.path.abspath(root_path),
+    }
+
+
+def build_get_tree_request(correlation_id: str) -> Dict[str, Any]:
+    """Build a ``get_tree`` request (operates on the boundary's accepted root)."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_GET_TREE,
+    }
+
+
+def build_get_document_request(correlation_id: str, rel_path: str) -> Dict[str, Any]:
+    """Build a ``get_document`` request for ``rel_path`` below the accepted root."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_GET_DOCUMENT,
+        "path": rel_path,
+    }
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -192,10 +292,28 @@ __all__ = [
     "STATE_FAILED",
     "STATE_BLOCKED",
     "STATE_UNAVAILABLE",
+    "TWIN_EMPTY",
+    "TWIN_LOADING",
+    "TWIN_AVAILABLE",
+    "TWIN_STALE",
+    "TWIN_CONFLICT",
+    "TWIN_UNSUPPORTED",
+    "TWIN_STATES",
+    "PROVIDER_UNAVAILABLE",
+    "REPOSITORY_UNVERIFIED",
+    "VALIDATION_IDLE",
+    "VALIDATION_RUNNING",
+    "VALIDATION_OK",
+    "VALIDATION_FAILED",
     "LineBuffer",
     "ResponseRouter",
     "build_fixture_task",
     "build_request",
+    "build_scan_task",
+    "build_scan_request",
+    "build_open_project_request",
+    "build_get_tree_request",
+    "build_get_document_request",
     "default_fixture_root",
     "resolve_backend_command",
 ]
