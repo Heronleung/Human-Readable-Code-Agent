@@ -65,6 +65,71 @@ Symbols carry a `source_range` (`lineno`/`col_offset`/`end_lineno`/
 `app.service.Service.handle`. Relations carry the literal `target` name as
 written in source, plus a `status` (`resolved` / `unresolved` / `recorded`).
 
+## Desktop client (P3.1)
+
+A minimal, read-only PySide6 desktop window submits one bounded scan task to a
+headless **application boundary** over newline-delimited JSON on stdin/stdout,
+and renders the deterministic plan, scanner evidence, limitations, validation
+status and explicit no-change result. The boundary is the only place that
+imports the deterministic core (`scanner`, `planning`, `report`); the client
+consumes only the versioned contract in `hrca.contract`.
+
+The contract (`hrca/contract.py`) defines:
+
+- `CONTRACT_VERSION` (`3.1.0`) — any other version is rejected,
+- the request/result envelopes and the client-generated `correlation_id`
+  echoed verbatim in every response,
+- the allowed read-only action names (`scan`, `read`, `analyze`, `inspect`,
+  `plan`) — every write/Git/command/network/provider action is rejected,
+- the bounded error codes (`malformed_request`, `invalid_request`,
+  `unknown_contract_version`, `action_not_allowed`, `message_too_large`,
+  `internal_error`) whose messages never echo caller text,
+- `MAX_MESSAGE_BYTES` (1 MiB) for inbound and outbound messages.
+
+The boundary writes exactly one JSON line per request, reserves stdout for
+protocol messages only, and keeps `ensure_ascii=True` so the wire is pure
+ASCII while non-ASCII content still round-trips losslessly.
+
+### Launching the backend
+
+The client resolves and launches the headless backend through the **same entry
+executable** using the `--serve` argument sentinel, resolved via
+`sys.executable` and `sys.argv` rather than assuming an installed interpreter:
+
+| Context           | Launch command                                         |
+| ----------------- | ------------------------------------------------------ |
+| Source (venv)     | `[sys.executable, "-m", "hrca.boundary", "--serve"]`   |
+| Frozen (PyInstaller) | `[sys.executable, "--serve"]`                        |
+
+The frozen build uses `hrca/app.py` as its entry point: it runs the desktop
+client by default, and the headless boundary when invoked with `--serve`.
+
+### Running from source
+
+```bash
+uv sync --extra desktop                 # installs PySide6 (optional)
+uv run python -m hrca.client fixtures   # launch the desktop window
+uv run python -m hrca.client --scan-once fixtures   # headless supervised scan
+```
+
+To exercise the boundary directly, without the graphical interface, pipe one
+request per line:
+
+```bash
+printf '%s\n' \
+  '{"contract_version":"3.1.0","correlation_id":"demo","action":"scan","path":"fixtures","task":{"task_id":"P3.1","title":"t","request":"r","repository_context":{"status":"Unverified"},"allowed_actions":["read","analyze","scan"],"constraints":["Read-only"],"acceptance_criteria":["no-change"],"risk_level":"low","approval_required":false}}' \
+  | uv run python -m hrca.boundary --serve
+```
+
+### Frozen build
+
+```bash
+uv sync --extra packaging                # installs PyInstaller (optional)
+uv run pyinstaller --noconfirm --name hrca-app src/hrca/app.py
+./dist/hrca-app --scan-once fixtures     # supervised scan through the frozen exe
+./dist/hrca-app --serve                  # frozen headless boundary
+```
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:
