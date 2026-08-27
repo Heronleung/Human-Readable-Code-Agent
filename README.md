@@ -75,20 +75,36 @@ the only place that imports the deterministic core (`scanner`, `planning`,
 `report`) and the workspace filesystem policy; the client consumes only the
 versioned contract in `hrca.contract`.
 
-The shell presents (all presentation-only; no semantics are invented):
+The shell presents the approved IDE layout (all presentation-only; no
+semantics are invented):
 
-- **Project Explorer** — a `QTreeView` populated from the boundary's filtered
-  `get_tree` response (never a direct directory walk or `QFileSystemModel`),
-- **Source Code** — closable, read-only `QPlainTextEdit` + `QSyntaxHighlighter`
-  tabs opened via `get_document` (the client never reads files itself),
-- **Human-Readable Twin** — a surface that can display the bounded
+- **Three primary panes side by side** — a thin, collapsible **Project
+  Explorer** (`QTreeView`, populated from the boundary's filtered `get_tree`
+  response, never a direct directory walk or `QFileSystemModel`); a central
+  **Source Code** area with flat, closable, read-only `QPlainTextEdit` +
+  `QSyntaxHighlighter` tabs opened via `get_document` (the client never reads
+  files itself); and an independent right-hand **Human-Readable Twin** pane
+  (never nested inside Source Code) that can display the bounded
   `empty` / `loading` / `available` / `stale` / `conflict` / `unsupported`
-  states; in P3.2 no Twin entity exists, so the honest default is `empty`,
-- **Agent Chat** — a disabled composer and send action labelled
-  "provider-backed chat unavailable"; no provider, credential, network or
-  inference call is ever made,
-- **Plan / Diff / Problems / Tests / Evidence** — secondary surfaces carrying
-  the P3.1 plan, raw result, validation, limitations and outcome data.
+  states — in P3.2 no Twin entity exists, so the honest default is `empty`.
+- **Agent Chat** — a full-width lower surface directly beneath all three panes,
+  with a disabled composer and send action labelled "provider-backed chat
+  unavailable"; no provider, credential, network or inference call is ever
+  made.
+- **Review & Evidence drawer** — a collapsed-by-default secondary surface
+  carrying **Plan / Diff / Problems / Tests / Evidence** (the P3.1 plan, raw
+  result, validation, limitations and outcome data). Diff is explicitly
+  unavailable in this read-only slice: no code-proposal capability exists, so
+  there is nothing to diff and no way to apply changes.
+- **A single-row status bar** — a transient message plus six persistent fields
+  (root, repository, file, Twin, provider, validation state).
+
+All visual values live in the desktop-only design system `hrca/style.py` —
+light and dark palettes (auto-selected from the operating-system appearance),
+a 4 px spacing scale, corner radii, typography, component geometry, and a Qt
+style sheet. State colours are always paired with a word; body and syntax text
+meet the WCAG 4.5:1 contrast threshold in both palettes (checked by
+`hrca.style.contrast_ratio`).
 
 The contract (`hrca/contract.py`) defines:
 

@@ -19,10 +19,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.normpath(os.path.join(_HERE, "..", "src", "hrca"))
 
 # Modules that are part of the client boundary and must therefore stay free of
-# any core / provider / Git / command-execution import.
+# any core / provider / Git / command-execution import. ``hrca.style`` is
+# included because it is the desktop-only visual layer and must own nothing but
+# presentation tokens.
 _CLIENT_MODULES = {
     "hrca.client": os.path.join(_SRC, "client.py"),
     "hrca.client_core": os.path.join(_SRC, "client_core.py"),
+    "hrca.style": os.path.join(_SRC, "style.py"),
 }
 
 # The shared contract is Qt-free and must not import the core either.

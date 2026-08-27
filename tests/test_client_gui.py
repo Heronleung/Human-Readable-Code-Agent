@@ -132,12 +132,16 @@ class MainWindowLayoutTests(unittest.TestCase):
 
     def test_twin_default_state_is_empty(self):
         window = MainWindow()
-        self.assertIn("empty", window._twin_view.toPlainText())
+        self.assertEqual(window._twin_chip.text(), "Empty")
+        self.assertIn("No Human-Readable Twin", window._twin_body.text())
+        self.assertIn("empty", window._twin_label.text())
 
     def test_twin_state_transitions(self):
         window = MainWindow()
         window._set_twin_state(TWIN_STALE)
-        self.assertIn("stale", window._twin_view.toPlainText())
+        self.assertEqual(window._twin_chip.text(), "Stale")
+        self.assertIn("stale", window._twin_body.text())
+        self.assertIn("stale", window._twin_label.text())
 
     def test_chat_composer_and_send_disabled(self):
         window = MainWindow()
@@ -197,10 +201,59 @@ class MainWindowLayoutTests(unittest.TestCase):
     def test_scan_renders_secondary_surfaces(self):
         window = MainWindow()
         window._on_scan_completed(_sample_result())
-        self.assertIn("no_change", window._views["diff"].toPlainText())
+        self.assertIn("read-only", window._views["diff"].toPlainText())
         self.assertIn("app/main.py", window._views["evidence"].toPlainText())
         self.assertIn("掃描與分析", window._views["evidence"].toPlainText())
         self.assertEqual(window._validation_state, VALIDATION_OK)
+
+    def test_three_pane_primary_layout(self):
+        window = MainWindow()
+        splitter = window._horizontal_splitter
+        self.assertEqual(splitter.count(), 3)
+        self.assertEqual(splitter.widget(0), window._explorer_panel)
+        self.assertEqual(splitter.widget(1), window._source_panel)
+        self.assertEqual(splitter.widget(2), window._twin_panel)
+
+    def test_chat_is_full_width_beneath_panes(self):
+        window = MainWindow()
+        self.assertEqual(window._vertical_splitter.count(), 2)
+        # The lower area carries the chat header + body and the drawer; the chat
+        # header is present and the chat body is not hidden by default (the
+        # window is never shown in offscreen tests, so check the explicit-hidden
+        # flag rather than isVisible()).
+        self.assertIsNotNone(window._chat_header)
+        self.assertFalse(window._chat_body.isHidden())
+
+    def test_drawer_starts_collapsed(self):
+        window = MainWindow()
+        self.assertFalse(window._drawer_expanded)
+        self.assertTrue(window._drawer_body.isHidden())
+        self.assertFalse(window._drawer_toggle_button.isChecked())
+
+    def test_drawer_toggles_expand(self):
+        window = MainWindow()
+        window._on_drawer_toggle()
+        self.assertTrue(window._drawer_expanded)
+        self.assertFalse(window._drawer_body.isHidden())
+        self.assertTrue(window._drawer_toggle_button.isChecked())
+
+    def test_source_starts_on_empty_state(self):
+        window = MainWindow()
+        self.assertEqual(window._source_stack.currentIndex(), 0)
+        window._on_document_opened(
+            "a.py", {"path": "a.py", "name": "a.py", "size": 6, "content": "x = 1\n"}
+        )
+        self.assertEqual(window._source_stack.currentIndex(), 1)
+
+    def test_scan_button_disabled_until_project_open(self):
+        window = MainWindow()
+        self.assertFalse(window.scan_button.isEnabled())
+        window._on_project_opened({"root": "/some/root", "repository_state": "Unverified"})
+        self.assertTrue(window.scan_button.isEnabled())
+
+    def test_status_bar_single_row_text(self):
+        window = MainWindow()
+        self.assertEqual(window.status_label.text(), "Status: idle — ready")
 
     def test_failed_state(self):
         window = MainWindow()
