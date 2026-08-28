@@ -50,6 +50,7 @@ import json
 import os
 import re
 import sys
+import weakref
 from functools import partial
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -150,6 +151,38 @@ _PY_KEYWORDS = (
     "or", "pass", "raise", "return", "try", "while", "with", "yield",
     "None", "True", "False",
 )
+
+
+class _WeakCallback:
+    """A weak reference to a request callback's bound instance.
+
+    ``MainWindow._pending`` maps a correlation id to the success/error callback
+    for the in-flight request. Storing the bound methods directly forms a
+    reference cycle (window → ``_pending`` → bound method → window), which keeps
+    the window — and therefore its QProcess-backed supervisor — alive until
+    interpreter shutdown, where the QProcess child can be destroyed before any
+    Python finalizer reaps it. Wrapping each callback here keeps only a weak
+    reference to the instance, so the window is collected as soon as the caller
+    drops it and the supervisor's ``__del__`` reaps the backend promptly.
+    """
+
+    __slots__ = ("_obj_ref", "_func", "_args")
+
+    def __init__(self, callback) -> None:
+        if isinstance(callback, partial):
+            bound = callback.func
+            self._args = callback.args
+        else:
+            bound = callback
+            self._args = ()
+        self._obj_ref = weakref.ref(bound.__self__)
+        self._func = bound.__func__
+
+    def __call__(self, *call_args):
+        obj = self._obj_ref()
+        if obj is None:
+            return None
+        return self._func.__get__(obj, type(obj))(*self._args, *call_args)
 
 
 class PythonHighlighter(QSyntaxHighlighter):
@@ -462,10 +495,7 @@ class MainWindow(QMainWindow):
 
         self._project_label = ElidedLabel("No project open")
         self._project_label.setObjectName("projectRootLabel")
-        self._project_label.setStyleSheet(
-            f"color: {self._palette.text_secondary}; "
-            f"padding: {style.GAP_TIGHT}px {style.INSET}px;"
-        )
+        self._project_label.setStyleSheet(style.project_root_label_style(self._palette))
         layout.addWidget(self._project_label)
         return panel
 
@@ -554,7 +584,7 @@ class MainWindow(QMainWindow):
 
         chat_title = QLabel("Agent Chat".upper())
         chat_title.setFont(style.panel_header_font())
-        chat_title.setStyleSheet(f"color: {self._palette.text_secondary};")
+        chat_title.setStyleSheet(style.secondary_text_style(self._palette))
         chat_header_layout.addWidget(chat_title)
         chat_header_layout.addStretch(1)
 
@@ -618,7 +648,7 @@ class MainWindow(QMainWindow):
 
         notice = QLabel("Provider-backed chat is unavailable in this read-only slice.")
         notice.setObjectName("secondary")
-        notice.setStyleSheet(f"color: {self._palette.text_secondary};")
+        notice.setStyleSheet(style.secondary_text_style(self._palette))
         notice.setWordWrap(True)
         notice.setAccessibleName("Chat availability")
         layout.addWidget(notice)
@@ -645,7 +675,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self._drawer_disclosure)
 
         drawer_label = QLabel("Review & Evidence")
-        drawer_label.setStyleSheet(f"color: {self._palette.text_secondary};")
+        drawer_label.setStyleSheet(style.secondary_text_style(self._palette))
         header_layout.addWidget(drawer_label)
         header_layout.addStretch(1)
         layout.addWidget(self._drawer_header)
@@ -671,7 +701,7 @@ class MainWindow(QMainWindow):
             self._views[key] = view
             self._drawer_tabs.addTab(view, label)
         self._views["diff"].setPlainText(_DIFF_UNAVAILABLE)
-        self._views["diff"].setStyleSheet(f"color: {self._palette.text_secondary};")
+        self._views["diff"].setStyleSheet(style.secondary_text_style(self._palette))
         body_layout.addWidget(self._drawer_tabs, stretch=1)
         layout.addWidget(self._drawer_body)
 
@@ -687,9 +717,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(style.GAP_GROUP)
 
         self.status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
-        self.status_label.setStyleSheet(
-            f"color: {self._palette.text}; font-size: {style.STATUS_FONT_SIZE}px;"
-        )
+        self.status_label.setStyleSheet(style.status_label_style(self._palette))
         self.status_label.setAccessibleName("Status")
         layout.addWidget(self.status_label, stretch=1)
 
@@ -721,24 +749,21 @@ class MainWindow(QMainWindow):
         layout.setSpacing(style.GAP_TIGHT)
         label = QLabel(text.upper())
         label.setFont(style.panel_header_font())
-        label.setStyleSheet(f"color: {self._palette.text_secondary};")
+        label.setStyleSheet(style.secondary_text_style(self._palette))
         layout.addWidget(label)
         return container, layout
 
     def _empty_label(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setObjectName("emptyState")
-        label.setStyleSheet(f"color: {self._palette.text_secondary};")
+        label.setStyleSheet(style.secondary_text_style(self._palette))
         label.setAlignment(Qt.AlignCenter)
         label.setWordWrap(True)
         return label
 
     def _status_field(self, max_width: Optional[int] = None) -> ElidedLabel:
         label = ElidedLabel("")
-        label.setStyleSheet(
-            f"color: {self._palette.text_secondary}; "
-            f"font-size: {style.STATUS_FONT_SIZE}px;"
-        )
+        label.setStyleSheet(style.status_field_style(self._palette))
         if max_width is not None:
             label.setMaximumWidth(max_width)
         return label
@@ -776,14 +801,8 @@ class MainWindow(QMainWindow):
     def _set_twin_state(self, state: str) -> None:
         self._twin_state = state
         word = style.TWIN_STATE_WORD.get(state, state.title())
-        token = style.TWIN_STATE_TOKEN.get(state, style.STATE_NEUTRAL)
-        fg = self._palette.state_fg(token)
-        bg = self._palette.state_bg(token)
         self._twin_chip.setText(word)
-        self._twin_chip.setStyleSheet(
-            f"color: {fg}; background: {bg}; border-radius: {style.RADIUS_CHIP}px; "
-            f"padding: 1px {style.GAP_TIGHT}px; font-size: {style.STATUS_FONT_SIZE}px;"
-        )
+        self._twin_chip.setStyleSheet(style.twin_chip_style(self._palette, state))
         self._twin_chip.setToolTip(word)
         self._twin_body.setText(_TWIN_LABELS.get(state, ""))
         self._update_status()
@@ -810,10 +829,14 @@ class MainWindow(QMainWindow):
     # -- request plumbing ------------------------------------------------
 
     def _send(self, request: Dict[str, Any], on_success, on_error) -> bool:
-        """Submit ``request`` and remember its success/error callbacks."""
+        """Submit ``request`` and remember its success/error callbacks.
+
+        The callbacks are wrapped in :class:`_WeakCallback` so ``_pending`` never
+        holds a strong reference back to this window.
+        """
         cid = request.get("correlation_id")
         if self._supervisor.submit(cid, request):
-            self._pending[cid] = (on_success, on_error)
+            self._pending[cid] = (_WeakCallback(on_success), _WeakCallback(on_error))
             return True
         return False
 
@@ -1160,6 +1183,20 @@ class BackendSupervisor(QObject):
         self._current = None
         for correlation_id in ids:
             self.blocked.emit(correlation_id)
+        self._reap()
+
+    def _reap(self) -> None:
+        """Stop the timer and reap the QProcess child, without emitting signals.
+
+        Kept separate from :meth:`terminate` so a Python finalizer can reap the
+        process without emitting ``blocked`` (whose slots reference the owning
+        window, which may already be mid-teardown when the finalizer runs).
+
+        ``_current`` is cleared first so the ``finished`` / ``errorOccurred``
+        signals that ``waitForFinished`` can trigger during reaping are ignored
+        instead of cascading into ``failed`` / ``unavailable``.
+        """
+        self._current = None
         self._timer.stop()
         if self._proc is not None:
             proc = self._proc
@@ -1173,6 +1210,22 @@ class BackendSupervisor(QObject):
                     proc.kill()
                     proc.waitForFinished(1500)
             proc.deleteLater()
+
+    def __del__(self) -> None:
+        """Reap the backend when the supervisor is collected (no explicit close).
+
+        PySide6 does not emit ``QObject.destroyed`` when a parent-less object is
+        reclaimed by the Python garbage collector, so a Python-level finalizer is
+        the only reliable hook to terminate the QProcess child before its C++
+        side is destroyed. It reaps directly (via :meth:`_reap`) rather than
+        through :meth:`terminate`, because emitting ``blocked`` here would invoke
+        slots on a window that is already being torn down. The guard keeps it
+        safe during interpreter shutdown, where some attributes may be gone.
+        """
+        try:
+            self._reap()
+        except Exception:
+            pass
 
     # -- QProcess plumbing ----------------------------------------------
 

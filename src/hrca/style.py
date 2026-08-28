@@ -175,8 +175,8 @@ LIGHT_PALETTE = Palette(
     syntax_keyword="#0550ae",
     syntax_string="#116329",
     syntax_comment="#57606a",
-    syntax_number="#8250df",
-    _chip_alpha=30,
+    syntax_number="#6633bb",
+    _chip_alpha=10,
 )
 
 DARK_PALETTE = Palette(
@@ -201,7 +201,7 @@ DARK_PALETTE = Palette(
     syntax_string="#ce9178",
     syntax_comment="#7aa668",
     syntax_number="#b5cea8",
-    _chip_alpha=48,
+    _chip_alpha=28,
 )
 
 PALETTES = {"light": LIGHT_PALETTE, "dark": DARK_PALETTE}
@@ -277,22 +277,24 @@ def detect_color_scheme(app: Optional[QGuiApplication] = None) -> str:
     if app is None:
         app = QGuiApplication.instance()
     if app is not None:
-        hints = getattr(app, "styleHints", None)
-        if hints is not None:
+        style_hints = getattr(app, "styleHints", None)
+        if style_hints is not None:
+            # ``QGuiApplication.styleHints`` is a method; call it to obtain the
+            # QStyleHints object, then read its colour-scheme hint. Older Qt
+            # (< 6.5) has no ``colorScheme()``, so fall back to the palette.
             try:
-                scheme = hints.colorScheme()
-            except AttributeError:  # Qt < 6.5
-                scheme = None
+                scheme = style_hints().colorScheme()
+            except (AttributeError, TypeError):  # Qt < 6.5 or a non-callable hint
+                scheme = Qt.ColorScheme.Unknown
             if scheme == Qt.ColorScheme.Dark:
                 return "dark"
             if scheme == Qt.ColorScheme.Light:
                 return "light"
+    # Fall back to the palette window lightness only when the hint is Unknown
+    # or unavailable.
     if app is not None:
-        try:
-            if app.palette().window().color().lightness() < 128:
-                return "dark"
-        except Exception:  # pragma: no cover - defensive
-            pass
+        if app.palette().window().color().lightness() < 128:
+            return "dark"
     return "light"
 
 
@@ -318,6 +320,22 @@ def contrast_ratio(fg: str, bg: str) -> float:
     l2 = luminance(bg)
     lighter, darker = (l1, l2) if l1 > l2 else (l2, l1)
     return (lighter + 0.05) / (darker + 0.05)
+
+
+def chip_rendered_background(palette: Palette, token: str) -> str:
+    """Return the opaque ``#rrggbb`` a state chip paints behind its text.
+
+    A chip background is the state colour tinted over ``surface`` at
+    ``_chip_alpha``; compositing the two yields the solid colour the chip text
+    is actually drawn over, which is what the WCAG contrast tests measure.
+    """
+    fg = QColor(palette.state_fg(token))
+    bg = QColor(palette.surface)
+    alpha = palette._chip_alpha / 255.0
+    r = round(fg.red() * alpha + bg.red() * (1.0 - alpha))
+    g = round(fg.green() * alpha + bg.green() * (1.0 - alpha))
+    b = round(fg.blue() * alpha + bg.blue() * (1.0 - alpha))
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def build_stylesheet(palette: Palette) -> str:
@@ -427,7 +445,9 @@ QTreeView#projectTree::branch { background: transparent; }
 
 /* ---- code and document views ---- */
 QPlainTextEdit { background: $sunken; color: $text; border: none; }
-QPlainTextEdit#twinBody { background: $surface; border: none; padding: 0; }
+
+/* ---- Twin body is a QLabel (not a text edit), so target the real class ---- */
+QLabel#twinBody { background: $surface; border: none; padding: 0; }
 
 /* ---- Source Code flat tabs ---- */
 QTabWidget#sourceTabs::pane {
@@ -494,6 +514,48 @@ def apply(app: QGuiApplication, palette: Palette) -> None:
     app.setStyleSheet(build_stylesheet(palette))
 
 
+# ---------------------------------------------------------------------------
+# Component style-sheet factories.
+#
+# These are the only place a widget-specific style-sheet *value* is composed.
+# :mod:`hrca.client` calls a factory with the palette (and, for the chip, the
+# state name) and never assembles a colour, radius or pixel string itself.
+# ---------------------------------------------------------------------------
+def secondary_text_style(palette: Palette) -> str:
+    """Return the style sheet for secondary (muted) text."""
+    return f"color: {palette.text_secondary};"
+
+
+def status_label_style(palette: Palette) -> str:
+    """Return the style sheet for the transient status-bar message."""
+    return f"color: {palette.text}; font-size: {STATUS_FONT_SIZE}px;"
+
+
+def status_field_style(palette: Palette) -> str:
+    """Return the style sheet for a persistent status-bar field."""
+    return f"color: {palette.text_secondary}; font-size: {STATUS_FONT_SIZE}px;"
+
+
+def project_root_label_style(palette: Palette) -> str:
+    """Return the style sheet for the explorer's project-root footer label."""
+    return f"color: {palette.text_secondary}; padding: {GAP_TIGHT}px {INSET}px;"
+
+
+def twin_chip_style(palette: Palette, state: str) -> str:
+    """Return the style sheet for the Twin state chip in ``state``.
+
+    The colour comes from the state's semantic token; the word is applied
+    separately by the caller so colour is never the sole signal.
+    """
+    token = TWIN_STATE_TOKEN.get(state, STATE_NEUTRAL)
+    fg = palette.state_fg(token)
+    bg = palette.state_bg(token)
+    return (
+        f"color: {fg}; background: {bg}; border-radius: {RADIUS_CHIP}px; "
+        f"padding: 1px {GAP_TIGHT}px; font-size: {STATUS_FONT_SIZE}px;"
+    )
+
+
 __all__ = [
     "SPACE_4",
     "SPACE_8",
@@ -550,6 +612,12 @@ __all__ = [
     "detect_color_scheme",
     "palette_for",
     "contrast_ratio",
+    "chip_rendered_background",
     "build_stylesheet",
     "apply",
+    "secondary_text_style",
+    "status_label_style",
+    "status_field_style",
+    "project_root_label_style",
+    "twin_chip_style",
 ]

@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import ast
 import os
+import re
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.normpath(os.path.join(_HERE, "..", "src", "hrca"))
+
+_CLIENT_PATH = os.path.join(_SRC, "client.py")
 
 # Modules that are part of the client boundary and must therefore stay free of
 # any core / provider / Git / command-execution import. ``hrca.style`` is
@@ -92,6 +95,46 @@ class ClientArchitectureTests(unittest.TestCase):
     def test_client_modules_exist(self):
         for path in _CLIENT_MODULES.values():
             self.assertTrue(os.path.isfile(path), path)
+
+
+def _stylesheet_calls(path: str) -> list:
+    """Return every ``setStyleSheet(...)`` call in ``path`` (ast.Call nodes)."""
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    calls = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "setStyleSheet":
+                calls.append(node)
+    return calls
+
+
+class StyleOwnershipTests(unittest.TestCase):
+    """``hrca.style`` owns every visual value; ``hrca.client`` composes none.
+
+    The client must contain no hex colour literal, and every widget style-sheet
+    must be produced by a ``style.*`` factory rather than assembled inline.
+    """
+
+    def test_client_has_no_hex_color_literal(self):
+        with open(_CLIENT_PATH, "r", encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIsNone(
+            re.search(r"#[0-9a-fA-F]{3,8}\b", source),
+            "client.py hard-codes a colour literal; move it to hrca.style",
+        )
+
+    def test_client_stylesheets_use_style_factories(self):
+        for call in _stylesheet_calls(_CLIENT_PATH):
+            arg = call.args[0]
+            self.assertIsInstance(arg, ast.Call)
+            self.assertIsInstance(arg.func, ast.Attribute)
+            self.assertIsInstance(arg.func.value, ast.Name)
+            self.assertEqual(
+                arg.func.value.id,
+                "style",
+                "client.py assembles a style-sheet inline; use a style factory",
+            )
 
 
 if __name__ == "__main__":

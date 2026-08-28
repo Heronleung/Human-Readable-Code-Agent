@@ -7,6 +7,7 @@ core and its tests remain installable without Qt. Every test runs with
 
 from __future__ import annotations
 
+import gc
 import os
 import sys
 import unittest
@@ -14,10 +15,10 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtCore import QEventLoop, QTimer, qInstallMessageHandler
     from PySide6.QtWidgets import QApplication
 
-    from hrca import contract
+    from hrca import contract, style
     from hrca.client import (
         BackendSupervisor,
         CodeView,
@@ -142,6 +143,72 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertEqual(window._twin_chip.text(), "Stale")
         self.assertIn("stale", window._twin_body.text())
         self.assertIn("stale", window._twin_label.text())
+
+    def test_all_six_twin_states(self):
+        window = MainWindow()
+        for state, word in style.TWIN_STATE_WORD.items():
+            with self.subTest(state=state):
+                window._set_twin_state(state)
+                self.assertEqual(window._twin_chip.text(), word)
+                self.assertTrue(window._twin_body.text())
+                self.assertIn(state, window._twin_label.text())
+
+    def test_six_status_fields_populated(self):
+        window = MainWindow()
+        for field in (
+            window._root_label,
+            window._repo_label,
+            window._file_label,
+            window._twin_label,
+            window._provider_label,
+            window._validation_label,
+        ):
+            self.assertTrue(field.fullText(), field.objectName())
+
+    def _laid_out_sizes(self, window, width):
+        window.resize(width, 840)
+        window.show()
+        QApplication.processEvents()
+        return list(window._horizontal_splitter.sizes())
+
+    def test_horizontal_splitter_stretch_factors(self):
+        # PySide6 exposes only ``setStretchFactor``, not a getter, so the
+        # factors are verified by how the three panes share extra width.
+        window = MainWindow()
+        narrow = self._laid_out_sizes(window, 1024)
+        wide = self._laid_out_sizes(window, 1920)
+        explorer_narrow, source_narrow, twin_narrow = narrow
+        explorer_wide, source_wide, twin_wide = wide
+        # Explorer has stretch factor 0: it keeps its width as the window grows.
+        self.assertEqual(explorer_wide, explorer_narrow)
+        # Source and Twin split the added width 3:2 (stretch factors 3 and 2).
+        source_growth = source_wide - source_narrow
+        twin_growth = twin_wide - twin_narrow
+        self.assertGreater(source_growth, 0)
+        self.assertGreater(twin_growth, 0)
+        self.assertAlmostEqual(source_growth / twin_growth, 3.0 / 2.0, delta=0.15)
+
+    def test_layout_builds_for_both_palettes_and_sizes(self):
+        sizes = ((1024, 640), (1360, 840), (1920, 1080))
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            for width, height in sizes:
+                with self.subTest(palette=palette.name, size=(width, height)):
+                    window = MainWindow(palette=palette)
+                    window.resize(width, height)
+                    window.show()
+                    QApplication.processEvents()
+                    self.assertIs(window._palette, palette)
+                    self.assertEqual(window._horizontal_splitter.count(), 3)
+                    self.assertEqual(window._vertical_splitter.count(), 2)
+                    self.assertEqual(window._horizontal_splitter.widget(0), window._explorer_panel)
+                    self.assertEqual(window._horizontal_splitter.widget(1), window._source_panel)
+                    self.assertEqual(window._horizontal_splitter.widget(2), window._twin_panel)
+
+    def test_main_window_uses_supplied_palette(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            with self.subTest(palette=palette.name):
+                window = MainWindow(palette=palette)
+                self.assertIs(window._palette, palette)
 
     def test_chat_composer_and_send_disabled(self):
         window = MainWindow()
@@ -307,6 +374,29 @@ class BackendSupervisorTests(unittest.TestCase):
         )
         self.assertEqual(outcome.get("status"), "failed")
         self.assertEqual(outcome.get("reason"), "message_too_large")
+
+    def test_gc_reaps_backend_without_warning(self):
+        # Regression: a supervisor collected without an explicit terminate()
+        # (the closeEvent path) must still reap its QProcess, so Qt never
+        # warns "QProcess: Destroyed while process is still running".
+        _app()
+        captured = []
+        previous = qInstallMessageHandler(
+            lambda msg_type, context, message: captured.append(message)
+        )
+        try:
+            supervisor = BackendSupervisor(
+                command=[sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+            supervisor.submit("cid-gc", build_request("cid-gc", "fixtures"))
+            del supervisor
+            gc.collect()
+        finally:
+            qInstallMessageHandler(previous)
+        self.assertFalse(
+            any("Destroyed while process" in message for message in captured),
+            captured,
+        )
 
 
 if __name__ == "__main__":
