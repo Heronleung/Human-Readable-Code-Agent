@@ -38,7 +38,10 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication
 
 # ---------------------------------------------------------------------------
 # Spacing — a 4 px base scale. Only these values may appear as margins/padding.
+# ``SPACE_0`` is the flush (zero) inset/gap used at pane edges where a parent
+# and its only child meet with no padding.
 # ---------------------------------------------------------------------------
+SPACE_0 = 0
 SPACE_4 = 4
 SPACE_8 = 8
 SPACE_12 = 12
@@ -68,6 +71,7 @@ STATUS_FONT_SIZE = 12
 PANEL_HEADER_FONT_SIZE = 11
 CODE_FONT_SIZE = 13
 CODE_LINE_SPACING = 1.45
+CODE_LINE_HEIGHT_PERCENT = 145  # int(CODE_LINE_SPACING * 100), Qt proportional mode
 
 # ---------------------------------------------------------------------------
 # Component geometry (px).
@@ -77,6 +81,7 @@ STATUS_BAR_HEIGHT = 24
 PANEL_HEADER_HEIGHT = 28
 CHAT_HEADER_HEIGHT = 28
 DRAWER_HEADER_HEIGHT = 28
+CHAT_COMPOSER_HEIGHT = 56
 
 TREE_ROW_HEIGHT = 22
 TREE_INDENT = 12
@@ -91,8 +96,29 @@ EXPLORER_MAX_WIDTH = 420
 SOURCE_MIN_WIDTH = 360
 TWIN_MIN_WIDTH = 300
 
+# Initial primary-splitter pane widths (px), applied once at construction.
+PRIMARY_SOURCE_INITIAL_WIDTH = 560
+PRIMARY_TWIN_INITIAL_WIDTH = 360
+
+# Primary-splitter stretch factors (unitless): Explorer is fixed (0); Source
+# and Twin take extra width in a 3 : 2 ratio.
+EXPLORER_STRETCH = 0
+SOURCE_STRETCH = 3
+TWIN_STRETCH = 2
+
 LOWER_DEFAULT_HEIGHT = 220
 TWIN_CONTENT_MAX_WIDTH = 720
+
+# Initial vertical-splitter primary-workspace height (px) and the
+# workspace : lower-area stretch ratio (3 : 1).
+PRIMARY_WORKSPACE_INITIAL_HEIGHT = 560
+PRIMARY_WORKSPACE_STRETCH = 3
+LOWER_AREA_STRETCH = 1
+
+# Persistent status-field maximum widths (px); the Root and File fields carry
+# long paths and are capped so the six fields stay on one row.
+STATUS_ROOT_MAX_WIDTH = 260
+STATUS_FILE_MAX_WIDTH = 220
 
 WINDOW_DEFAULT_WIDTH = 1360
 WINDOW_DEFAULT_HEIGHT = 840
@@ -557,6 +583,7 @@ def twin_chip_style(palette: Palette, state: str) -> str:
 
 
 __all__ = [
+    "SPACE_0",
     "SPACE_4",
     "SPACE_8",
     "SPACE_12",
@@ -572,11 +599,13 @@ __all__ = [
     "PANEL_HEADER_FONT_SIZE",
     "CODE_FONT_SIZE",
     "CODE_LINE_SPACING",
+    "CODE_LINE_HEIGHT_PERCENT",
     "COMMAND_BAR_HEIGHT",
     "STATUS_BAR_HEIGHT",
     "PANEL_HEADER_HEIGHT",
     "CHAT_HEADER_HEIGHT",
     "DRAWER_HEADER_HEIGHT",
+    "CHAT_COMPOSER_HEIGHT",
     "TREE_ROW_HEIGHT",
     "TREE_INDENT",
     "TAB_HEIGHT",
@@ -587,8 +616,18 @@ __all__ = [
     "EXPLORER_MAX_WIDTH",
     "SOURCE_MIN_WIDTH",
     "TWIN_MIN_WIDTH",
+    "PRIMARY_SOURCE_INITIAL_WIDTH",
+    "PRIMARY_TWIN_INITIAL_WIDTH",
+    "EXPLORER_STRETCH",
+    "SOURCE_STRETCH",
+    "TWIN_STRETCH",
     "LOWER_DEFAULT_HEIGHT",
     "TWIN_CONTENT_MAX_WIDTH",
+    "PRIMARY_WORKSPACE_INITIAL_HEIGHT",
+    "PRIMARY_WORKSPACE_STRETCH",
+    "LOWER_AREA_STRETCH",
+    "STATUS_ROOT_MAX_WIDTH",
+    "STATUS_FILE_MAX_WIDTH",
     "WINDOW_DEFAULT_WIDTH",
     "WINDOW_DEFAULT_HEIGHT",
     "WINDOW_MIN_WIDTH",

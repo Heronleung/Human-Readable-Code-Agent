@@ -10,13 +10,14 @@ from __future__ import annotations
 import gc
 import os
 import sys
+import time
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QEventLoop, QTimer, qInstallMessageHandler
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QEventLoop, QProcess, QTimer, qInstallMessageHandler
+    from PySide6.QtWidgets import QApplication, QWidget
 
     from hrca import contract, style
     from hrca.client import (
@@ -99,6 +100,21 @@ def _run_supervisor(command, timeout_ms=8000, test_timeout_ms=12000):
     safety.stop()
     supervisor.terminate()
     return outcome, supervisor
+
+
+def _pump_until(predicate, timeout_s: float = 5.0) -> bool:
+    """Pump the Qt event loop until ``predicate()`` is true, or time out.
+
+    Bounded so a test whose child never reaches the expected state fails fast
+    instead of hanging the suite.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        QApplication.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
@@ -337,6 +353,129 @@ class MainWindowLayoutTests(unittest.TestCase):
         window._on_unavailable("backend failed to start")
         self.assertIn("unavailable", window.status_label.text())
 
+    # -- direct geometry / elision contracts -----------------------------
+
+    def _laid_out_window(self, palette, width, height):
+        """Create, size, show and settle a MainWindow for geometry assertions."""
+        window = MainWindow(palette=palette)
+        window.resize(width, height)
+        window.show()
+        QApplication.processEvents()
+        return window
+
+    def _assert_geometry(self, palette, width, height):
+        window = self._laid_out_window(palette, width, height)
+        splitter = window._horizontal_splitter
+        sizes = splitter.sizes()
+        explorer_w, source_w, twin_w = sizes
+
+        # Explorer stays within its 180-420 px band (and is not collapsed).
+        self.assertGreaterEqual(explorer_w, style.EXPLORER_MIN_WIDTH)
+        self.assertLessEqual(explorer_w, style.EXPLORER_MAX_WIDTH)
+        # Source and Twin meet their minimum widths.
+        self.assertGreaterEqual(source_w, style.SOURCE_MIN_WIDTH)
+        self.assertGreaterEqual(twin_w, style.TWIN_MIN_WIDTH)
+
+        # Every primary pane has a positive, visible rectangle.
+        for pane in (window._explorer_panel, window._source_panel, window._twin_panel):
+            self.assertGreater(pane.width(), 0)
+            self.assertGreater(pane.height(), 0)
+
+        # No pair of primary panes overlaps: their geometries share the
+        # horizontal splitter's coordinate space, so compare them directly.
+        explorer_rect = window._explorer_panel.geometry()
+        source_rect = window._source_panel.geometry()
+        twin_rect = window._twin_panel.geometry()
+        self.assertLessEqual(explorer_rect.right(), source_rect.left())
+        self.assertLessEqual(source_rect.right(), twin_rect.left())
+
+        # Agent Chat spans the full primary-workspace width.
+        self.assertAlmostEqual(window._chat_body.width(), splitter.width(), delta=1)
+
+        # The visible chat body has useful, non-zero height.
+        self.assertGreater(window._chat_body.height(), 40)
+
+        # The status bar is below the workspace/lower-area region and is one
+        # fixed-height row.
+        status_bar = window.findChild(QWidget, "statusBar")
+        self.assertIsNotNone(status_bar)
+        self.assertEqual(status_bar.height(), style.STATUS_BAR_HEIGHT)
+        self.assertGreaterEqual(
+            status_bar.geometry().top(),
+            window._vertical_splitter.geometry().bottom(),
+        )
+
+        # No large dead region: the horizontal splitter fully allocates its
+        # width to the three panes plus the two handles.
+        allocated = sum(sizes) + 2 * style.SPLITTER_HANDLE_WIDTH
+        self.assertLessEqual(abs(allocated - splitter.width()), 2)
+
+    def test_geometry_matrix_across_palettes_and_sizes(self):
+        sizes = ((1024, 640), (1360, 840), (1920, 1080))
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            for width, height in sizes:
+                with self.subTest(palette=palette.name, size=(width, height)):
+                    self._assert_geometry(palette, width, height)
+
+    def test_long_path_root_and_file_elide_middle(self):
+        window = MainWindow()
+        window._root = (
+            "/home/heron/projects/Human-Readable-Code-Agent/src/hrca/"
+            "very_deeply_nested_directory_structure/level_one/level_two/"
+            "level_three/level_four/level_five/final_target_project_root"
+        )
+        window._current_document = (
+            "src/hrca/very_deeply_nested_directory_structure/level_one/"
+            "level_two/level_three/level_four/level_five/"
+            "a_particularly_long_source_module_name.py"
+        )
+        window._update_status()
+        window.resize(1360, 840)
+        window.show()
+        QApplication.processEvents()
+
+        for name, label, full in (
+            ("root", window._root_label, f"Root: {window._root}"),
+            ("file", window._file_label, f"File: {window._current_document}"),
+        ):
+            with self.subTest(field=name):
+                # The complete value is preserved un-elided in the tooltip and
+                # the accessible full-text metadata.
+                self.assertEqual(label.fullText(), full)
+                self.assertEqual(label.toolTip(), full)
+                # The visible text is shorter (elided), middle-elided with the
+                # recognizable beginning and ending retained, and never wraps.
+                displayed = label.text()
+                self.assertLess(len(displayed), len(full))
+                self.assertIn("…", displayed)
+                self.assertTrue(displayed.startswith(full[:6]))
+                self.assertTrue(displayed.endswith(full[-6:]))
+                self.assertFalse(label.wordWrap())
+                self.assertNotIn("\n", displayed)
+
+    def test_long_path_fields_stay_on_one_status_row(self):
+        window = MainWindow()
+        window._root = "/home/heron/projects/Human-Readable-Code-Agent/" + "x" * 120
+        window._current_document = "src/hrca/" + "y" * 120 + ".py"
+        window._update_status()
+        window.resize(1360, 840)
+        window.show()
+        QApplication.processEvents()
+
+        root_label = window._root_label
+        file_label = window._file_label
+        # Both fields remain visible and take a non-zero width on the row.
+        self.assertTrue(root_label.isVisible())
+        self.assertTrue(file_label.isVisible())
+        self.assertGreater(root_label.width(), 0)
+        self.assertGreater(file_label.width(), 0)
+        # They share one status row (the same vertical position in the bar).
+        status_bar = window.findChild(QWidget, "statusBar")
+        self.assertIsNotNone(status_bar)
+        root_y = root_label.mapTo(status_bar, root_label.rect().topLeft()).y()
+        file_y = file_label.mapTo(status_bar, file_label.rect().topLeft()).y()
+        self.assertAlmostEqual(root_y, file_y, delta=1)
+
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class BackendSupervisorTests(unittest.TestCase):
@@ -393,6 +532,48 @@ class BackendSupervisorTests(unittest.TestCase):
             gc.collect()
         finally:
             qInstallMessageHandler(previous)
+        self.assertFalse(
+            any("Destroyed while process" in message for message in captured),
+            captured,
+        )
+
+    def test_terminate_reaps_running_child_without_warning(self):
+        # A proven-running child must be reaped on teardown: the child reaches
+        # QProcess.Running, terminate() brings it to NotRunning, the supervisor
+        # drops its QProcess reference (idempotent cleanup), and Qt emits no
+        # "QProcess: Destroyed while process is still running" warning. Qt
+        # messages are captured unfiltered via qInstallMessageHandler.
+        _app()
+        captured = []
+        previous = qInstallMessageHandler(
+            lambda msg_type, context, message: captured.append(message)
+        )
+        try:
+            supervisor = BackendSupervisor(
+                command=[sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+            supervisor.submit("cid-run", build_request("cid-run", "fixtures"))
+
+            # Fail if the child never reaches Running.
+            reached_running = _pump_until(
+                lambda: supervisor._proc is not None
+                and supervisor._proc.state() == QProcess.Running
+            )
+            self.assertTrue(reached_running, "child never reached QProcess.Running")
+
+            proc = supervisor._proc
+            self.assertIsNotNone(proc)
+
+            supervisor.terminate()
+
+            # Fail if the child remains running after teardown, and prove the
+            # cleanup is idempotent (the QProcess reference is dropped).
+            self.assertEqual(proc.state(), QProcess.NotRunning)
+            self.assertIsNone(supervisor._proc)
+        finally:
+            qInstallMessageHandler(previous)
+
+        # Fail if Qt warned that the QProcess was destroyed while still running.
         self.assertFalse(
             any("Destroyed while process" in message for message in captured),
             captured,

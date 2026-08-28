@@ -242,7 +242,7 @@ class CodeView(QPlainTextEdit):
         """Set about 1.45 proportional line spacing across the document."""
         fmt = QTextBlockFormat()
         fmt.setLineHeight(
-            style.CODE_LINE_SPACING * 100.0,
+            style.CODE_LINE_HEIGHT_PERCENT,
             QTextBlockFormat.ProportionalHeight.value,
         )
         cursor = QTextCursor(self.document())
@@ -256,6 +256,8 @@ class ElidedLabel(QLabel):
     ``text()`` returns the full text when the widget has no width yet (so
     offscreen tests read the un-elided value); once laid out, the text is
     elided in the middle (or the given mode) rather than wrapping or growing.
+    The complete text is always preserved un-elided in ``fullText()`` and, for
+    long paths, in the widget tooltip so it is never lost when it elides.
     """
 
     def __init__(
@@ -267,10 +269,12 @@ class ElidedLabel(QLabel):
         super().__init__(text, parent)
         self._full_text = text
         self._elide_mode = elide_mode
+        self.setToolTip(text)
         self._refresh()
 
     def setText(self, text: str) -> None:
         self._full_text = text
+        self.setToolTip(text)
         self._refresh()
 
     def fullText(self) -> str:
@@ -395,8 +399,8 @@ class MainWindow(QMainWindow):
         central.setObjectName("root")
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        root.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        root.setSpacing(style.SPACE_0)
 
         root.addWidget(self._build_command_bar())
 
@@ -419,11 +423,13 @@ class MainWindow(QMainWindow):
 
         self._vertical_splitter.addWidget(self._horizontal_splitter)
         self._vertical_splitter.addWidget(self._lower_area)
-        self._vertical_splitter.setStretchFactor(0, 3)
-        self._vertical_splitter.setStretchFactor(1, 1)
+        self._vertical_splitter.setStretchFactor(0, style.PRIMARY_WORKSPACE_STRETCH)
+        self._vertical_splitter.setStretchFactor(1, style.LOWER_AREA_STRETCH)
         self._vertical_splitter.setCollapsible(0, False)
         self._vertical_splitter.setCollapsible(1, False)
-        self._vertical_splitter.setSizes([560, style.LOWER_DEFAULT_HEIGHT])
+        self._vertical_splitter.setSizes(
+            [style.PRIMARY_WORKSPACE_INITIAL_HEIGHT, style.LOWER_DEFAULT_HEIGHT]
+        )
 
         root.addWidget(self._vertical_splitter, stretch=1)
         root.addWidget(self._build_status_bar())
@@ -433,11 +439,15 @@ class MainWindow(QMainWindow):
         splitter.setCollapsible(0, True)   # explorer collapsible
         splitter.setCollapsible(1, False)
         splitter.setCollapsible(2, False)
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 3)
-        splitter.setStretchFactor(2, 2)
+        splitter.setStretchFactor(0, style.EXPLORER_STRETCH)
+        splitter.setStretchFactor(1, style.SOURCE_STRETCH)
+        splitter.setStretchFactor(2, style.TWIN_STRETCH)
         splitter.setSizes(
-            [style.EXPLORER_DEFAULT_WIDTH, 560, 360]
+            [
+                style.EXPLORER_DEFAULT_WIDTH,
+                style.PRIMARY_SOURCE_INITIAL_WIDTH,
+                style.PRIMARY_TWIN_INITIAL_WIDTH,
+            ]
         )
 
     def _build_command_bar(self) -> QWidget:
@@ -445,7 +455,7 @@ class MainWindow(QMainWindow):
         bar.setObjectName("commandBar")
         bar.setFixedHeight(style.COMMAND_BAR_HEIGHT)
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(style.INSET, 0, style.INSET, 0)
+        layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
         layout.setSpacing(style.GAP_TIGHT)
 
         self.open_project_button = QPushButton("Open Project")
@@ -470,8 +480,8 @@ class MainWindow(QMainWindow):
         panel.setMinimumWidth(style.EXPLORER_MIN_WIDTH)
         panel.setMaximumWidth(style.EXPLORER_MAX_WIDTH)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        layout.setSpacing(style.SPACE_0)
 
         header, _ = self._header_row("Project Explorer")
         layout.addWidget(header)
@@ -504,8 +514,8 @@ class MainWindow(QMainWindow):
         panel.setObjectName("sourcePanel")
         panel.setMinimumWidth(style.SOURCE_MIN_WIDTH)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        layout.setSpacing(style.SPACE_0)
 
         self._source_stack = QStackedWidget()
 
@@ -540,8 +550,8 @@ class MainWindow(QMainWindow):
         panel.setObjectName("twinPanel")
         panel.setMinimumWidth(style.TWIN_MIN_WIDTH)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        layout.setSpacing(style.SPACE_0)
 
         header, header_layout = self._header_row("Human-Readable Twin")
         self._twin_chip = QLabel()
@@ -571,15 +581,15 @@ class MainWindow(QMainWindow):
         area = QWidget()
         area.setObjectName("lowerArea")
         layout = QVBoxLayout(area)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        layout.setSpacing(style.SPACE_0)
 
         # Chat header: title, chat-collapse, and the single labelled control
         # that opens the Review & Evidence drawer.
         self._chat_header = QWidget()
         self._chat_header.setObjectName("chatHeader")
         chat_header_layout = QHBoxLayout(self._chat_header)
-        chat_header_layout.setContentsMargins(style.INSET, 0, style.INSET, 0)
+        chat_header_layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
         chat_header_layout.setSpacing(style.GAP_TIGHT)
 
         chat_title = QLabel("Agent Chat".upper())
@@ -637,7 +647,7 @@ class MainWindow(QMainWindow):
         self._chat_composer.setPlaceholderText("Chat input is disabled.")
         self._chat_composer.setEnabled(False)
         self._chat_composer.setAccessibleName("Chat input")
-        self._chat_composer.setFixedHeight(56)
+        self._chat_composer.setFixedHeight(style.CHAT_COMPOSER_HEIGHT)
         composer_row.addWidget(self._chat_composer, stretch=1)
 
         self._chat_send = QPushButton("Send")
@@ -658,14 +668,14 @@ class MainWindow(QMainWindow):
         self._drawer = QWidget()
         self._drawer.setObjectName("drawer")
         layout = QVBoxLayout(self._drawer)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        layout.setSpacing(style.SPACE_0)
 
         # Compact header row: label + disclosure control.
         self._drawer_header = QWidget()
         self._drawer_header.setObjectName("drawerHeader")
         header_layout = QHBoxLayout(self._drawer_header)
-        header_layout.setContentsMargins(style.INSET, 0, style.INSET, 0)
+        header_layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
         header_layout.setSpacing(style.GAP_TIGHT)
 
         self._drawer_disclosure = QToolButton()
@@ -684,8 +694,8 @@ class MainWindow(QMainWindow):
         self._drawer_body = QWidget()
         self._drawer_body.setObjectName("drawerBody")
         body_layout = QVBoxLayout(self._drawer_body)
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(0)
+        body_layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        body_layout.setSpacing(style.SPACE_0)
 
         self._drawer_tabs = QTabWidget()
         self._drawer_tabs.setObjectName("drawerTabs")
@@ -713,7 +723,7 @@ class MainWindow(QMainWindow):
         bar.setObjectName("statusBar")
         bar.setFixedHeight(style.STATUS_BAR_HEIGHT)
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(style.INSET, 0, style.INSET, 0)
+        layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
         layout.setSpacing(style.GAP_GROUP)
 
         self.status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
@@ -721,9 +731,9 @@ class MainWindow(QMainWindow):
         self.status_label.setAccessibleName("Status")
         layout.addWidget(self.status_label, stretch=1)
 
-        self._root_label = self._status_field(max_width=260)
+        self._root_label = self._status_field(max_width=style.STATUS_ROOT_MAX_WIDTH)
         self._repo_label = self._status_field()
-        self._file_label = self._status_field(max_width=220)
+        self._file_label = self._status_field(max_width=style.STATUS_FILE_MAX_WIDTH)
         self._twin_label = self._status_field()
         self._provider_label = self._status_field()
         self._validation_label = self._status_field()
@@ -745,7 +755,7 @@ class MainWindow(QMainWindow):
         container = QWidget()
         container.setFixedHeight(style.PANEL_HEADER_HEIGHT)
         layout = QHBoxLayout(container)
-        layout.setContentsMargins(style.INSET, 0, style.INSET, 0)
+        layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
         layout.setSpacing(style.GAP_TIGHT)
         label = QLabel(text.upper())
         label.setFont(style.panel_header_font())
@@ -1219,12 +1229,19 @@ class BackendSupervisor(QObject):
         the only reliable hook to terminate the QProcess child before its C++
         side is destroyed. It reaps directly (via :meth:`_reap`) rather than
         through :meth:`terminate`, because emitting ``blocked`` here would invoke
-        slots on a window that is already being torn down. The guard keeps it
-        safe during interpreter shutdown, where some attributes may be gone.
+        slots on a window that is already being torn down.
+
+        :meth:`_reap` is bounded (SIGTERM, then SIGKILL, each with a bounded
+        wait) and idempotent (it clears ``_proc`` before reaping), so a second
+        call is safe. The only exception tolerated here is the narrow PySide6
+        ``RuntimeError`` raised when Qt has already torn down the child
+        ``QObject`` (``Internal C++ object already deleted``) during interpreter
+        shutdown — in that case there is no live process left to reap. Any other
+        exception propagates: an unexpected lifecycle failure must not be hidden.
         """
         try:
             self._reap()
-        except Exception:
+        except RuntimeError:
             pass
 
     # -- QProcess plumbing ----------------------------------------------

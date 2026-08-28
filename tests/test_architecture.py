@@ -112,9 +112,86 @@ def _stylesheet_calls(path: str) -> list:
 class StyleOwnershipTests(unittest.TestCase):
     """``hrca.style`` owns every visual value; ``hrca.client`` composes none.
 
-    The client must contain no hex colour literal, and every widget style-sheet
-    must be produced by a ``style.*`` factory rather than assembled inline.
+    The client must contain no hex colour literal, no visual geometry literal
+    (a pixel value controlling component size, margin, padding, spacing, radius,
+    typography or splitter geometry), and every widget style-sheet must be
+    produced by a ``style.*`` factory rather than assembled inline.
     """
+
+    # Geometry methods where *every* numeric argument is a visual value (px).
+    _ALL_ARG_GEOMETRY = frozenset(
+        {
+            "setContentsMargins",
+            "setSpacing",
+            "setFixedHeight",
+            "setFixedWidth",
+            "setFixedSize",
+            "setMinimumWidth",
+            "setMaximumWidth",
+            "setMinimumHeight",
+            "setMaximumHeight",
+            "setMinimumSize",
+            "setMaximumSize",
+            "setBaseSize",
+            "resize",
+            "setIndentation",
+            "setHandleWidth",
+            "setGeometry",
+        }
+    )
+
+    # Geometry methods where only certain *positional* arguments are visual
+    # (the rest are widget indexes, enum modes, or booleans — not pixel values).
+    _POSITIONAL_ARG_GEOMETRY = {
+        "setStretchFactor": (1,),  # index, factor — only the factor is visual
+        "setLineHeight": (0,),     # height, mode — only the height is visual
+    }
+
+    @staticmethod
+    def _contains_numeric_literal(node: ast.AST) -> bool:
+        """Return True if ``node`` or any descendant is an int/float literal."""
+        return any(
+            isinstance(child, ast.Constant) and isinstance(child.value, (int, float))
+            for child in ast.walk(node)
+        )
+
+    def test_client_has_no_geometry_literal(self):
+        with open(_CLIENT_PATH, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+
+        violations = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            name = node.func.attr
+            if name == "setSizes":
+                # The sole argument is a list whose elements are pane widths.
+                if node.args and isinstance(node.args[0], ast.List):
+                    for element in node.args[0].elts:
+                        if self._contains_numeric_literal(element):
+                            violations.append((node.lineno, name, "pane width"))
+            elif name in self._ALL_ARG_GEOMETRY:
+                for arg in node.args:
+                    if self._contains_numeric_literal(arg):
+                        violations.append((node.lineno, name))
+            elif name in self._POSITIONAL_ARG_GEOMETRY:
+                for index in self._POSITIONAL_ARG_GEOMETRY[name]:
+                    if index < len(node.args) and self._contains_numeric_literal(
+                        node.args[index]
+                    ):
+                        violations.append((node.lineno, name))
+            elif name == "_status_field":
+                # The helper forwards ``max_width`` straight to setMaximumWidth,
+                # so its keyword value is a fixed-widget-width constant.
+                for kw in node.keywords:
+                    if kw.arg == "max_width" and self._contains_numeric_literal(kw.value):
+                        violations.append((node.lineno, name, "max_width"))
+
+        self.assertFalse(
+            violations,
+            "client.py hard-codes a visual geometry literal; move it to hrca.style: "
+            f"{violations}",
+        )
 
     def test_client_has_no_hex_color_literal(self):
         with open(_CLIENT_PATH, "r", encoding="utf-8") as fh:
