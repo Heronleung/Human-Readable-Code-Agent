@@ -35,7 +35,13 @@ try:
         MainWindow,
         PythonHighlighter,
     )
-    from hrca.client_core import TWIN_STALE, VALIDATION_OK, build_request
+    from hrca.client_core import (
+        TWIN_AVAILABLE,
+        TWIN_LOADING,
+        TWIN_STALE,
+        VALIDATION_OK,
+        build_request,
+    )
 
     HAS_PYSIDE6 = True
 except ImportError:  # pragma: no cover - exercised in the no-Qt environment
@@ -511,6 +517,175 @@ class MainWindowLayoutTests(unittest.TestCase):
         root_y = root_label.mapTo(status_bar, root_label.rect().topLeft()).y()
         file_y = file_label.mapTo(status_bar, file_label.rect().topLeft()).y()
         self.assertAlmostEqual(root_y, file_y, delta=1)
+
+
+def _sample_twin_bundle() -> dict:
+    """A bounded Twin projection bundle for one method with two behavior nodes."""
+    return {
+        "projection": {
+            "kind": "method",
+            "path": "app/service.py",
+            "locator": "app.service.Service.handle",
+            "summary": "Method handle(request)",
+            "provenance": "verified",
+            "confidence": "high",
+            "sync_state": "synchronized",
+            "details": ["Parameters: request"],
+            "limitations": ["a dynamic dependency is marked low confidence"],
+        },
+        "behavior_nodes": [
+            {"id": "behavior:calls:1", "category": "calls",
+             "provenance": "verified", "confidence": "high",
+             "items": ["open", "<unresolved>"]},
+            {"id": "behavior:conditions:1", "category": "conditions",
+             "provenance": "unresolved", "confidence": "low", "items": []},
+        ],
+    }
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class TwinPaneTests(unittest.TestCase):
+    """P3.3 read-only Twin pane: auto-sync, projection and anchor navigation.
+
+    These tests drive the *presentation* half only — they feed a bounded bundle
+    or a fake ``_send`` and assert the pane renders provenance / confidence /
+    sync state as text and issues the three Twin actions. No filesystem, Twin
+    store or backend is touched.
+    """
+
+    def setUp(self):
+        _app()
+
+    def _fake_send(self, window):
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        return sent
+
+    def test_tree_load_triggers_auto_sync_when_root_open(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        sent = self._fake_send(window)
+        window._on_tree_loaded(_sample_tree())
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
+        self.assertNotIn("path", sent[0])
+        self.assertEqual(sent[0]["task"], {})
+
+    def test_tree_load_without_root_does_not_sync(self):
+        window = MainWindow()
+        sent = self._fake_send(window)
+        window._on_tree_loaded(_sample_tree())
+        self.assertEqual(sent, [])
+
+    def test_twin_projection_renders_fields_as_text(self):
+        window = MainWindow()
+        window._on_twin_projection_loaded(_sample_twin_bundle())
+        self.assertEqual(window._twin_chip.text(), "Available")
+        body = window._twin_body.text()
+        self.assertIn("Method handle(request)", body)
+        self.assertIn("Kind: method", body)
+        self.assertIn("Provenance: verified", body)
+        self.assertIn("Confidence: high", body)
+        self.assertIn("Sync state: synchronized", body)
+        self.assertIn("Limitations:", body)
+        # Behavior nodes render as a visible, populated list.
+        self.assertTrue(window._twin_nodes.isVisibleTo(window._twin_panel))
+        self.assertEqual(window._twin_nodes.count(), 2)
+        self.assertEqual(
+            window._twin_nodes.item(0).text(), "calls: open, <unresolved>"
+        )
+        self.assertEqual(
+            window._twin_nodes.item(1).text(), "conditions (unresolved)"
+        )
+
+    def test_projection_without_behavior_nodes_hides_list(self):
+        window = MainWindow()
+        bundle = _sample_twin_bundle()
+        bundle["behavior_nodes"] = []
+        window._on_twin_projection_loaded(bundle)
+        self.assertEqual(window._twin_nodes.count(), 0)
+        self.assertFalse(window._twin_nodes.isVisibleTo(window._twin_panel))
+
+    def test_sync_result_renders_state_and_counts_as_text(self):
+        window = MainWindow()
+        window._on_twin_synced(
+            {
+                "state": "synchronized",
+                "persisted": True,
+                "counts": {"artifacts": 3, "behavior_nodes": 2,
+                           "correspondences": 5, "projections": 4},
+            }
+        )
+        self.assertEqual(window._twin_chip.text(), "Available")
+        body = window._twin_body.text()
+        self.assertIn("Twin state: synchronized", body)
+        self.assertIn("artifacts: 3", body)
+        self.assertIn("behavior nodes: 2", body)
+
+    def test_sync_conflict_maps_to_conflict_chip(self):
+        window = MainWindow()
+        window._on_twin_synced({"state": "conflict", "counts": {}, "reason": "draft"})
+        self.assertEqual(window._twin_chip.text(), "Conflict")
+        self.assertIn("Reason: draft", window._twin_body.text())
+
+    def test_behavior_node_click_requests_anchor(self):
+        window = MainWindow()
+        window._on_twin_projection_loaded(_sample_twin_bundle())
+        sent = self._fake_send(window)
+        window._on_behavior_node_clicked(window._twin_nodes.item(0))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_GET_ANCHOR)
+        self.assertEqual(sent[0]["task"]["node_id"], "behavior:calls:1")
+
+    def test_anchor_loaded_opens_document_and_sets_reveal_line(self):
+        window = MainWindow()
+        sent = self._fake_send(window)
+        window._on_anchor_loaded(
+            {"available": True, "file": "app/service.py",
+             "source_range": {"lineno": 7}}
+        )
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_GET_DOCUMENT)
+        self.assertEqual(sent[0]["path"], "app/service.py")
+        self.assertEqual(window._pending_reveal_line, 7)
+
+    def test_anchor_unavailable_does_not_open_document(self):
+        window = MainWindow()
+        sent = self._fake_send(window)
+        window._on_anchor_loaded({"available": False, "reason": "no_anchor"})
+        self.assertEqual(sent, [])
+        self.assertIn("failed", window.status_label.text())
+
+    def test_document_open_loads_twin_projection_for_python(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        sent = self._fake_send(window)
+        window._on_document_opened(
+            "app/main.py",
+            {"path": "app/main.py", "name": "main.py", "size": 10,
+             "kind": "source", "content": "print('hi')\n"},
+        )
+        # Two requests: none from opening (fake boundary), then get_twin.
+        actions = [r["action"] for r in sent]
+        self.assertIn(contract.ACTION_GET_TWIN, actions)
+        twin_req = next(r for r in sent if r["action"] == contract.ACTION_GET_TWIN)
+        self.assertEqual(twin_req["task"]["selector"], "app/main.py")
+
+    def test_document_open_skips_twin_projection_for_non_python(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        sent = self._fake_send(window)
+        window._on_document_opened(
+            "notes.txt",
+            {"path": "notes.txt", "name": "notes.txt", "size": 5,
+             "kind": "preview", "content": "hello\n"},
+        )
+        self.assertEqual(sent, [])
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")

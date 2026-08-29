@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -47,6 +48,26 @@ def _workspace_request(action, **overrides):
     }
     req.update(overrides)
     return req
+
+
+def _twin_request(action, **overrides):
+    """Build a P3.3 Twin-action request envelope."""
+    req = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": "cid-twin",
+        "action": action,
+    }
+    req.update(overrides)
+    return req
+
+
+def _run_twin(store_base, *raw_lines):
+    """Feed requests to the boundary loop with a temporary Twin store base."""
+    stdin = io.StringIO("\n".join(raw_lines) + ("\n" if raw_lines else ""))
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    boundary.run_loop(stdin, stdout, stderr, store_base=store_base)
+    return stdout.getvalue().splitlines(), stderr.getvalue()
 
 
 class BoundarySuccessTests(unittest.TestCase):
@@ -309,6 +330,133 @@ class BoundaryWorkspaceTests(unittest.TestCase):
         env = _first_response(dumps(req))
         self.assertFalse(env["ok"])
         self.assertNotIn("secret-token", dumps(env))
+
+
+class BoundaryTwinTests(unittest.TestCase):
+    """The P3.3 read-only Twin protocol over the NDJSON boundary.
+
+    Twin storage is isolated to a temporary base directory so the real per-user
+    app-data directory is never written during a test run.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store_base = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _open_and(self, *requests):
+        reqs = [_twin_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)] + list(requests)
+        lines, _ = _run_twin(self.store_base, *[dumps(r) for r in reqs])
+        return [loads(line) for line in lines]
+
+    def test_sync_twin_without_open_project_rejected(self):
+        lines, _ = _run_twin(
+            self.store_base, dumps(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        )
+        env = loads(lines[0])
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "project_not_open")
+
+    def test_get_twin_without_open_project_rejected(self):
+        lines, _ = _run_twin(
+            self.store_base,
+            dumps(_twin_request(contract.ACTION_GET_TWIN, task={"selector": "a.py"})),
+        )
+        self.assertEqual(loads(lines[0])["error"]["code"], "project_not_open")
+
+    def test_get_anchor_without_open_project_rejected(self):
+        lines, _ = _run_twin(
+            self.store_base,
+            dumps(_twin_request(contract.ACTION_GET_ANCHOR, task={"node_id": "behavior:x"})),
+        )
+        self.assertEqual(loads(lines[0])["error"]["code"], "project_not_open")
+
+    def test_full_sync_then_retrieve_and_anchor(self):
+        envs = self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        sync_env = envs[1]
+        self.assertTrue(sync_env["ok"])
+        result = sync_env["result"]
+        self.assertEqual(result["state"], "synchronized")
+        self.assertTrue(result["persisted"])
+        self.assertIn("counts", result)
+        self.assertGreater(result["counts"]["artifacts"], 0)
+
+    def test_get_twin_retrieves_file_projection(self):
+        self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        envs = self._open_and(
+            _twin_request(contract.ACTION_GET_TWIN, task={"selector": "app/service.py"})
+        )
+        env = envs[1]
+        self.assertTrue(env["ok"])
+        bundle = env["result"]
+        self.assertEqual(bundle["projection"]["kind"], "file")
+        self.assertEqual(bundle["projection"]["path"], "app/service.py")
+        self.assertIn("provenance", bundle["projection"])
+        self.assertIn("confidence", bundle["projection"])
+        self.assertIn("sync_state", bundle["projection"])
+
+    def test_get_twin_retrieves_symbol_projection_with_behavior_nodes(self):
+        self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        envs = self._open_and(
+            _twin_request(
+                contract.ACTION_GET_TWIN, task={"selector": "app.service.Service.handle"}
+            )
+        )
+        bundle = envs[1]["result"]
+        self.assertEqual(bundle["projection"]["kind"], "method")
+        self.assertGreater(len(bundle["behavior_nodes"]), 0)
+
+    def test_get_anchor_navigates_behavior_node(self):
+        self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        envs = self._open_and(
+            _twin_request(
+                contract.ACTION_GET_TWIN, task={"selector": "app.service.Service.handle"}
+            )
+        )
+        node_id = envs[1]["result"]["behavior_nodes"][0]["id"]
+        envs = self._open_and(
+            _twin_request(contract.ACTION_GET_ANCHOR, task={"node_id": node_id})
+        )
+        anchor = envs[1]["result"]
+        self.assertTrue(anchor["available"])
+        self.assertEqual(anchor["file"], "app/service.py")
+        self.assertIn("source_range", anchor)
+        self.assertIn("lineno", anchor["source_range"])
+
+    def test_no_change_sync_is_idempotent(self):
+        envs = self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        self.assertEqual(envs[1]["result"]["state"], "synchronized")
+        envs = self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        self.assertEqual(envs[1]["result"]["state"], "no_change")
+
+    def test_unknown_selector_is_bounded(self):
+        self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        envs = self._open_and(
+            _twin_request(contract.ACTION_GET_TWIN, task={"selector": "does-not-exist.py"})
+        )
+        env = envs[1]
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "twin_not_found")
+        self.assertNotIn("does-not-exist", dumps(env))
+
+    def test_unknown_anchor_is_bounded(self):
+        self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        envs = self._open_and(
+            _twin_request(contract.ACTION_GET_ANCHOR, task={"node_id": "behavior:none:1"})
+        )
+        self.assertFalse(envs[1]["ok"])
+        self.assertEqual(envs[1]["error"]["code"], "twin_not_found")
+
+    def test_twin_store_is_isolated_to_store_base(self):
+        self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        store_files = []
+        for dirpath, _dirs, files in os.walk(self.store_base):
+            store_files.extend(os.path.join(dirpath, f) for f in files)
+        self.assertTrue(store_files)
+        # Nothing is written into the selected repository.
+        self.assertFalse(any(FIXTURES in f for f in store_files))
 
 
 if __name__ == "__main__":

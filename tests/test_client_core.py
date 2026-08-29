@@ -25,15 +25,22 @@ from hrca.client_core import (
     VALIDATION_RUNNING,
     LineBuffer,
     ResponseRouter,
+    behavior_node_label,
     build_fixture_task,
+    build_get_anchor_request,
     build_get_document_request,
     build_get_tree_request,
+    build_get_twin_request,
     build_open_project_request,
     build_request,
     build_scan_request,
     build_scan_task,
+    build_sync_twin_request,
     default_fixture_root,
+    format_twin_projection,
+    format_twin_sync,
     resolve_backend_command,
+    twin_state_from_sync,
 )
 
 
@@ -210,6 +217,129 @@ class WorkspaceRequestBuilderTests(unittest.TestCase):
         self.assertTrue(
             set(task["allowed_actions"]) <= contract.READ_ONLY_TASK_ACTIONS
         )
+
+
+class TwinRequestBuilderTests(unittest.TestCase):
+    def test_sync_twin_request_full_sync_has_empty_task(self):
+        req = build_sync_twin_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_SYNC_TWIN)
+        self.assertEqual(req["task"], {})
+        self.assertNotIn("path", req)
+
+    def test_sync_twin_request_scoped_to_changed_paths(self):
+        req = build_sync_twin_request("cid-1", ["app/main.py", "app/service.py"])
+        self.assertEqual(req["task"]["changed_paths"], ["app/main.py", "app/service.py"])
+
+    def test_sync_twin_request_copies_changed_paths(self):
+        source = ["app/main.py"]
+        req = build_sync_twin_request("cid-1", source)
+        source.append("app/extra.py")
+        self.assertEqual(req["task"]["changed_paths"], ["app/main.py"])
+
+    def test_get_twin_request_shape(self):
+        req = build_get_twin_request("cid-1", "app.service.Service.handle")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_TWIN)
+        self.assertEqual(req["task"], {"selector": "app.service.Service.handle"})
+        self.assertNotIn("path", req)
+
+    def test_get_anchor_request_shape(self):
+        req = build_get_anchor_request("cid-1", "behavior:abc123")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_ANCHOR)
+        self.assertEqual(req["task"], {"node_id": "behavior:abc123"})
+        self.assertNotIn("path", req)
+
+
+class TwinPresentationTests(unittest.TestCase):
+    def test_sync_state_maps_to_bounded_presentation_state(self):
+        for sync_state, present in (
+            ("synchronized", TWIN_AVAILABLE),
+            ("no_change", TWIN_AVAILABLE),
+            ("needs_review", TWIN_STALE),
+            ("stale", TWIN_STALE),
+            ("blocked", TWIN_STALE),
+            ("conflict", TWIN_CONFLICT),
+            ("unsupported", TWIN_UNSUPPORTED),
+        ):
+            with self.subTest(sync_state=sync_state):
+                self.assertEqual(twin_state_from_sync(sync_state), present)
+
+    def test_unknown_sync_state_is_bounded(self):
+        self.assertEqual(twin_state_from_sync("not-a-sync-state"), TWIN_AVAILABLE)
+
+    def test_behavior_node_label_lists_items(self):
+        self.assertEqual(
+            behavior_node_label(
+                {"category": "calls", "provenance": "verified",
+                 "items": ["open", "<unresolved>"]}
+            ),
+            "calls: open, <unresolved>",
+        )
+
+    def test_behavior_node_label_marks_unresolved(self):
+        self.assertEqual(
+            behavior_node_label(
+                {"category": "conditions", "provenance": "unresolved", "items": []}
+            ),
+            "conditions (unresolved)",
+        )
+
+    def test_behavior_node_label_without_items_or_reason(self):
+        self.assertEqual(
+            behavior_node_label({"category": "loops", "items": []}), "loops"
+        )
+
+    def test_format_twin_projection_shows_fields_as_text(self):
+        bundle = {
+            "projection": {
+                "kind": "method",
+                "path": "app/service.py",
+                "locator": "app.service.Service.handle",
+                "summary": "Method handle(request)",
+                "provenance": "verified",
+                "confidence": "high",
+                "sync_state": "synchronized",
+                "details": ["Parameters: request"],
+                "limitations": ["a dynamic dependency is marked low confidence"],
+            },
+            "behavior_nodes": [],
+        }
+        text = format_twin_projection(bundle)
+        self.assertIn("Method handle(request)", text)
+        self.assertIn("Kind: method", text)
+        self.assertIn("Path: app/service.py", text)
+        self.assertIn("Provenance: verified", text)
+        self.assertIn("Confidence: high", text)
+        self.assertIn("Sync state: synchronized", text)
+        self.assertIn("Limitations:", text)
+
+    def test_format_twin_projection_is_deterministic(self):
+        bundle = {"projection": {"kind": "file", "summary": "Python module app"}}
+        self.assertEqual(format_twin_projection(bundle), format_twin_projection(bundle))
+
+    def test_format_twin_sync_shows_state_and_counts(self):
+        result = {
+            "state": "synchronized",
+            "counts": {
+                "artifacts": 3,
+                "behavior_nodes": 2,
+                "correspondences": 5,
+                "projections": 4,
+            },
+        }
+        text = format_twin_sync(result)
+        self.assertIn("Twin state: synchronized", text)
+        self.assertIn("artifacts: 3", text)
+        self.assertIn("behavior nodes: 2", text)
+
+    def test_format_twin_sync_includes_reason_when_present(self):
+        result = {"state": "stale", "counts": {}, "reason": "parse error"}
+        self.assertIn("Reason: parse error", format_twin_sync(result))
 
 
 class ClientStateConstantsTests(unittest.TestCase):

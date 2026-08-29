@@ -29,10 +29,12 @@ are none in normal operation) goes to stderr.
 
 from __future__ import annotations
 
+import os
 import sys
-from typing import Any, Dict, Optional, TextIO, Sequence
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, TextIO, Sequence
 
-from . import contract, workspace
+from . import contract, twin, twin_store, workspace
 from .planning import TaskValidationError, build_plan, validate_task
 from .report import build_report
 from .scanner import scan_directory
@@ -43,16 +45,19 @@ _NEXT_ACTION = "Report only; no repository action performed."
 
 
 class WorkspaceSession:
-    """In-memory accepted-project state owned by one boundary loop (P3.2).
+    """In-memory accepted-project state owned by one boundary loop (P3.2/P3.3).
 
-    ``open_project`` sets the accepted root; ``get_tree`` and ``get_document``
-    operate relative to it. The session is per-``run_loop`` invocation, so a
-    fresh boundary process (or a fresh test loop) always starts with no project
-    accepted.
+    ``open_project`` sets the accepted root; ``get_tree`` / ``get_document``
+    operate relative to it, and the P3.3 Twin actions (``sync_twin`` /
+    ``get_twin`` / ``get_anchor``) persist and read the workspace's Twin under
+    ``store_base`` (per-workspace app-data outside the accepted root). The
+    session is per-``run_loop`` invocation, so a fresh boundary process (or a
+    fresh test loop) always starts with no project accepted.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, store_base: Optional[str] = None) -> None:
         self.root: Optional[str] = None
+        self.store_base: str = store_base or twin_store.app_data_dir()
 
     def open(self, root: str) -> None:
         self.root = root
@@ -84,15 +89,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return run_loop(sys.stdin, sys.stdout, sys.stderr)
 
 
-def run_loop(stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:
+def run_loop(
+    stdin: TextIO,
+    stdout: TextIO,
+    stderr: TextIO,
+    store_base: Optional[str] = None,
+) -> int:
     """Read requests from ``stdin``, write one response line per request.
 
     ``stderr`` is accepted for interface parity and reserved for diagnostics;
     the boundary emits none in normal operation. One :class:`WorkspaceSession`
     is shared across the whole loop so ``open_project`` establishes the root
-    that later ``get_tree`` / ``get_document`` requests use.
+    that later ``get_tree`` / ``get_document`` / Twin requests use.
+    ``store_base`` overrides the Twin app-data directory (tests use a temp dir;
+    normal operation uses the per-user app-data location).
     """
-    session = WorkspaceSession()
+    session = WorkspaceSession(store_base)
     for raw in stdin:
         line = raw[:-1] if raw.endswith("\n") else raw
         if line == "":
@@ -180,6 +192,12 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _get_tree_result(request, session)
     elif action == contract.ACTION_GET_DOCUMENT:
         result = _get_document_result(request, session)
+    elif action == contract.ACTION_SYNC_TWIN:
+        result = _sync_twin_result(request, session)
+    elif action == contract.ACTION_GET_TWIN:
+        result = _get_twin_result(request, session)
+    elif action == contract.ACTION_GET_ANCHOR:
+        result = _get_anchor_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -253,6 +271,124 @@ def _get_document_result(request: Dict[str, Any], session: WorkspaceSession) -> 
     if not isinstance(rel_path, str) or not rel_path.strip():
         raise contract.ContractError("invalid_request")
     return workspace.read_document(session.root, rel_path)
+
+
+# -- Twin handlers (P3.3) ------------------------------------------------
+
+def _compute_fingerprints(root: str, scanner_doc: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """Return ``{path: fingerprint}`` for every ``.py`` file in ``scanner_doc``.
+
+    Fingerprints are read from disk below ``root`` (the accepted project, which
+    the scanner already walked); an unreadable file yields ``None`` so its
+    fingerprint never invents content. The result is deterministic and
+    path-ordered.
+    """
+    fingerprints: Dict[str, Optional[str]] = {}
+    for file_rec in scanner_doc.get("files", []):
+        rel_path = file_rec.get("path")
+        if not isinstance(rel_path, str) or not rel_path.endswith(".py"):
+            continue
+        try:
+            with open(os.path.join(root, rel_path), "rb") as fh:
+                fingerprints[rel_path] = twin.fingerprint_bytes(fh.read())
+        except OSError:
+            fingerprints[rel_path] = None
+    return fingerprints
+
+
+def _twin_store(session: WorkspaceSession) -> Dict[str, Any]:
+    """Load the workspace Twin store, raising ``twin_not_synchronized`` if absent."""
+    workspace_id = twin.workspace_id_for(session.root)
+    store, err = twin_store.load(session.store_base, workspace_id)
+    if err is not None or store is None:
+        raise contract.ContractError("twin_not_synchronized")
+    return store
+
+
+def _next_generation(previous: Optional[Dict[str, Any]]) -> int:
+    """Return the next scan generation (one past the previous store's)."""
+    if previous is None:
+        return 1
+    prev_gen = (previous.get("workspace_revision") or {}).get("scan_generation")
+    return prev_gen + 1 if isinstance(prev_gen, int) else 1
+
+
+def _now_iso() -> str:
+    """Return the current UTC timestamp as an ISO-8601 string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _sync_twin_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Synchronize the Structured Twin for the accepted workspace.
+
+    A full sync (``changed_paths`` absent) or a changed-path sync (a list of
+    root-relative ``.py`` paths) reconciles the scanner facts against the last
+    valid store, persists atomically, and returns the SynchronizationResult.
+    """
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+
+    task = request.get("task")
+    changed_paths: Optional[List[str]] = None
+    if isinstance(task, dict) and "changed_paths" in task:
+        changed_paths = task["changed_paths"]
+        if not isinstance(changed_paths, list) or not all(
+            isinstance(p, str) for p in changed_paths
+        ):
+            raise contract.ContractError("invalid_request")
+
+    scanner_doc = scan_directory(session.root)
+    fingerprints = _compute_fingerprints(session.root, scanner_doc)
+    workspace_id = twin.workspace_id_for(session.root)
+    previous, _ = twin_store.load(session.store_base, workspace_id)
+    generation = _next_generation(previous)
+
+    store, result = twin.sync_twin(
+        scanner_doc,
+        fingerprints,
+        previous,
+        workspace_id,
+        generation,
+        _now_iso(),
+        changed_paths,
+    )
+
+    # Persist atomically; a failed write retains the last valid store and the
+    # result still carries the reconciled state, flagged ``persisted`` false.
+    result["persisted"] = twin_store.save(session.store_base, workspace_id, store) is None
+    return result
+
+
+def _get_twin_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the source-linked Twin projection bundle for a selector."""
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    task = request.get("task")
+    selector = task.get("selector") if isinstance(task, dict) else None
+    if not isinstance(selector, str) or not selector.strip():
+        raise contract.ContractError("invalid_request")
+
+    store = _twin_store(session)
+    bundle = twin.projection_bundle(store, selector)
+    if bundle is None:
+        raise contract.ContractError("twin_not_found")
+    return bundle
+
+
+def _get_anchor_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return a bounded source-anchor navigation result for a behavior node."""
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    task = request.get("task")
+    node_id = task.get("node_id") if isinstance(task, dict) else None
+    if not isinstance(node_id, str) or not node_id.strip():
+        raise contract.ContractError("invalid_request")
+
+    store = _twin_store(session)
+    anchor = twin.anchor_for(store, node_id)
+    if anchor is None:
+        raise contract.ContractError("twin_not_found")
+    return anchor
 
 
 if __name__ == "__main__":

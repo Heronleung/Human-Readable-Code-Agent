@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional
 # The version of the desktop-to-core contract. A boundary rejects any request
 # whose ``contract_version`` differs from this constant with a bounded
 # ``unknown_contract_version`` error.
-CONTRACT_VERSION = "3.2.0"
+CONTRACT_VERSION = "3.3.0"
 
 # Correlation identifier: a client-generated opaque string that the boundary
 # echoes verbatim so a client can match each response to its in-flight request.
@@ -51,12 +51,19 @@ ACTION_SCAN = "scan"
 ACTION_OPEN_PROJECT = "open_project"
 ACTION_GET_TREE = "get_tree"
 ACTION_GET_DOCUMENT = "get_document"
+ACTION_SYNC_TWIN = "sync_twin"
+ACTION_GET_TWIN = "get_twin"
+ACTION_GET_ANCHOR = "get_anchor"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
     {ACTION_OPEN_PROJECT, ACTION_GET_TREE, ACTION_GET_DOCUMENT}
 )
-ALLOWED_ACTIONS = SCAN_ACTIONS | WORKSPACE_ACTIONS
+# The P3.3 read-only Twin protocol: synchronize the Structured Code Twin for
+# the accepted workspace (optionally scoped to changed paths), retrieve one
+# source-linked projection, and navigate a behavior node to its source anchor.
+TWIN_ACTIONS = frozenset({ACTION_SYNC_TWIN, ACTION_GET_TWIN, ACTION_GET_ANCHOR})
+ALLOWED_ACTIONS = SCAN_ACTIONS | WORKSPACE_ACTIONS | TWIN_ACTIONS
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
 # names a mutating action (edit / commit / remote) is rejected even though the
@@ -108,6 +115,10 @@ _ERROR_MESSAGES = {
     "path_not_readable": "the path exists but is not a readable regular file",
     "unsupported_type": "the file type is not supported by the workspace",
     "file_too_large": "the file exceeds the maximum allowed size",
+    # Twin errors (P3.3). Messages are fixed and never interpolate a selector,
+    # path or file content, so caller text cannot leak.
+    "twin_not_synchronized": "no Twin has been synchronized for this workspace",
+    "twin_not_found": "the requested Twin entity does not exist",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)
@@ -208,8 +219,12 @@ __all__ = [
     "ACTION_OPEN_PROJECT",
     "ACTION_GET_TREE",
     "ACTION_GET_DOCUMENT",
+    "ACTION_SYNC_TWIN",
+    "ACTION_GET_TWIN",
+    "ACTION_GET_ANCHOR",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
+    "TWIN_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",

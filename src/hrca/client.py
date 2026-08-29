@@ -75,6 +75,8 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QPlainTextEdit,
     QPushButton,
@@ -100,20 +102,29 @@ from .client_core import (
     STATE_RUNNING,
     STATE_SUCCESS,
     STATE_UNAVAILABLE,
+    TWIN_AVAILABLE,
     TWIN_EMPTY,
+    TWIN_LOADING,
     VALIDATION_FAILED,
     VALIDATION_IDLE,
     VALIDATION_OK,
     VALIDATION_RUNNING,
     LineBuffer,
     ResponseRouter,
+    behavior_node_label,
+    build_get_anchor_request,
     build_get_document_request,
     build_get_tree_request,
+    build_get_twin_request,
     build_open_project_request,
     build_request,
     build_scan_request,
+    build_sync_twin_request,
     default_fixture_root,
+    format_twin_projection,
+    format_twin_sync,
     resolve_backend_command,
+    twin_state_from_sync,
 )
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -280,6 +291,13 @@ class CodeView(QPlainTextEdit):
         cursor.select(QTextCursor.Document)
         cursor.mergeBlockFormat(fmt)
 
+    def reveal_line(self, lineno: int) -> None:
+        """Move the cursor to ``lineno`` (1-based) and scroll it into view."""
+        block = self.document().findBlockByNumber(max(0, int(lineno) - 1))
+        cursor = QTextCursor(block)
+        self.setTextCursor(cursor)
+        self.centerCursor()
+
 
 class DocumentView(QWidget):
     """A read-only document surface: a labelled banner over a code body.
@@ -333,6 +351,10 @@ class DocumentView(QWidget):
         self._banner.setStyleSheet(style.unavailable_banner_style(self._palette))
         self._banner.setVisible(True)
         self._body.setPlainText("")
+
+    def reveal_line(self, lineno: int) -> None:
+        """Scroll the code body to ``lineno`` (1-based source line)."""
+        self._body.reveal_line(lineno)
 
 
 class ElidedLabel(QLabel):
@@ -501,6 +523,7 @@ class MainWindow(QMainWindow):
         self._tree: Optional[Dict[str, Any]] = None
         self._open_tabs: Dict[str, DocumentView] = {}
         self._pending: Dict[str, tuple] = {}
+        self._pending_reveal_line: Optional[int] = None
         # Single bottom-panel state model (replaces the old drawer/chat booleans):
         # the selected tab key, whether the panel body is visible, and the last
         # usable expanded height to restore on the next expand.
@@ -702,6 +725,13 @@ class MainWindow(QMainWindow):
         self._twin_body.setMaximumWidth(style.TWIN_CONTENT_MAX_WIDTH)
         self._twin_body.setAccessibleName("Human-Readable Twin content")
         body_layout.addWidget(self._twin_body)
+
+        self._twin_nodes = QListWidget()
+        self._twin_nodes.setObjectName("twinNodes")
+        self._twin_nodes.setAccessibleName("Behavior nodes")
+        self._twin_nodes.setVisible(False)
+        self._twin_nodes.itemClicked.connect(self._on_behavior_node_clicked)
+        body_layout.addWidget(self._twin_nodes)
         body_layout.addStretch(1)
         layout.addWidget(body, stretch=1)
         return panel
@@ -931,14 +961,22 @@ class MainWindow(QMainWindow):
             text += f" — {detail}"
         self.status_label.setText(text)
 
-    def _set_twin_state(self, state: str) -> None:
+    def _set_twin_chip(self, state: str) -> None:
+        """Update only the Twin state chip and the status field.
+
+        Kept separate from :meth:`_set_twin_state` so a projection or sync
+        result can set the chip without replacing the richer body text.
+        """
         self._twin_state = state
         word = style.TWIN_STATE_WORD.get(state, state.title())
         self._twin_chip.setText(word)
         self._twin_chip.setStyleSheet(style.twin_chip_style(self._palette, state))
         self._twin_chip.setToolTip(word)
-        self._twin_body.setText(_TWIN_LABELS.get(state, ""))
         self._update_status()
+
+    def _set_twin_state(self, state: str) -> None:
+        self._set_twin_chip(state)
+        self._twin_body.setText(_TWIN_LABELS.get(state, ""))
 
     def _set_validation_state(self, state: str) -> None:
         self._validation_state = state
@@ -1024,6 +1062,9 @@ class MainWindow(QMainWindow):
         self._populate_tree(tree)
         self._set_status(STATE_SUCCESS, "project open")
         self._set_validation_state(VALIDATION_OK)
+        # Auto-synchronize the Twin once the accepted root is established (a
+        # no-op when there is no open project, e.g. in tree-only unit tests).
+        self._sync_twin()
 
     def _on_document_opened(self, rel_path: str, doc: Dict[str, Any]) -> None:
         name = doc.get("name", rel_path)
@@ -1047,10 +1088,109 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_SUCCESS, f"opened {rel_path}")
         self._update_status()
 
+        # Reveal a pending source-anchor line (from a behavior-node navigation),
+        # then load the file's Twin projection for Python source.
+        if self._pending_reveal_line is not None and kind == "source":
+            view.reveal_line(self._pending_reveal_line)
+            self._pending_reveal_line = None
+        self._load_twin_projection(rel_path)
+
     def _on_scan_completed(self, result: Dict[str, Any]) -> None:
         self._render_scan(result)
         self._set_status(STATE_SUCCESS, "scan complete")
         self._set_validation_state(VALIDATION_OK)
+
+    # -- Twin synchronization, projection and navigation (P3.3) ----------
+
+    def _sync_twin(self, changed_paths: Optional[List[str]] = None) -> None:
+        """Auto-synchronize the Structured Twin for the accepted workspace.
+
+        A no-op without an open project. ``changed_paths`` optionally scopes the
+        sync to specific root-relative ``.py`` paths; ``None`` means full sync.
+        """
+        if not self._root:
+            return
+        cid = contract.new_correlation_id()
+        request = build_sync_twin_request(cid, changed_paths)
+        self._set_twin_chip(TWIN_LOADING)
+        if not self._send(request, self._on_twin_synced, self._on_twin_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _load_twin_projection(self, rel_path: str) -> None:
+        """Load and render the Twin projection for a Python source file."""
+        if not self._root or not rel_path.endswith(".py"):
+            return
+        cid = contract.new_correlation_id()
+        request = build_get_twin_request(cid, rel_path)
+        if not self._send(
+            request, self._on_twin_projection_loaded, self._on_twin_projection_failed
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_twin_synced(self, result: Dict[str, Any]) -> None:
+        state = result.get("state", "synchronized")
+        self._set_twin_chip(twin_state_from_sync(state))
+        self._twin_body.setText(format_twin_sync(result))
+        self._set_status(STATE_SUCCESS, f"twin {state}")
+
+    def _on_twin_projection_loaded(self, bundle: Dict[str, Any]) -> None:
+        projection = bundle.get("projection") or {}
+        sync_state = projection.get("sync_state", "synchronized")
+        self._set_twin_chip(twin_state_from_sync(sync_state))
+        self._twin_body.setText(format_twin_projection(bundle))
+        self._render_behavior_nodes(bundle.get("behavior_nodes") or [])
+        self._set_status(STATE_SUCCESS, f"twin {sync_state}")
+
+    def _on_twin_failed(self, reason: str) -> None:
+        # A workspace-level sync failure leaves no synchronized Twin.
+        self._set_status(STATE_FAILED, reason)
+        self._set_twin_state(TWIN_EMPTY)
+
+    def _on_twin_projection_failed(self, reason: str) -> None:
+        # A selector-level miss keeps the current projection/summary intact.
+        self._set_status(STATE_FAILED, reason)
+
+    def _render_behavior_nodes(self, nodes: List[Dict[str, Any]]) -> None:
+        """Populate the clickable behavior-node list for the current projection."""
+        self._twin_nodes.clear()
+        for node in nodes:
+            item = QListWidgetItem(behavior_node_label(node))
+            item.setData(Qt.UserRole, node.get("id"))
+            item.setToolTip(
+                f"{node.get('provenance', 'unknown')} / "
+                f"{node.get('confidence', 'unknown')}"
+            )
+            self._twin_nodes.addItem(item)
+        self._twin_nodes.setVisible(bool(nodes))
+
+    def _on_behavior_node_clicked(self, item) -> None:
+        """Navigate a clicked behavior node to its source anchor (P3.3)."""
+        node_id = item.data(Qt.UserRole)
+        if not node_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_get_anchor_request(cid, node_id)
+        self._set_status(STATE_RUNNING, "navigating to source anchor")
+        if not self._send(request, self._on_anchor_loaded, self._on_anchor_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_anchor_loaded(self, anchor: Dict[str, Any]) -> None:
+        """Open the anchored source file and reveal its line, or report why not."""
+        if not anchor.get("available"):
+            reason = anchor.get("reason") or "no_anchor"
+            self._set_status(STATE_FAILED, f"anchor unavailable: {reason}")
+            return
+        rel_path = anchor.get("file")
+        source_range = anchor.get("source_range") or {}
+        lineno = source_range.get("lineno")
+        if not rel_path:
+            self._set_status(STATE_FAILED, "anchor has no file")
+            return
+        self._pending_reveal_line = lineno if isinstance(lineno, int) else None
+        self._open_document(rel_path)
+
+    def _on_anchor_failed(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
 
     # -- action error handlers ------------------------------------------
 
