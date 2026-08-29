@@ -248,7 +248,28 @@ class BoundaryWorkspaceTests(unittest.TestCase):
         doc_env = loads(responses[1])
         self.assertTrue(doc_env["ok"])
         self.assertEqual(doc_env["result"]["path"], "app/main.py")
+        self.assertEqual(doc_env["result"]["kind"], "source")
         self.assertIn("print", doc_env["result"]["content"])
+
+    def test_open_project_flow_reads_preview_document(self):
+        req_open = _workspace_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        req_doc = _workspace_request(
+            contract.ACTION_GET_DOCUMENT, path="nonascii/traditional_chinese.txt"
+        )
+        _, responses, _ = _run(dumps(req_open), dumps(req_doc))
+        doc_env = loads(responses[1])
+        self.assertTrue(doc_env["ok"])
+        self.assertEqual(doc_env["result"]["kind"], "preview")
+        self.assertIn("繁體", doc_env["result"]["content"])
+
+    def test_open_project_flow_missing_document_is_unavailable(self):
+        req_open = _workspace_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        req_doc = _workspace_request(contract.ACTION_GET_DOCUMENT, path="no/such/file.py")
+        _, responses, _ = _run(dumps(req_open), dumps(req_doc))
+        doc_env = loads(responses[1])
+        self.assertTrue(doc_env["ok"])
+        self.assertEqual(doc_env["result"]["kind"], "unavailable")
+        self.assertEqual(doc_env["result"]["reason"], "path_not_found")
 
     def test_open_project_missing_path_rejected(self):
         missing = os.path.join(FIXTURES, "does-not-exist")

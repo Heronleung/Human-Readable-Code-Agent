@@ -76,14 +76,12 @@ MAX_MESSAGE_BYTES = 1_048_576  # 1 MiB
 # * ``MAX_TREE_DEPTH`` — maximum directory depth (path components below the
 #   root) the walk will descend into; deeper directories are listed but not
 #   expanded.
-# * ``MAX_FILE_BYTES`` — files larger than this are omitted from the tree.
-# * ``MAX_DOCUMENT_BYTES`` — a document read larger than this is rejected with
-#   a bounded ``file_too_large`` error. It is kept well below
+# * ``MAX_DOCUMENT_BYTES`` — a document read larger than this is reported as an
+#   unavailable result with reason ``file_too_large``. It is kept well below
 #   ``MAX_MESSAGE_BYTES`` so an escaped (non-ASCII) document still fits on the
 #   wire.
 MAX_TREE_ENTRIES = 2000
 MAX_TREE_DEPTH = 32
-MAX_FILE_BYTES = 64 * 1024  # 64 KiB
 MAX_DOCUMENT_BYTES = 64 * 1024  # 64 KiB
 
 # Argument sentinel that turns the unified entry executable into the headless
@@ -217,7 +215,6 @@ __all__ = [
     "MAX_MESSAGE_BYTES",
     "MAX_TREE_ENTRIES",
     "MAX_TREE_DEPTH",
-    "MAX_FILE_BYTES",
     "MAX_DOCUMENT_BYTES",
     "SERVE_SENTINEL",
     "ERROR_CODES",

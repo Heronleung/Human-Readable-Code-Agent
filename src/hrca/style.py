@@ -97,6 +97,12 @@ TREE_ROW_HEIGHT = 22
 TREE_INDENT = 12
 TAB_HEIGHT = 30
 
+# Folder disclosure chevrons, rendered in the item text (not the native branch
+# arrow). Both are conventional, non-emoji punctuation: a single right angle
+# quote for collapsed, and an "up arrowhead" (U+2304) for expanded.
+TREE_CHEVRON_COLLAPSED = "›"
+TREE_CHEVRON_EXPANDED = "⌄"
+
 SPLITTER_HANDLE_WIDTH = 6          # 6 px interactive hit area
 SPLITTER_HAIRLINE_WIDTH = 1        # visually a 1 px hairline
 
@@ -303,6 +309,26 @@ def panel_header_font() -> QFont:
     font.setPixelSize(PANEL_HEADER_FONT_SIZE)
     font.setLetterSpacing(QFont.AbsoluteSpacing, 1.0)
     return font
+
+
+def tree_folder_font(base: Optional[QFont] = None) -> QFont:
+    """Return a bold copy of ``base`` (default: the UI font) for folder rows."""
+    font = QFont(base) if base is not None else ui_font()
+    font.setBold(True)
+    return font
+
+
+def tree_folder_label(name: str, expanded: bool, leaf: bool) -> str:
+    """Return the display label for a folder row.
+
+    Leaf folders show just their name (no chevron, so they never pretend to be
+    expandable); non-leaf folders show the expanded ``⌄`` or collapsed ``›``
+    chevron before the name.
+    """
+    if leaf:
+        return name
+    glyph = TREE_CHEVRON_EXPANDED if expanded else TREE_CHEVRON_COLLAPSED
+    return f"{glyph} {name}"
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +628,22 @@ def twin_chip_style(palette: Palette, state: str) -> str:
     )
 
 
+def preview_banner_style(palette: Palette) -> str:
+    """Return the style sheet for the labelled read-only preview banner."""
+    return (
+        f"color: {palette.text_secondary}; font-size: {STATUS_FONT_SIZE}px; "
+        f"padding: {GAP_TIGHT}px {INSET}px;"
+    )
+
+
+def unavailable_banner_style(palette: Palette) -> str:
+    """Return the style sheet for the bounded unavailable-state banner."""
+    return (
+        f"color: {palette.warning}; font-size: {STATUS_FONT_SIZE}px; "
+        f"padding: {GAP_TIGHT}px {INSET}px;"
+    )
+
+
 __all__ = [
     "SPACE_0",
     "SPACE_4",
@@ -632,6 +674,8 @@ __all__ = [
     "BOTTOM_PANEL_STRETCH",
     "TREE_ROW_HEIGHT",
     "TREE_INDENT",
+    "TREE_CHEVRON_COLLAPSED",
+    "TREE_CHEVRON_EXPANDED",
     "TAB_HEIGHT",
     "SPLITTER_HANDLE_WIDTH",
     "SPLITTER_HAIRLINE_WIDTH",
@@ -670,6 +714,8 @@ __all__ = [
     "ui_font",
     "code_font",
     "panel_header_font",
+    "tree_folder_font",
+    "tree_folder_label",
     "detect_color_scheme",
     "palette_for",
     "contrast_ratio",
@@ -681,4 +727,6 @@ __all__ = [
     "status_field_style",
     "project_root_label_style",
     "twin_chip_style",
+    "preview_banner_style",
+    "unavailable_banner_style",
 ]

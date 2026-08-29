@@ -333,5 +333,49 @@ class StylesheetTests(unittest.TestCase):
                     )
 
 
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class TreeStyleTests(unittest.TestCase):
+    def test_chevrons_are_non_emoji_text(self):
+        self.assertEqual(style.TREE_CHEVRON_COLLAPSED, "›")
+        self.assertEqual(style.TREE_CHEVRON_EXPANDED, "⌄")
+
+    def test_folder_label_non_leaf_collapsed_and_expanded(self):
+        self.assertEqual(style.tree_folder_label("app", False, False), "› app")
+        self.assertEqual(style.tree_folder_label("app", True, False), "⌄ app")
+
+    def test_folder_label_leaf_has_no_chevron(self):
+        self.assertEqual(style.tree_folder_label("empty", False, True), "empty")
+        self.assertEqual(style.tree_folder_label("empty", True, True), "empty")
+
+    def test_tree_folder_font_is_bold_copy(self):
+        font = style.tree_folder_font()
+        self.assertTrue(font.bold())
+        base = style.ui_font()
+        self.assertFalse(base.bold())
+        copy = style.tree_folder_font(base)
+        self.assertTrue(copy.bold())
+        self.assertFalse(base.bold())
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class BannerStyleTests(unittest.TestCase):
+    def test_preview_banner_uses_secondary_text(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            qss = style.preview_banner_style(palette)
+            self.assertIn(palette.text_secondary, qss)
+
+    def test_unavailable_banner_uses_warning(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            qss = style.unavailable_banner_style(palette)
+            self.assertIn(palette.warning, qss)
+
+    def test_banner_styles_are_distinct(self):
+        palette = style.LIGHT_PALETTE
+        self.assertNotEqual(
+            style.preview_banner_style(palette),
+            style.unavailable_banner_style(palette),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,29 +9,109 @@ client.
 
 It provides:
 
-* the bounded Python-project file filter (``.py`` / ``.pyi`` / ``pyproject.toml`` /
-  ``README.md`` / ``README.rst``) and the excluded directory names,
+* :func:`classify_file` — the deterministic render kind for a filename
+  (``source`` / ``preview`` / ``binary`` / ``unsupported``) and the excluded
+  directory names,
 * :func:`resolve_root` — canonicalize and validate a project root,
-* :func:`build_tree` — a deterministic, filtered, size-bounded directory tree,
-* :func:`read_document` — read one permitted document below the root, with
-  traversal / symlink / extension / size checks.
+* :func:`build_tree` — a deterministic, filtered, size-bounded directory tree
+  that lists every ordinary file and folder (with each file's ``size`` and
+  ``kind``) while still excluding the excluded directories and symlinks,
+* :func:`read_document` — read one document below the root, returning a
+  ``source`` / ``preview`` result for readable text and a bounded
+  ``unavailable`` result for binary, unsupported, missing, unreadable or
+  oversized files.
 
-Every failure is raised as a bounded :class:`hrca.contract.ContractError` whose
-message is drawn from the fixed catalogue, so no requested path or file content
-ever leaks into an error.
+A malformed request or a path that escapes the accepted root raises a bounded
+:class:`hrca.contract.ContractError` whose message is drawn from the fixed
+catalogue; availability failures are reported as an ``unavailable`` result, so
+no requested path or file content ever leaks into an error.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from . import contract
 
-# Bounded Python-project filter: a file is included when its basename is one of
-# these exact names or its extension is one of these suffixes.
-INCLUDED_FILENAMES = frozenset({"pyproject.toml", "README.md", "README.rst"})
-INCLUDED_SUFFIXES = frozenset({".py", ".pyi"})
+# ---------------------------------------------------------------------------
+# File classification.
+#
+# Every ordinary file is one of four kinds; the kind decides how the client
+# renders it:
+#
+# * ``source``       — Python project files (``.py`` / ``.pyi`` /
+#   ``pyproject.toml`` / ``README.md`` / ``README.rst``): full syntax-highlighted
+#   source view.
+# * ``preview``      — common text and configuration formats: a clearly-labelled
+#   read-only text preview.
+# * ``binary``       — known binary formats: listed in the tree but never
+#   decoded.
+# * ``unsupported``  — unrecognised/other extensions: listed in the tree but
+#   never decoded.
+# ---------------------------------------------------------------------------
+SOURCE_FILENAMES = frozenset({"pyproject.toml", "README.md", "README.rst"})
+SOURCE_SUFFIXES = frozenset({".py", ".pyi"})
+
+PREVIEW_FILENAMES = frozenset(
+    {
+        "Makefile",
+        "makefile",
+        "GNUmakefile",
+        "Dockerfile",
+        "dockerfile",
+        "LICENSE",
+        "LICENSE.txt",
+        "LICENSE.md",
+        "NOTICE",
+        ".gitignore",
+        ".gitattributes",
+        ".gitmodules",
+        ".editorconfig",
+        ".env",
+    }
+)
+PREVIEW_SUFFIXES = frozenset(
+    {
+        ".txt", ".md", ".markdown", ".rst", ".json", ".jsonc", ".toml",
+        ".yaml", ".yml", ".ini", ".cfg", ".conf", ".config", ".csv", ".tsv",
+        ".xml", ".log", ".sh", ".bash", ".zsh", ".properties", ".lock",
+        ".html", ".htm", ".css", ".scss", ".js", ".jsx", ".ts", ".tsx",
+        ".vue", ".sql", ".c", ".h", ".cpp", ".hpp", ".java", ".rb", ".php",
+        ".swift", ".kt", ".kts", ".rs", ".go",
+    }
+)
+
+BINARY_SUFFIXES = frozenset(
+    {
+        ".pyc", ".pyo", ".pyd", ".so", ".dll", ".dylib", ".exe", ".bin",
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".tiff",
+        ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+        ".woff", ".woff2", ".ttf", ".otf", ".eot", ".mp3", ".mp4", ".wav",
+        ".avi", ".mov", ".mkv", ".db", ".sqlite", ".class", ".o", ".a",
+        ".jar", ".wasm", ".whl",
+    }
+)
+
+FILE_KINDS = ("source", "preview", "binary", "unsupported")
+
+# Bounded reasons an ``unavailable`` document result can carry. These are the
+# only values ``read_document`` places in ``reason``; none echoes a path or
+# file content.
+UNAVAILABLE_UNSUPPORTED = "unsupported_type"
+UNAVAILABLE_BINARY = "binary"
+UNAVAILABLE_TOO_LARGE = "file_too_large"
+UNAVAILABLE_NOT_FOUND = "path_not_found"
+UNAVAILABLE_NOT_READABLE = "path_not_readable"
+UNAVAILABLE_REASONS = frozenset(
+    {
+        UNAVAILABLE_UNSUPPORTED,
+        UNAVAILABLE_BINARY,
+        UNAVAILABLE_TOO_LARGE,
+        UNAVAILABLE_NOT_FOUND,
+        UNAVAILABLE_NOT_READABLE,
+    }
+)
 
 # Directory names the tree walk and document reader never descend into or
 # resolve through. These are workspace-level exclusions, not a security claim.
@@ -40,9 +120,15 @@ EXCLUDED_DIR_NAMES = frozenset(
 )
 
 
-def is_included_file(name: str) -> bool:
-    """Return True when ``name`` is a permitted workspace file."""
-    return name in INCLUDED_FILENAMES or _suffix(name) in INCLUDED_SUFFIXES
+def classify_file(name: str) -> str:
+    """Return the render kind for ``name`` (source / preview / binary / unsupported)."""
+    if name in SOURCE_FILENAMES or _suffix(name) in SOURCE_SUFFIXES:
+        return "source"
+    if name in PREVIEW_FILENAMES or _suffix(name) in PREVIEW_SUFFIXES:
+        return "preview"
+    if _suffix(name) in BINARY_SUFFIXES:
+        return "binary"
+    return "unsupported"
 
 
 def _suffix(name: str) -> str:
@@ -77,11 +163,12 @@ def build_tree(root: str) -> Dict[str, Any]:
     """Return a deterministic, filtered, bounded tree for ``root``.
 
     The result is ``{"root": root, "truncated": bool, "children": [...]}``.
-    Entries are dictionaries of ``name``, ``type`` (``dir`` or ``file``),
-    ``path`` (portable, root-relative) and, for files, ``size``; directory
-    entries carry a ``children`` list. Within each directory, entries are
-    ordered directories-first then by name, so identical rescans are
-    byte-identical.
+    Every ordinary file and folder below the root — except the excluded
+    directories and symlinks — is listed. Entries are dictionaries of ``name``,
+    ``type`` (``dir`` or ``file``), ``path`` (portable, root-relative); file
+    entries add ``size`` and ``kind``, directory entries a ``children`` list.
+    Within each directory, entries are ordered directories-first then by name,
+    so identical rescans are byte-identical.
     """
     state = {"count": 0, "truncated": False}
     children = _collect_children(root, "", 0, state)
@@ -91,13 +178,13 @@ def build_tree(root: str) -> Dict[str, Any]:
 def _collect_children(
     dir_path: str, rel_prefix: str, depth: int, state: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
-    """Collect the filtered children of ``dir_path`` (at ``depth`` components).
+    """Collect the children of ``dir_path`` (at ``depth`` components).
 
-    Symlinks are skipped (never followed); excluded directories are skipped;
-    files outside the filter or above ``contract.MAX_FILE_BYTES`` are skipped;
-    the walk stops once ``contract.MAX_TREE_ENTRIES`` entries have been emitted
+    Symlinks are skipped (never followed); excluded directories are skipped; the
+    walk stops once ``contract.MAX_TREE_ENTRIES`` entries have been emitted
     (marking ``truncated``). A directory is expanded only while its children
-    remain within ``contract.MAX_TREE_DEPTH`` components of the root.
+    remain within ``contract.MAX_TREE_DEPTH`` components of the root. Every file
+    is included with its ``size`` and render ``kind``.
     """
     children: List[Dict[str, Any]] = []
     try:
@@ -130,29 +217,38 @@ def _collect_children(
                 node["children"] = []
             children.append(node)
         elif entry.is_file(follow_symlinks=False):
-            if not is_included_file(name):
-                continue
             try:
                 size = entry.stat().st_size
             except OSError:
-                continue
-            if size > contract.MAX_FILE_BYTES:
-                continue
+                size = 0
             rel = _join(rel_prefix, name)
             state["count"] += 1
             children.append(
-                {"name": name, "type": "file", "path": rel, "size": size}
+                {
+                    "name": name,
+                    "type": "file",
+                    "path": rel,
+                    "size": size,
+                    "kind": classify_file(name),
+                }
             )
     return children
 
 
 def read_document(root: str, rel_path: str) -> Dict[str, Any]:
-    """Read one permitted document ``rel_path`` below the accepted ``root``.
+    """Return the read-only state of one document ``rel_path`` below ``root``.
 
-    Rejects, with bounded errors, absolute paths, ``..`` traversal, symlink
-    escape outside the root, excluded directories, missing paths, non-regular
-    or unreadable files, unsupported extensions and oversized files. Returns
-    ``{"path", "name", "size", "content"}`` with the root-relative ``path``.
+    The result is always one of:
+
+    * ``{"path", "name", "size", "kind": "source"|"preview", "content"}`` for a
+      readable text file (Python source, or a common text/config preview);
+    * ``{"path", "name", "size", "kind": "unavailable", "reason"}`` for a file
+      that cannot be shown. ``reason`` is one of :data:`UNAVAILABLE_REASONS`.
+
+    Only a malformed request or a path that escapes the accepted root (absolute,
+    ``..`` traversal, symlink escape, or an excluded directory) raises a bounded
+    :class:`~hrca.contract.ContractError`; availability failures are reported as
+    an ``unavailable`` result, never an exception.
     """
     if not isinstance(rel_path, str) or not rel_path.strip():
         raise contract.ContractError("invalid_request")
@@ -177,45 +273,91 @@ def read_document(root: str, rel_path: str) -> Dict[str, Any]:
     if target != root_real and not target.startswith(root_real + os.sep):
         raise contract.ContractError("path_not_allowed")
 
-    if not os.path.exists(target):
-        raise contract.ContractError("path_not_found")
-    if os.path.islink(target) or not os.path.isfile(target):
-        raise contract.ContractError("path_not_readable")
-    if not os.access(target, os.R_OK):
-        raise contract.ContractError("path_not_readable")
-    if not is_included_file(os.path.basename(target)):
-        raise contract.ContractError("unsupported_type")
+    name = os.path.basename(target)
+    size = _size(target)
 
-    try:
-        size = os.path.getsize(target)
-    except OSError:
-        raise contract.ContractError("path_not_readable")
-    if size > contract.MAX_DOCUMENT_BYTES:
-        raise contract.ContractError("file_too_large")
+    if not os.path.exists(target):
+        return _unavailable(parts, name, None, UNAVAILABLE_NOT_FOUND)
+    if os.path.islink(target) or not os.path.isfile(target):
+        return _unavailable(parts, name, None, UNAVAILABLE_NOT_READABLE)
+    if not os.access(target, os.R_OK):
+        return _unavailable(parts, name, size, UNAVAILABLE_NOT_READABLE)
+
+    kind = classify_file(name)
+    if kind == "binary":
+        # Never decoded: an arbitrarily large binary is still bounded.
+        return _unavailable(parts, name, size, UNAVAILABLE_BINARY)
+    if kind == "unsupported":
+        return _unavailable(parts, name, size, UNAVAILABLE_UNSUPPORTED)
+
+    if size is None or size > contract.MAX_DOCUMENT_BYTES:
+        return _unavailable(parts, name, size, UNAVAILABLE_TOO_LARGE)
 
     try:
         with open(target, "rb") as fh:
             raw = fh.read(contract.MAX_DOCUMENT_BYTES + 1)
     except OSError:
-        raise contract.ContractError("path_not_readable")
+        return _unavailable(parts, name, size, UNAVAILABLE_NOT_READABLE)
+
+    if len(raw) > contract.MAX_DOCUMENT_BYTES:
+        return _unavailable(parts, name, size, UNAVAILABLE_TOO_LARGE)
+    if _is_binary(raw):
+        return _unavailable(parts, name, size, UNAVAILABLE_BINARY)
 
     # UTF-8 with replacement keeps the surface deterministic even for stray
-    # bytes; the filter already restricts us to text-ish source documents.
+    # bytes; the classification already restricts us to text-ish documents.
     content = raw.decode("utf-8", errors="replace")
 
     return {
         "path": "/".join(parts),
-        "name": os.path.basename(target),
+        "name": name,
         "size": size,
+        "kind": kind,
         "content": content,
     }
 
 
+def _size(path: str) -> Optional[int]:
+    """Return the size of ``path``, or ``None`` when it cannot be read."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
+
+
+def _is_binary(raw: bytes) -> bool:
+    """Return True when ``raw`` carries a NUL byte (a strong binary signal)."""
+    return b"\x00" in raw
+
+
+def _unavailable(
+    parts: List[str], name: str, size: Optional[int], reason: str
+) -> Dict[str, Any]:
+    """Return a bounded ``unavailable`` document result."""
+    return {
+        "path": "/".join(parts),
+        "name": name,
+        "size": size,
+        "kind": "unavailable",
+        "reason": reason,
+    }
+
+
 __all__ = [
-    "INCLUDED_FILENAMES",
-    "INCLUDED_SUFFIXES",
+    "SOURCE_FILENAMES",
+    "SOURCE_SUFFIXES",
+    "PREVIEW_FILENAMES",
+    "PREVIEW_SUFFIXES",
+    "BINARY_SUFFIXES",
+    "FILE_KINDS",
+    "UNAVAILABLE_UNSUPPORTED",
+    "UNAVAILABLE_BINARY",
+    "UNAVAILABLE_TOO_LARGE",
+    "UNAVAILABLE_NOT_FOUND",
+    "UNAVAILABLE_NOT_READABLE",
+    "UNAVAILABLE_REASONS",
     "EXCLUDED_DIR_NAMES",
-    "is_included_file",
+    "classify_file",
     "resolve_root",
     "build_tree",
     "read_document",

@@ -123,14 +123,19 @@ The contract (`hrca/contract.py`) defines:
   `path_not_readable`, `unsupported_type`, `file_too_large`) whose messages
   never echo caller text, requested paths or file contents,
 - `MAX_MESSAGE_BYTES` (1 MiB) plus the workspace limits `MAX_TREE_ENTRIES`,
-  `MAX_TREE_DEPTH`, `MAX_FILE_BYTES` and `MAX_DOCUMENT_BYTES` (64 KiB each)
-  that bound tree and document output.
+  `MAX_TREE_DEPTH` and `MAX_DOCUMENT_BYTES` (64 KiB) that bound tree and
+  document output.
 
-The workspace policy (`hrca/workspace.py`) filters to `.py`, `.pyi`,
-`pyproject.toml`, `README.md` and `README.rst`, excludes `.git`, `.venv`,
-`__pycache__`, `node_modules`, `build` and `dist`, resolves symlinks, and
-rejects `..` traversal, symlink escape outside the accepted root, and missing,
-unreadable, unsupported and oversized paths with bounded errors.
+The workspace policy (`hrca/workspace.py`) lists every ordinary file and folder
+below the accepted root — not only Python files — while still excluding
+`.git`, `.venv`, `__pycache__`, `node_modules`, `build` and `dist`, skipping
+symlinks, and rejecting `..` traversal and symlink escape outside the accepted
+root with bounded errors. Each file carries a render `kind` (`source` /
+`preview` / `binary` / `unsupported`); the Project Explorer shows folders with
+an in-text `›`/`⌄` chevron (leaf folders have none). `get_document` returns a
+`source` result for Python files, a clearly labelled read-only `preview` for
+common text/config formats, and a bounded `unavailable` result (with a fixed
+`reason`) for binary, unsupported, missing, unreadable or oversized files.
 
 The boundary writes exactly one JSON line per request, reserves stdout for
 protocol messages only, and keeps `ensure_ascii=True` so the wire is pure

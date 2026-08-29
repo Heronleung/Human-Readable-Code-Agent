@@ -146,6 +146,18 @@ _DIFF_UNAVAILABLE = (
     "no way to apply changes."
 )
 
+# Fixed, honest unavailable messages for the document surface. Each ``reason``
+# is one of the workspace's bounded unavailable reasons; the banner never echoes
+# a requested path or file content.
+_UNAVAILABLE_TEXT = {
+    "binary": "Binary file — preview unavailable.",
+    "unsupported_type": "Unsupported file type — preview unavailable.",
+    "file_too_large": "File too large to preview.",
+    "path_not_found": "File not found.",
+    "path_not_readable": "File is not readable.",
+}
+_UNAVAILABLE_FALLBACK = "This file cannot be previewed."
+
 # The six bottom-panel tabs, in the fixed order the tab bar presents them. The
 # first key ("chat") maps to the Agent Chat surface; the remaining five map to
 # the read-only secondary surfaces populated by the scan pipeline. The keys are
@@ -268,6 +280,60 @@ class CodeView(QPlainTextEdit):
         cursor.mergeBlockFormat(fmt)
 
 
+class DocumentView(QWidget):
+    """A read-only document surface: a labelled banner over a code body.
+
+    Three modes, driven by the boundary's document ``kind``:
+
+    * ``source``      — syntax-highlighted source, banner hidden;
+    * ``preview``     — plain read-only text under a "Read-only preview" banner;
+    * ``unavailable`` — a bounded banner explaining why the file cannot be shown
+      (binary / unsupported / missing / unreadable / oversized), empty body.
+    """
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        palette: Optional[style.Palette] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._palette = palette or style.palette_for()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_0)
+
+        self._banner = QLabel()
+        self._banner.setObjectName("documentBanner")
+        self._banner.setWordWrap(True)
+        self._banner.setVisible(False)
+        layout.addWidget(self._banner)
+
+        self._body = CodeView(self, palette=self._palette)
+        layout.addWidget(self._body, stretch=1)
+
+    def show_source(self, content: str) -> None:
+        """Show syntax-highlighted source with no banner."""
+        self._banner.setVisible(False)
+        self._body.setPlainText(content)
+
+    def show_preview(self, name: str, content: str) -> None:
+        """Show a labelled read-only text preview."""
+        self._banner.setText(f"Read-only preview — {name}")
+        self._banner.setStyleSheet(style.preview_banner_style(self._palette))
+        self._banner.setVisible(True)
+        self._body.setPlainText(content)
+
+    def show_unavailable(self, name: str, reason: str) -> None:
+        """Show a bounded unavailable banner and an empty body."""
+        message = _UNAVAILABLE_TEXT.get(reason, _UNAVAILABLE_FALLBACK)
+        self._banner.setText(f"{name} — {message}")
+        self._banner.setStyleSheet(style.unavailable_banner_style(self._palette))
+        self._banner.setVisible(True)
+        self._body.setPlainText("")
+
+
 class ElidedLabel(QLabel):
     """A :class:`QLabel` that elides its full text to fit its width.
 
@@ -373,6 +439,21 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
 
 
+class _ProjectTreeView(QTreeView):
+    """A :class:`QTreeView` whose native branch arrows are suppressed.
+
+    The folder disclosure chevron (``›`` / ``⌄``) is drawn in the item text by
+    :func:`hrca.style.tree_folder_label`, so the native branch arrow is
+    redundant; this subclass paints no branch indicator while keeping normal Qt
+    tree keyboard navigation (Right expands, Left collapses or moves to the
+    parent) intact.
+    """
+
+    def drawBranches(self, painter, rect, index) -> None:
+        """Paint nothing: the chevron lives in the item text, not the branch."""
+        return None
+
+
 class MainWindow(QMainWindow):
     """Render the IDE workspace shell (P3.2 presentation-only surface)."""
 
@@ -393,7 +474,7 @@ class MainWindow(QMainWindow):
         self._validation_state: str = VALIDATION_IDLE
         self._current_document: Optional[str] = None
         self._tree: Optional[Dict[str, Any]] = None
-        self._open_tabs: Dict[str, CodeView] = {}
+        self._open_tabs: Dict[str, DocumentView] = {}
         self._pending: Dict[str, tuple] = {}
         # Single bottom-panel state model (replaces the old drawer/chat booleans):
         # the selected tab key, whether the panel body is visible, and the last
@@ -511,7 +592,7 @@ class MainWindow(QMainWindow):
 
         self._tree_model = QStandardItemModel()
         self._tree_model.setHorizontalHeaderLabels(["Name"])
-        self._tree_view = QTreeView()
+        self._tree_view = _ProjectTreeView()
         self._tree_view.setObjectName("projectTree")
         self._tree_view.setModel(self._tree_model)
         self._tree_view.setHeaderHidden(True)
@@ -524,6 +605,8 @@ class MainWindow(QMainWindow):
         self._tree_view.setFrameShape(QFrame.NoFrame)
         self._tree_view.setAccessibleName("Project Explorer")
         self._tree_view.clicked.connect(self._on_tree_clicked)
+        self._tree_view.expanded.connect(self._update_folder_label)
+        self._tree_view.collapsed.connect(self._update_folder_label)
         layout.addWidget(self._tree_view, stretch=1)
 
         self._project_label = ElidedLabel("No project open")
@@ -920,18 +1003,22 @@ class MainWindow(QMainWindow):
         self._set_validation_state(VALIDATION_OK)
 
     def _on_document_opened(self, rel_path: str, doc: Dict[str, Any]) -> None:
-        content = doc.get("content", "")
         name = doc.get("name", rel_path)
+        kind = doc.get("kind", "source")
         view = self._open_tabs.get(rel_path)
         if view is None:
-            view = CodeView(self._source_tabs, palette=self._palette)
-            view.setPlainText(content)
+            view = DocumentView(self._source_tabs, palette=self._palette)
             index = self._source_tabs.addTab(view, name)
             self._open_tabs[rel_path] = view
             self._source_tabs.setCurrentIndex(index)
         else:
-            view.setPlainText(content)
             self._source_tabs.setCurrentWidget(view)
+        if kind == "preview":
+            view.show_preview(name, doc.get("content", ""))
+        elif kind == "unavailable":
+            view.show_unavailable(name, doc.get("reason", ""))
+        else:
+            view.show_source(doc.get("content", ""))
         self._source_stack.setCurrentIndex(1)
         self._current_document = rel_path
         self._set_status(STATE_SUCCESS, f"opened {rel_path}")
@@ -996,28 +1083,59 @@ class MainWindow(QMainWindow):
 
     def _add_tree_nodes(self, parent: QStandardItem, nodes: List[Dict[str, Any]]) -> None:
         for node in nodes:
-            item = QStandardItem(node.get("name", ""))
-            item.setEditable(False)
-            item.setData(node.get("path"), Qt.UserRole)
-            item.setData(node.get("type"), Qt.UserRole + 1)
-            if node.get("type") == "dir":
-                font = item.font()
-                font.setBold(True)
-                item.setFont(font)
-            parent.appendRow(item)
-            if node.get("type") == "dir":
-                self._add_tree_nodes(item, node.get("children", []))
+            node_type = node.get("type")
+            name = node.get("name", "")
+            children = node.get("children", [])
+            if node_type == "dir":
+                # Folders show an in-text chevron unless they are leaves, so a
+                # leaf folder never pretends to be expandable.
+                item = QStandardItem(
+                    style.tree_folder_label(name, expanded=False, leaf=not children)
+                )
+                item.setEditable(False)
+                item.setData(node.get("path"), Qt.UserRole)
+                item.setData(node_type, Qt.UserRole + 1)
+                item.setData(name, Qt.UserRole + 3)
+                item.setFont(style.tree_folder_font())
+                parent.appendRow(item)
+                self._add_tree_nodes(item, children)
+            else:
+                item = QStandardItem(name)
+                item.setEditable(False)
+                item.setData(node.get("path"), Qt.UserRole)
+                item.setData(node_type, Qt.UserRole + 1)
+                item.setData(node.get("kind"), Qt.UserRole + 2)
+                item.setData(name, Qt.UserRole + 3)
+                parent.appendRow(item)
 
     def _on_tree_clicked(self, index) -> None:
         item = self._tree_model.itemFromIndex(index)
         if item is None:
             return
-        if item.data(Qt.UserRole + 1) != "file":
+        node_type = item.data(Qt.UserRole + 1)
+        if node_type == "dir":
+            if self._tree_view.isExpanded(index):
+                self._tree_view.collapse(index)
+            else:
+                self._tree_view.expand(index)
+            return
+        if node_type != "file":
             return
         rel_path = item.data(Qt.UserRole)
         if not rel_path:
             return
         self._open_document(rel_path)
+
+    def _update_folder_label(self, index) -> None:
+        """Sync a folder row's in-text chevron to its expanded state."""
+        item = self._tree_model.itemFromIndex(index)
+        if item is None or item.data(Qt.UserRole + 1) != "dir":
+            return
+        name = item.data(Qt.UserRole + 3)
+        leaf = item.rowCount() == 0
+        item.setText(
+            style.tree_folder_label(name, self._tree_view.isExpanded(index), leaf)
+        )
 
     def _close_tab(self, index: int) -> None:
         widget = self._source_tabs.widget(index)
@@ -1378,6 +1496,7 @@ if __name__ == "__main__":
 __all__ = [
     "PythonHighlighter",
     "CodeView",
+    "DocumentView",
     "ElidedLabel",
     "HairlineSplitter",
     "BackendSupervisor",

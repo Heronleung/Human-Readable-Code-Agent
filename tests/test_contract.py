@@ -15,7 +15,6 @@ from hrca.contract import (
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
     MAX_DOCUMENT_BYTES,
-    MAX_FILE_BYTES,
     MAX_MESSAGE_BYTES,
     MAX_TREE_DEPTH,
     MAX_TREE_ENTRIES,
@@ -52,7 +51,6 @@ class ContractVersionTests(unittest.TestCase):
     def test_workspace_limits_are_positive(self):
         self.assertGreater(MAX_TREE_ENTRIES, 0)
         self.assertGreater(MAX_TREE_DEPTH, 0)
-        self.assertGreater(MAX_FILE_BYTES, 0)
         self.assertGreater(MAX_DOCUMENT_BYTES, 0)
         # A document is bounded to fit on the wire even when every byte escapes.
         self.assertLessEqual(MAX_DOCUMENT_BYTES, MAX_MESSAGE_BYTES)

@@ -30,6 +30,7 @@ try:
     from hrca.client import (
         BackendSupervisor,
         CodeView,
+        DocumentView,
         MainWindow,
         PythonHighlighter,
     )
@@ -71,9 +72,28 @@ def _sample_tree() -> dict:
                 "type": "dir",
                 "path": "app",
                 "children": [
-                    {"name": "main.py", "type": "file", "path": "app/main.py", "size": 10},
+                    {"name": "main.py", "type": "file", "path": "app/main.py",
+                     "size": 10, "kind": "source"},
+                    {"name": "data.json", "type": "file", "path": "app/data.json",
+                     "size": 8, "kind": "preview"},
+                    {"name": "image.png", "type": "file", "path": "app/image.png",
+                     "size": 4, "kind": "binary"},
+                    {"name": "blob.xyz", "type": "file", "path": "app/blob.xyz",
+                     "size": 3, "kind": "unsupported"},
+                    {
+                        "name": "sub",
+                        "type": "dir",
+                        "path": "app/sub",
+                        "children": [
+                            {"name": "README.md", "type": "file",
+                             "path": "app/sub/README.md", "size": 6, "kind": "source"},
+                        ],
+                    },
                 ],
             },
+            {"name": "empty_dir", "type": "dir", "path": "empty_dir", "children": []},
+            {"name": "notes.txt", "type": "file", "path": "notes.txt",
+             "size": 5, "kind": "preview"},
         ],
     }
 
@@ -260,8 +280,14 @@ class MainWindowLayoutTests(unittest.TestCase):
     def test_tree_load_populates_model(self):
         window = MainWindow()
         window._on_tree_loaded(_sample_tree())
-        self.assertEqual(window._tree_model.rowCount(), 1)
-        self.assertEqual(window._tree_model.item(0, 0).text(), "app")
+        self.assertEqual(window._tree_model.rowCount(), 3)
+        # The top-level "app" folder is non-leaf, so it carries a collapsed
+        # chevron; the leaf "empty_dir" folder shows only its name.
+        self.assertEqual(
+            window._tree_model.item(0, 0).text(),
+            style.tree_folder_label("app", False, False),
+        )
+        self.assertEqual(window._tree_model.item(1, 0).text(), "empty_dir")
 
     def test_tree_click_requests_document(self):
         window = MainWindow()
@@ -487,6 +513,127 @@ class MainWindowLayoutTests(unittest.TestCase):
         root_y = root_label.mapTo(status_bar, root_label.rect().topLeft()).y()
         file_y = file_label.mapTo(status_bar, file_label.rect().topLeft()).y()
         self.assertAlmostEqual(root_y, file_y, delta=1)
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class ExplorerTreeTests(unittest.TestCase):
+    """P3.2 v2.5 Project Explorer completeness and folder affordances.
+
+    The tree renders the complete safe tree with in-text ``›``/``⌄`` chevrons,
+    folder rows toggle on click, Right/Left navigate expansion, leaf folders
+    show no chevron, and kind-aware documents open through the boundary.
+    """
+
+    def setUp(self):
+        _app()
+
+    def _window_with_tree(self):
+        window = MainWindow()
+        window._on_tree_loaded(_sample_tree())
+        return window
+
+    def test_folder_chevron_updates_on_mouse_toggle(self):
+        window = self._window_with_tree()
+        app_item = window._tree_model.item(0, 0)
+        index = window._tree_model.indexFromItem(app_item)
+        self.assertEqual(app_item.text(), "› app")
+        window._on_tree_clicked(index)  # expand
+        self.assertTrue(window._tree_view.isExpanded(index))
+        self.assertEqual(app_item.text(), "⌄ app")
+        window._on_tree_clicked(index)  # collapse
+        self.assertFalse(window._tree_view.isExpanded(index))
+        self.assertEqual(app_item.text(), "› app")
+
+    def test_folder_chevron_updates_on_keyboard_expand_collapse(self):
+        window = self._window_with_tree()
+        app_item = window._tree_model.item(0, 0)
+        index = window._tree_model.indexFromItem(app_item)
+        window._tree_view.setCurrentIndex(index)
+        window._tree_view.expand(index)
+        self.assertEqual(app_item.text(), "⌄ app")
+        window._tree_view.collapse(index)
+        self.assertEqual(app_item.text(), "› app")
+
+    def test_leaf_folder_has_no_false_disclosure(self):
+        window = self._window_with_tree()
+        empty_item = window._tree_model.item(1, 0)  # empty_dir
+        self.assertEqual(empty_item.text(), "empty_dir")
+        self.assertEqual(empty_item.rowCount(), 0)
+
+    def test_file_rows_have_no_chevron(self):
+        window = self._window_with_tree()
+        notes_item = window._tree_model.item(2, 0)  # notes.txt
+        self.assertEqual(notes_item.text(), "notes.txt")
+
+    def test_folder_click_toggles_not_open_document(self):
+        window = self._window_with_tree()
+        app_item = window._tree_model.item(0, 0)
+        index = window._tree_model.indexFromItem(app_item)
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        window._on_tree_clicked(index)
+        self.assertEqual(sent, [])  # no document request for a folder
+        self.assertTrue(window._tree_view.isExpanded(index))
+
+    def test_kind_aware_documents_render(self):
+        window = MainWindow()
+        window._on_document_opened(
+            "app/main.py",
+            {"path": "app/main.py", "name": "main.py", "size": 10,
+             "kind": "source", "content": "print('hi')\n"},
+        )
+        source_view = window._open_tabs["app/main.py"]
+        self.assertIsInstance(source_view, DocumentView)
+        self.assertTrue(source_view._banner.isHidden())
+
+        window._on_document_opened(
+            "app/data.json",
+            {"path": "app/data.json", "name": "data.json", "size": 8,
+             "kind": "preview", "content": '{"k": 1}\n'},
+        )
+        preview_view = window._open_tabs["app/data.json"]
+        self.assertFalse(preview_view._banner.isHidden())
+        self.assertIn("Read-only preview", preview_view._banner.text())
+
+        window._on_document_opened(
+            "app/image.png",
+            {"path": "app/image.png", "name": "image.png", "size": 4,
+             "kind": "unavailable", "reason": "binary"},
+        )
+        unavailable_view = window._open_tabs["app/image.png"]
+        self.assertFalse(unavailable_view._banner.isHidden())
+        self.assertIn("Binary", unavailable_view._banner.text())
+        self.assertEqual(unavailable_view._body.toPlainText(), "")
+
+    def test_expanding_folder_preserves_state_and_geometry(self):
+        window = MainWindow()
+        window.resize(1360, 840)
+        window.show()
+        QApplication.processEvents()
+        window._on_tree_loaded(_sample_tree())
+        window._on_document_opened(
+            "app/main.py",
+            {"path": "app/main.py", "name": "main.py", "size": 10,
+             "kind": "source", "content": "print('hi')\n"},
+        )
+        tabs_before = window._source_tabs.count()
+        selected_before = window._selected_tab
+        expanded_before = window._is_expanded
+        sizes_before = list(window._horizontal_splitter.sizes())
+
+        app_item = window._tree_model.item(0, 0)
+        index = window._tree_model.indexFromItem(app_item)
+        window._on_tree_clicked(index)  # expand a folder
+
+        self.assertEqual(window._source_tabs.count(), tabs_before)
+        self.assertEqual(window._selected_tab, selected_before)
+        self.assertEqual(window._is_expanded, expanded_before)
+        self.assertEqual(list(window._horizontal_splitter.sizes()), sizes_before)
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
