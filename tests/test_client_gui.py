@@ -16,7 +16,8 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QEventLoop, QProcess, QTimer, qInstallMessageHandler
+    from PySide6.QtCore import QEvent, QEventLoop, QProcess, QTimer, Qt, qInstallMessageHandler
+    from PySide6.QtGui import QKeyEvent
     from PySide6.QtWidgets import (
         QApplication,
         QLabel,
@@ -281,12 +282,9 @@ class MainWindowLayoutTests(unittest.TestCase):
         window = MainWindow()
         window._on_tree_loaded(_sample_tree())
         self.assertEqual(window._tree_model.rowCount(), 3)
-        # The top-level "app" folder is non-leaf, so it carries a collapsed
-        # chevron; the leaf "empty_dir" folder shows only its name.
-        self.assertEqual(
-            window._tree_model.item(0, 0).text(),
-            style.tree_folder_label("app", False, False),
-        )
+        # Folder labels are plain names: the disclosure chevron is painted in a
+        # fixed branch slot, never embedded in the label text.
+        self.assertEqual(window._tree_model.item(0, 0).text(), "app")
         self.assertEqual(window._tree_model.item(1, 0).text(), "empty_dir")
 
     def test_tree_click_requests_document(self):
@@ -517,42 +515,76 @@ class MainWindowLayoutTests(unittest.TestCase):
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class ExplorerTreeTests(unittest.TestCase):
-    """P3.2 v2.5 Project Explorer completeness and folder affordances.
+    """P3.2 v2.6 stable Project Explorer disclosure indicators.
 
-    The tree renders the complete safe tree with in-text ``›``/``⌄`` chevrons,
-    folder rows toggle on click, Right/Left navigate expansion, leaf folders
-    show no chevron, and kind-aware documents open through the boundary.
+    Folder rows carry a plain name; the disclosure chevron is painted by the
+    branch style in a fixed 20 px slot, so toggling a folder never moves its
+    label, child indentation or row geometry. Leaf folders show no indicator
+    but keep normal depth alignment; kind-aware documents still open through
+    the boundary.
     """
 
     def setUp(self):
         _app()
 
-    def _window_with_tree(self):
-        window = MainWindow()
+    def _window_with_tree(self, palette=None):
+        window = MainWindow(palette=palette)
+        window.resize(1360, 840)
+        window.show()
+        QApplication.processEvents()
         window._on_tree_loaded(_sample_tree())
+        QApplication.processEvents()
         return window
 
-    def test_folder_chevron_updates_on_mouse_toggle(self):
-        window = self._window_with_tree()
-        app_item = window._tree_model.item(0, 0)
-        index = window._tree_model.indexFromItem(app_item)
-        self.assertEqual(app_item.text(), "› app")
-        window._on_tree_clicked(index)  # expand
-        self.assertTrue(window._tree_view.isExpanded(index))
-        self.assertEqual(app_item.text(), "⌄ app")
-        window._on_tree_clicked(index)  # collapse
-        self.assertFalse(window._tree_view.isExpanded(index))
-        self.assertEqual(app_item.text(), "› app")
+    def _app_index(self, window):
+        return window._tree_model.indexFromItem(window._tree_model.item(0, 0))
 
-    def test_folder_chevron_updates_on_keyboard_expand_collapse(self):
+    def test_folder_labels_are_plain_names_without_chevron_glyphs(self):
         window = self._window_with_tree()
         app_item = window._tree_model.item(0, 0)
-        index = window._tree_model.indexFromItem(app_item)
-        window._tree_view.setCurrentIndex(index)
+        self.assertEqual(app_item.text(), "app")
+        self.assertNotIn("›", app_item.text())
+        self.assertNotIn("⌄", app_item.text())
+
+    def test_folder_toggle_never_shifts_label_x(self):
+        window = self._window_with_tree()
+        index = self._app_index(window)
+        x_before = window._tree_view.visualRect(index).x()
+        rect_before = window._tree_view.visualRect(index)
+        for _ in range(3):
+            window._tree_view.expand(index)
+            QApplication.processEvents()
+            self.assertEqual(window._tree_view.visualRect(index).x(), x_before)
+            self.assertEqual(window._tree_view.visualRect(index), rect_before)
+            window._tree_view.collapse(index)
+            QApplication.processEvents()
+            self.assertEqual(window._tree_view.visualRect(index).x(), x_before)
+            self.assertEqual(window._tree_view.visualRect(index), rect_before)
+        self.assertEqual(window._tree_model.item(0, 0).text(), "app")
+
+    def test_child_indentation_is_constant(self):
+        window = self._window_with_tree()
+        index = self._app_index(window)
         window._tree_view.expand(index)
-        self.assertEqual(app_item.text(), "⌄ app")
-        window._tree_view.collapse(index)
-        self.assertEqual(app_item.text(), "› app")
+        QApplication.processEvents()
+        child = window._tree_model.item(0, 0).child(0)  # main.py
+        child_index = window._tree_model.indexFromItem(child)
+        self.assertEqual(
+            window._tree_view.visualRect(child_index).x(),
+            window._tree_view.visualRect(index).x() + style.TREE_INDENT,
+        )
+        self.assertEqual(window._tree_view.indentation(), style.TREE_INDENT)
+
+    def test_siblings_align_at_same_depth(self):
+        window = self._window_with_tree()
+        window._tree_view.expand(self._app_index(window))
+        QApplication.processEvents()
+        main_py = window._tree_model.item(0, 0).child(0)
+        data_json = window._tree_model.item(0, 0).child(1)
+        self.assertEqual(
+            window._tree_view.visualRect(window._tree_model.indexFromItem(main_py)).x(),
+            window._tree_view.visualRect(window._tree_model.indexFromItem(data_json)).x(),
+        )
 
     def test_leaf_folder_has_no_false_disclosure(self):
         window = self._window_with_tree()
@@ -567,8 +599,7 @@ class ExplorerTreeTests(unittest.TestCase):
 
     def test_folder_click_toggles_not_open_document(self):
         window = self._window_with_tree()
-        app_item = window._tree_model.item(0, 0)
-        index = window._tree_model.indexFromItem(app_item)
+        index = self._app_index(window)
         sent = []
 
         def fake_send(request, on_success, on_error):
@@ -579,6 +610,47 @@ class ExplorerTreeTests(unittest.TestCase):
         window._on_tree_clicked(index)
         self.assertEqual(sent, [])  # no document request for a folder
         self.assertTrue(window._tree_view.isExpanded(index))
+
+    def test_keyboard_right_expands_left_collapses(self):
+        window = self._window_with_tree()
+        index = self._app_index(window)
+        window._tree_view.setCurrentIndex(index)
+        window._tree_view.keyPressEvent(
+            QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.KeyboardModifier.NoModifier)
+        )
+        self.assertTrue(window._tree_view.isExpanded(index))
+        window._tree_view.setCurrentIndex(index)
+        window._tree_view.keyPressEvent(
+            QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.KeyboardModifier.NoModifier)
+        )
+        self.assertFalse(window._tree_view.isExpanded(index))
+
+    def test_indicator_and_geometry_stable_across_sizes_and_palettes(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            for width, height in ((1024, 640), (1360, 840), (1920, 1080)):
+                with self.subTest(palette=palette.name, size=(width, height)):
+                    window = MainWindow(palette=palette)
+                    window.resize(width, height)
+                    window.show()
+                    QApplication.processEvents()
+                    window._on_tree_loaded(_sample_tree())
+                    QApplication.processEvents()
+                    index = self._app_index(window)
+                    x_before = window._tree_view.visualRect(index).x()
+                    self.assertEqual(window._tree_view.indentation(), style.TREE_INDENT)
+                    window._tree_view.expand(index)
+                    QApplication.processEvents()
+                    self.assertEqual(window._tree_view.visualRect(index).x(), x_before)
+                    child_index = window._tree_model.indexFromItem(
+                        window._tree_model.item(0, 0).child(0)
+                    )
+                    self.assertEqual(
+                        window._tree_view.visualRect(child_index).x(),
+                        x_before + style.TREE_INDENT,
+                    )
+                    window._tree_view.collapse(index)
+                    QApplication.processEvents()
+                    self.assertEqual(window._tree_view.visualRect(index).x(), x_before)
 
     def test_kind_aware_documents_render(self):
         window = MainWindow()

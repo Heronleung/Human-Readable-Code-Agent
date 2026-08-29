@@ -439,21 +439,6 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
 
 
-class _ProjectTreeView(QTreeView):
-    """A :class:`QTreeView` whose native branch arrows are suppressed.
-
-    The folder disclosure chevron (``›`` / ``⌄``) is drawn in the item text by
-    :func:`hrca.style.tree_folder_label`, so the native branch arrow is
-    redundant; this subclass paints no branch indicator while keeping normal Qt
-    tree keyboard navigation (Right expands, Left collapses or moves to the
-    parent) intact.
-    """
-
-    def drawBranches(self, painter, rect, index) -> None:
-        """Paint nothing: the chevron lives in the item text, not the branch."""
-        return None
-
-
 class MainWindow(QMainWindow):
     """Render the IDE workspace shell (P3.2 presentation-only surface)."""
 
@@ -592,7 +577,7 @@ class MainWindow(QMainWindow):
 
         self._tree_model = QStandardItemModel()
         self._tree_model.setHorizontalHeaderLabels(["Name"])
-        self._tree_view = _ProjectTreeView()
+        self._tree_view = QTreeView()
         self._tree_view.setObjectName("projectTree")
         self._tree_view.setModel(self._tree_model)
         self._tree_view.setHeaderHidden(True)
@@ -605,8 +590,6 @@ class MainWindow(QMainWindow):
         self._tree_view.setFrameShape(QFrame.NoFrame)
         self._tree_view.setAccessibleName("Project Explorer")
         self._tree_view.clicked.connect(self._on_tree_clicked)
-        self._tree_view.expanded.connect(self._update_folder_label)
-        self._tree_view.collapsed.connect(self._update_folder_label)
         layout.addWidget(self._tree_view, stretch=1)
 
         self._project_label = ElidedLabel("No project open")
@@ -1087,15 +1070,13 @@ class MainWindow(QMainWindow):
             name = node.get("name", "")
             children = node.get("children", [])
             if node_type == "dir":
-                # Folders show an in-text chevron unless they are leaves, so a
-                # leaf folder never pretends to be expandable.
-                item = QStandardItem(
-                    style.tree_folder_label(name, expanded=False, leaf=not children)
-                )
+                # The disclosure chevron is painted by the branch style in the
+                # fixed indicator slot, never embedded in the label, so the
+                # label is the plain name and never shifts when it toggles.
+                item = QStandardItem(name)
                 item.setEditable(False)
                 item.setData(node.get("path"), Qt.UserRole)
                 item.setData(node_type, Qt.UserRole + 1)
-                item.setData(name, Qt.UserRole + 3)
                 item.setFont(style.tree_folder_font())
                 parent.appendRow(item)
                 self._add_tree_nodes(item, children)
@@ -1105,7 +1086,6 @@ class MainWindow(QMainWindow):
                 item.setData(node.get("path"), Qt.UserRole)
                 item.setData(node_type, Qt.UserRole + 1)
                 item.setData(node.get("kind"), Qt.UserRole + 2)
-                item.setData(name, Qt.UserRole + 3)
                 parent.appendRow(item)
 
     def _on_tree_clicked(self, index) -> None:
@@ -1125,17 +1105,6 @@ class MainWindow(QMainWindow):
         if not rel_path:
             return
         self._open_document(rel_path)
-
-    def _update_folder_label(self, index) -> None:
-        """Sync a folder row's in-text chevron to its expanded state."""
-        item = self._tree_model.itemFromIndex(index)
-        if item is None or item.data(Qt.UserRole + 1) != "dir":
-            return
-        name = item.data(Qt.UserRole + 3)
-        leaf = item.rowCount() == 0
-        item.setText(
-            style.tree_folder_label(name, self._tree_view.isExpanded(index), leaf)
-        )
 
     def _close_tab(self, index: int) -> None:
         widget = self._source_tabs.widget(index)

@@ -31,10 +31,19 @@ relied on alone.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontDatabase,
+    QGuiApplication,
+    QPainter,
+    QPen,
+    QPolygonF,
+)
+from PySide6.QtWidgets import QProxyStyle, QStyle
 
 # ---------------------------------------------------------------------------
 # Spacing — a 4 px base scale. Only these values may appear as margins/padding.
@@ -94,14 +103,18 @@ BOTTOM_PANEL_DEFAULT_HEIGHT = 240
 BOTTOM_PANEL_STRETCH = 1
 
 TREE_ROW_HEIGHT = 22
-TREE_INDENT = 12
+TREE_INDENT = 20
 TAB_HEIGHT = 30
 
-# Folder disclosure chevrons, rendered in the item text (not the native branch
-# arrow). Both are conventional, non-emoji punctuation: a single right angle
-# quote for collapsed, and an "up arrowhead" (U+2304) for expanded.
-TREE_CHEVRON_COLLAPSED = "›"
-TREE_CHEVRON_EXPANDED = "⌄"
+# Project Explorer disclosure indicators. Every tree depth reserves a fixed
+# 20 px slot for the branch indicator; a 12 x 12 px vector chevron is painted
+# dead-centre inside that slot and only its direction changes with state. The
+# 20 px slot and 22 px row together give an at-least-20 x 20 interactive hit
+# target. No disclosure glyph is ever embedded in a folder label.
+TREE_DISCLOSURE_SLOT_WIDTH = 20
+TREE_CHEVRON_SIZE = 12
+TREE_CHEVRON_STROKE = 1.5
+TREE_DISCLOSURE_HIT_SIZE = 20
 
 SPLITTER_HANDLE_WIDTH = 6          # 6 px interactive hit area
 SPLITTER_HAIRLINE_WIDTH = 1        # visually a 1 px hairline
@@ -318,17 +331,68 @@ def tree_folder_font(base: Optional[QFont] = None) -> QFont:
     return font
 
 
-def tree_folder_label(name: str, expanded: bool, leaf: bool) -> str:
-    """Return the display label for a folder row.
+def tree_chevron_vertices(open_state: bool) -> List[QPointF]:
+    """Return the 3 vertices of a chevron centred at the origin.
 
-    Leaf folders show just their name (no chevron, so they never pretend to be
-    expandable); non-leaf folders show the expanded ``⌄`` or collapsed ``›``
-    chevron before the name.
+    A right-pointing chevron (collapsed, ``open_state`` false) or a
+    down-pointing chevron (expanded, ``open_state`` true), both spanning the
+    full :data:`TREE_CHEVRON_SIZE` square. The only difference between the two
+    states is the chevron direction.
     """
-    if leaf:
-        return name
-    glyph = TREE_CHEVRON_EXPANDED if expanded else TREE_CHEVRON_COLLAPSED
-    return f"{glyph} {name}"
+    half = TREE_CHEVRON_SIZE / 2.0
+    if open_state:
+        return [QPointF(-half, -half), QPointF(0.0, half), QPointF(half, -half)]
+    return [QPointF(-half, -half), QPointF(half, 0.0), QPointF(-half, half)]
+
+
+class TreeBranchStyle(QProxyStyle):
+    """Draw the tree branch indicator as a monochrome vector chevron.
+
+    Replaces Qt's native branch arrow with a right-pointing (collapsed) or
+    down-pointing (expanded) chevron painted inside a fixed
+    :data:`TREE_CHEVRON_SIZE` square centred in the fixed
+    :data:`TREE_DISCLOSURE_SLOT_WIDTH` branch slot. Toggling a folder flips only
+    the chevron direction — the slot width, label position, child indentation
+    and row geometry are all untouched. Leaf items (no ``State_Children``) draw
+    no indicator while keeping their normal depth alignment.
+    """
+
+    def __init__(self, palette: Palette) -> None:
+        super().__init__()
+        self._palette = palette
+
+    def set_palette(self, palette: Palette) -> None:
+        """Point the chevron at a different palette (e.g. light -> dark)."""
+        self._palette = palette
+
+    def drawPrimitive(self, element, option, painter, widget=None) -> None:
+        if element == QStyle.PE_IndicatorBranch and option is not None:
+            self._draw_branch(option, painter)
+            return
+        super().drawPrimitive(element, option, painter, widget)
+
+    def _draw_branch(self, option, painter) -> None:
+        if not (option.state & QStyle.State_Children):
+            return  # leaf: no indicator, normal depth alignment retained
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        color = QColor(
+            self._palette.text
+            if (option.state & QStyle.State_MouseOver)
+            or (option.state & QStyle.State_Selected)
+            else self._palette.text_secondary
+        )
+        pen = QPen(color, TREE_CHEVRON_STROKE)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        center = option.rect.center()
+        points = QPolygonF(tree_chevron_vertices(bool(option.state & QStyle.State_Open)))
+        points.translate(center.x(), center.y())
+        painter.drawPolyline(points)
+        painter.restore()
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +573,6 @@ QTreeView#projectTree::item:selected {
     color: $text;
 }
 QTreeView#projectTree::item:hover { background: $sunken; }
-QTreeView#projectTree::branch { background: transparent; }
 
 /* ---- code and document views ---- */
 QPlainTextEdit { background: $sunken; color: $text; border: none; }
@@ -574,6 +637,13 @@ QSplitter::handle { background: transparent; }
     return qss
 
 
+# The single branch style installed on the application. It is created once and
+# reused across :func:`apply` calls (which may fire more than once per process,
+# e.g. when a ``MainWindow`` re-applies its palette), so the chevron style is
+# never stacked on top of itself.
+_tree_branch_style: Optional[TreeBranchStyle] = None
+
+
 def apply(app: QGuiApplication, palette: Palette) -> None:
     """Install ``palette`` as the application style sheet and base font.
 
@@ -581,8 +651,18 @@ def apply(app: QGuiApplication, palette: Palette) -> None:
     it; individual widgets that need a smaller or fixed-width face call
     :func:`panel_header_font` / :func:`code_font` and set it directly (a Qt
     style-sheet ``font-size`` would otherwise override any programmatic font).
+
+    The :class:`TreeBranchStyle` is installed *before* the style sheet so Qt
+    wraps it (rather than the reverse) and still delegates the branch indicator
+    to it; everything else keeps the style-sheet styling.
     """
+    global _tree_branch_style
     app.setFont(ui_font())
+    if _tree_branch_style is None:
+        _tree_branch_style = TreeBranchStyle(palette)
+        app.setStyle(_tree_branch_style)
+    else:
+        _tree_branch_style.set_palette(palette)
     app.setStyleSheet(build_stylesheet(palette))
 
 
@@ -674,8 +754,10 @@ __all__ = [
     "BOTTOM_PANEL_STRETCH",
     "TREE_ROW_HEIGHT",
     "TREE_INDENT",
-    "TREE_CHEVRON_COLLAPSED",
-    "TREE_CHEVRON_EXPANDED",
+    "TREE_DISCLOSURE_SLOT_WIDTH",
+    "TREE_CHEVRON_SIZE",
+    "TREE_CHEVRON_STROKE",
+    "TREE_DISCLOSURE_HIT_SIZE",
     "TAB_HEIGHT",
     "SPLITTER_HANDLE_WIDTH",
     "SPLITTER_HAIRLINE_WIDTH",
@@ -715,7 +797,8 @@ __all__ = [
     "code_font",
     "panel_header_font",
     "tree_folder_font",
-    "tree_folder_label",
+    "tree_chevron_vertices",
+    "TreeBranchStyle",
     "detect_color_scheme",
     "palette_for",
     "contrast_ratio",

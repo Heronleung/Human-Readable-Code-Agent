@@ -131,8 +131,11 @@ below the accepted root — not only Python files — while still excluding
 `.git`, `.venv`, `__pycache__`, `node_modules`, `build` and `dist`, skipping
 symlinks, and rejecting `..` traversal and symlink escape outside the accepted
 root with bounded errors. Each file carries a render `kind` (`source` /
-`preview` / `binary` / `unsupported`); the Project Explorer shows folders with
-an in-text `›`/`⌄` chevron (leaf folders have none). `get_document` returns a
+`preview` / `binary` / `unsupported`); the Project Explorer draws each folder's
+disclosure indicator as a fixed 20 px chevron slot painted by a
+`QProxyStyle` — a right-pointing chevron when collapsed and a down-pointing one
+when expanded — so toggling a folder never shifts its label, child indentation
+or row geometry (leaf folders show no indicator). `get_document` returns a
 `source` result for Python files, a clearly labelled read-only `preview` for
 common text/config formats, and a bounded `unavailable` result (with a fixed
 `reason`) for binary, unsupported, missing, unreadable or oversized files.
