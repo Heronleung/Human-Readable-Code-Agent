@@ -69,6 +69,7 @@ from PySide6.QtGui import (
     QTextCursor,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QFileDialog,
     QFrame,
@@ -439,6 +440,45 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
 
 
+class _ProjectTreeView(QTreeView):
+    """A :class:`QTreeView` that toggles a folder on the *first* click.
+
+    Qt delivers a rapid second click as a ``MouseButtonDblClick`` and routes it
+    to :meth:`mouseDoubleClickEvent`, which neither emits ``clicked`` /
+    ``doubleClicked`` for the branch indicator nor toggles it. The visible
+    result is a folder that will not close until the double-click interval has
+    elapsed. Toggling on both the press and the double-click makes every click a
+    single, immediate toggle, and routing the branch press through
+    :class:`QAbstractItemView` (instead of QTreeView's native branch handler)
+    prevents a double toggle.
+    """
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._toggle_dir_at(event):
+            QAbstractItemView.mousePressEvent(self, event)
+            return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._toggle_dir_at(event):
+            QAbstractItemView.mouseDoubleClickEvent(self, event)
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def _toggle_dir_at(self, event) -> bool:
+        index = self.indexAt(event.position().toPoint())
+        if not index.isValid():
+            return False
+        item = self.model().itemFromIndex(index)
+        if item is None or item.data(Qt.UserRole + 1) != "dir":
+            return False
+        if self.isExpanded(index):
+            self.collapse(index)
+        else:
+            self.expand(index)
+        return True
+
+
 class MainWindow(QMainWindow):
     """Render the IDE workspace shell (P3.2 presentation-only surface)."""
 
@@ -577,7 +617,7 @@ class MainWindow(QMainWindow):
 
         self._tree_model = QStandardItemModel()
         self._tree_model.setHorizontalHeaderLabels(["Name"])
-        self._tree_view = QTreeView()
+        self._tree_view = _ProjectTreeView()
         self._tree_view.setObjectName("projectTree")
         self._tree_view.setModel(self._tree_model)
         self._tree_view.setHeaderHidden(True)
@@ -1093,12 +1133,6 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         node_type = item.data(Qt.UserRole + 1)
-        if node_type == "dir":
-            if self._tree_view.isExpanded(index):
-                self._tree_view.collapse(index)
-            else:
-                self._tree_view.expand(index)
-            return
         if node_type != "file":
             return
         rel_path = item.data(Qt.UserRole)

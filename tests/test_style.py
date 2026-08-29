@@ -338,7 +338,7 @@ class TreeStyleTests(unittest.TestCase):
     def test_disclosure_slot_and_chevron_are_fixed(self):
         self.assertEqual(style.TREE_DISCLOSURE_SLOT_WIDTH, 20)
         self.assertEqual(style.TREE_INDENT, style.TREE_DISCLOSURE_SLOT_WIDTH)
-        self.assertEqual(style.TREE_CHEVRON_SIZE, 12)
+        self.assertEqual(style.TREE_CHEVRON_SIZE, 6)
         self.assertGreater(style.TREE_CHEVRON_STROKE, 0)
         self.assertLessEqual(style.TREE_CHEVRON_STROKE, 3)
         self.assertGreaterEqual(style.TREE_DISCLOSURE_HIT_SIZE, 20)

@@ -107,12 +107,12 @@ TREE_INDENT = 20
 TAB_HEIGHT = 30
 
 # Project Explorer disclosure indicators. Every tree depth reserves a fixed
-# 20 px slot for the branch indicator; a 12 x 12 px vector chevron is painted
+# 20 px slot for the branch indicator; a 6 x 6 px vector chevron is painted
 # dead-centre inside that slot and only its direction changes with state. The
 # 20 px slot and 22 px row together give an at-least-20 x 20 interactive hit
 # target. No disclosure glyph is ever embedded in a folder label.
 TREE_DISCLOSURE_SLOT_WIDTH = 20
-TREE_CHEVRON_SIZE = 12
+TREE_CHEVRON_SIZE = 6
 TREE_CHEVRON_STROKE = 1.5
 TREE_DISCLOSURE_HIT_SIZE = 20
 

@@ -16,8 +16,8 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QEvent, QEventLoop, QProcess, QTimer, Qt, qInstallMessageHandler
-    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtCore import QEvent, QEventLoop, QPointF, QProcess, QTimer, Qt, qInstallMessageHandler
+    from PySide6.QtGui import QKeyEvent, QMouseEvent
     from PySide6.QtWidgets import (
         QApplication,
         QLabel,
@@ -539,6 +539,20 @@ class ExplorerTreeTests(unittest.TestCase):
     def _app_index(self, window):
         return window._tree_model.indexFromItem(window._tree_model.item(0, 0))
 
+    def _mouse_event(self, view, etype, index):
+        pos = view.visualRect(index).center()
+        return QMouseEvent(
+            etype,
+            QPointF(pos),
+            QPointF(view.viewport().mapToGlobal(pos)),
+            Qt.LeftButton,
+            Qt.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+
+    def _press(self, view, index):
+        view.mousePressEvent(self._mouse_event(view, QEvent.MouseButtonPress, index))
+
     def test_folder_labels_are_plain_names_without_chevron_glyphs(self):
         window = self._window_with_tree()
         app_item = window._tree_model.item(0, 0)
@@ -607,9 +621,23 @@ class ExplorerTreeTests(unittest.TestCase):
             return True
 
         window._send = fake_send
-        window._on_tree_clicked(index)
+        self._press(window._tree_view, index)
         self.assertEqual(sent, [])  # no document request for a folder
         self.assertTrue(window._tree_view.isExpanded(index))
+
+    def test_folder_rapid_double_click_toggles_twice(self):
+        window = self._window_with_tree()
+        index = self._app_index(window)
+        view = window._tree_view
+        self.assertFalse(view.isExpanded(index))
+        # A rapid second click arrives as a MouseButtonDblClick; both clicks must
+        # toggle, so an open then a close leaves the folder collapsed again.
+        self._press(view, index)
+        self.assertTrue(view.isExpanded(index))
+        view.mouseDoubleClickEvent(
+            self._mouse_event(view, QEvent.MouseButtonDblClick, index)
+        )
+        self.assertFalse(view.isExpanded(index))
 
     def test_keyboard_right_expands_left_collapses(self):
         window = self._window_with_tree()
@@ -700,7 +728,7 @@ class ExplorerTreeTests(unittest.TestCase):
 
         app_item = window._tree_model.item(0, 0)
         index = window._tree_model.indexFromItem(app_item)
-        window._on_tree_clicked(index)  # expand a folder
+        self._press(window._tree_view, index)  # expand a folder
 
         self.assertEqual(window._source_tabs.count(), tabs_before)
         self.assertEqual(window._selected_tab, selected_before)
