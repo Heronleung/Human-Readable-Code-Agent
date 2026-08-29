@@ -87,15 +87,17 @@ semantics are invented):
   (never nested inside Source Code) that can display the bounded
   `empty` / `loading` / `available` / `stale` / `conflict` / `unsupported`
   states — in P3.2 no Twin entity exists, so the honest default is `empty`.
-- **Agent Chat** — a full-width lower surface directly beneath all three panes,
-  with a disabled composer and send action labelled "provider-backed chat
-  unavailable"; no provider, credential, network or inference call is ever
-  made.
-- **Review & Evidence drawer** — a collapsed-by-default secondary surface
-  carrying **Plan / Diff / Problems / Tests / Evidence** (the P3.1 plan, raw
-  result, validation, limitations and outcome data). Diff is explicitly
-  unavailable in this read-only slice: no code-proposal capability exists, so
-  there is nothing to diff and no way to apply changes.
+- **One bottom utility panel** — a single full-width surface directly beneath
+  all three panes, with one flat tab bar (`Agent Chat | Plan | Diff | Problems
+  | Tests | Evidence`, Agent Chat first) and one disclosure chevron (`▾`/`▴`)
+  at the far right that collapses the panel to its header row and restores the
+  last usable height. **Agent Chat** (the default tab) carries a disabled
+  composer and send action labelled "provider-backed chat unavailable" — no
+  provider, credential, network or inference call is ever made — while the
+  other five tabs surface the P3.1 plan, raw result, validation, limitations
+  and outcome data. **Diff** is explicitly unavailable in this read-only
+  slice: no code-proposal capability exists, so there is nothing to diff and
+  no way to apply changes.
 - **A single-row status bar** — a transient message plus six persistent fields
   (root, repository, file, Twin, provider, validation state).
 

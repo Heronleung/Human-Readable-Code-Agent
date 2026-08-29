@@ -17,7 +17,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QEventLoop, QProcess, QTimer, qInstallMessageHandler
-    from PySide6.QtWidgets import QApplication, QLabel, QToolButton, QWidget
+    from PySide6.QtWidgets import (
+        QApplication,
+        QLabel,
+        QStackedWidget,
+        QTabBar,
+        QToolButton,
+        QWidget,
+    )
 
     from hrca import contract, style
     from hrca.client import (
@@ -297,28 +304,33 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertEqual(splitter.widget(1), window._source_panel)
         self.assertEqual(splitter.widget(2), window._twin_panel)
 
-    def test_chat_is_full_width_beneath_panes(self):
+    def test_bottom_panel_spans_full_width_beneath_panes(self):
         window = MainWindow()
         self.assertEqual(window._vertical_splitter.count(), 2)
-        # The lower area carries the chat header + body and the drawer; the chat
-        # header is present and the chat body is not hidden by default (the
-        # window is never shown in offscreen tests, so check the explicit-hidden
-        # flag rather than isVisible()).
-        self.assertIsNotNone(window._chat_header)
-        self.assertFalse(window._chat_body.isHidden())
+        # The bottom panel is the second (and only lower) child of the vertical
+        # splitter, directly beneath the primary workspace.
+        self.assertEqual(window._vertical_splitter.widget(1), window._bottom_panel)
+        self.assertEqual(window._bottom_tabs.count(), 6)
+        # The body is visible by default (not explicitly hidden).
+        self.assertFalse(window._bottom_body.isHidden())
 
-    def test_drawer_starts_collapsed(self):
+    def test_bottom_panel_defaults_to_expanded_agent_chat(self):
         window = MainWindow()
-        self.assertFalse(window._drawer_expanded)
-        self.assertTrue(window._drawer_body.isHidden())
-        self.assertFalse(window._drawer_toggle_button.isChecked())
+        self.assertTrue(window._is_expanded)
+        self.assertEqual(window._selected_tab, "chat")
+        self.assertEqual(window._bottom_tabs.currentIndex(), 0)
+        self.assertEqual(window._bottom_body.currentIndex(), 0)
 
-    def test_drawer_toggles_expand(self):
+    def test_disclosure_toggles_collapse_and_expand(self):
         window = MainWindow()
-        window._on_drawer_toggle()
-        self.assertTrue(window._drawer_expanded)
-        self.assertFalse(window._drawer_body.isHidden())
-        self.assertTrue(window._drawer_toggle_button.isChecked())
+        window._set_expanded(False)
+        self.assertFalse(window._is_expanded)
+        self.assertTrue(window._bottom_body.isHidden())
+        self.assertEqual(window._disclosure_button.text(), "▴")
+        window._set_expanded(True)
+        self.assertTrue(window._is_expanded)
+        self.assertFalse(window._bottom_body.isHidden())
+        self.assertEqual(window._disclosure_button.text(), "▾")
 
     def test_source_starts_on_empty_state(self):
         window = MainWindow()
@@ -389,11 +401,11 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertLessEqual(explorer_rect.right(), source_rect.left())
         self.assertLessEqual(source_rect.right(), twin_rect.left())
 
-        # Agent Chat spans the full primary-workspace width.
-        self.assertAlmostEqual(window._chat_body.width(), splitter.width(), delta=1)
+        # The bottom panel body spans the full primary-workspace width.
+        self.assertAlmostEqual(window._bottom_body.width(), splitter.width(), delta=1)
 
-        # The visible chat body has useful, non-zero height.
-        self.assertGreater(window._chat_body.height(), 40)
+        # The expanded bottom panel body has a positive, usable height.
+        self.assertGreater(window._bottom_body.height(), 0)
 
         # The status bar is below the workspace/lower-area region and is one
         # fixed-height row.
@@ -478,17 +490,21 @@ class MainWindowLayoutTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class VerticalDensityAndControlTests(unittest.TestCase):
-    """P3.2 vertical-density + Review & Evidence control remediation.
+class BottomPanelTests(unittest.TestCase):
+    """P3.2 single bottom utility panel + monochrome disclosure control.
 
-    The workspace, Agent Chat and the Review & Evidence drawer must tile the
-    vertical content area continuously — no unowned blank band — at every
-    supported size in both palettes, and in the default, manually-moved and
-    both drawer states. The drawer's leading disclosure glyph is gone, and its
-    toggle is a non-emoji text chevron.
+    One bottom panel with one tab bar (six tabs, Agent Chat first) and one
+    disclosure chevron replaces the former Agent Chat / Review & Evidence
+    drawer pair. The primary workspace, the panel and the status bar must tile
+    the vertical content area continuously — no unowned blank band — at every
+    supported size in both palettes, in the expanded and collapsed states, and
+    after a splitter move. Tab switching must never move or resize the panel
+    or the workspace, and the disclosure glyphs are non-emoji text chevrons.
     """
 
     SIZES = ((1024, 640), (1360, 840), (1920, 1080))
+    TAB_KEYS = ("chat", "plan", "diff", "problems", "tests", "evidence")
+    TAB_LABELS = ("Agent Chat", "Plan", "Diff", "Problems", "Tests", "Evidence")
 
     def setUp(self):
         _app()
@@ -500,46 +516,256 @@ class VerticalDensityAndControlTests(unittest.TestCase):
         QApplication.processEvents()
         return window
 
-    def _assert_vertical_tiling(self, window):
-        lower = window._lower_area
-        vsplit = window._vertical_splitter
-        hsplit = window._horizontal_splitter
+    # -- widget hierarchy and legacy removal -----------------------------
 
-        # The lower area is exactly tiled by its three children (zero margins,
-        # zero spacing), so there is no unowned blank band inside it.
+    def test_single_bottom_panel_hierarchy(self):
+        window = MainWindow()
+        # The vertical splitter holds exactly the workspace and the one panel.
+        self.assertEqual(window._vertical_splitter.count(), 2)
+        self.assertEqual(window._vertical_splitter.widget(1), window._bottom_panel)
+        # One tab bar with six tabs, one disclosure, one stacked body.
+        self.assertIsInstance(window._bottom_tabs, QTabBar)
+        self.assertEqual(window._bottom_tabs.count(), 6)
+        self.assertIsInstance(window._disclosure_button, QToolButton)
+        self.assertIsInstance(window._bottom_body, QStackedWidget)
+        self.assertEqual(window._bottom_body.count(), 6)
+        # The header is a single fixed-height row.
         self.assertEqual(
-            window._chat_header.height()
-            + window._chat_body.height()
-            + window._drawer.height(),
-            lower.height(),
+            window._bottom_panel_header.height(), style.BOTTOM_PANEL_HEADER_HEIGHT
         )
 
-        # The vertical splitter allocates its full height to the workspace, the
-        # 6 px handle and the lower area — again with no slack.
+    def test_legacy_drawer_and_chat_controls_removed(self):
+        window = MainWindow()
+        for attr in (
+            "_lower_area",
+            "_chat_header",
+            "_chat_body",
+            "_chat_collapse_button",
+            "_drawer",
+            "_drawer_header",
+            "_drawer_body",
+            "_drawer_tabs",
+            "_drawer_toggle_button",
+            "_drawer_expanded",
+        ):
+            self.assertFalse(hasattr(window, attr), f"legacy attribute {attr} remains")
+        for method in (
+            "_build_lower_area",
+            "_build_chat_body",
+            "_build_drawer",
+            "_on_drawer_toggle",
+            "_set_drawer_expanded",
+            "_toggle_chat",
+        ):
+            self.assertFalse(hasattr(window, method), f"legacy method {method} remains")
+
+    def test_required_tabs_in_order(self):
+        window = MainWindow()
+        labels = [
+            window._bottom_tabs.tabText(i) for i in range(window._bottom_tabs.count())
+        ]
+        self.assertEqual(labels, list(self.TAB_LABELS))
+
+    # -- tab selection ----------------------------------------------------
+
+    def test_tab_switch_selects_one_body_without_moving_panel(self):
+        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
+        panel = window._bottom_panel
+        panel_top = panel.mapTo(window, panel.rect().topLeft()).y()
+        panel_height = panel.height()
+        workspace_rect = window._horizontal_splitter.geometry()
+
+        for index, key in enumerate(self.TAB_KEYS):
+            with self.subTest(index=index, key=key):
+                window._bottom_tabs.setCurrentIndex(index)
+                QApplication.processEvents()
+
+                self.assertEqual(window._selected_tab, key)
+                self.assertEqual(window._bottom_tabs.currentIndex(), index)
+                self.assertEqual(window._bottom_body.currentIndex(), index)
+                self.assertIs(
+                    window._bottom_body.currentWidget(), window._bottom_body.widget(index)
+                )
+                # Exactly one body page is shown; every other is hidden.
+                for i in range(window._bottom_body.count()):
+                    self.assertEqual(
+                        window._bottom_body.widget(i).isHidden(), i != index
+                    )
+                # The panel and the workspace keep their geometry.
+                self.assertEqual(
+                    panel.mapTo(window, panel.rect().topLeft()).y(), panel_top
+                )
+                self.assertEqual(panel.height(), panel_height)
+                self.assertEqual(
+                    window._horizontal_splitter.geometry(), workspace_rect
+                )
+
+    def test_tab_switch_while_collapsed_stays_collapsed(self):
+        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
+        window._set_expanded(False)
+        QApplication.processEvents()
+        self.assertFalse(window._is_expanded)
+        self.assertEqual(window._bottom_panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT)
+
+        window._bottom_tabs.setCurrentIndex(2)  # Diff
+        QApplication.processEvents()
+
+        self.assertEqual(window._selected_tab, "diff")
+        self.assertEqual(window._bottom_body.currentIndex(), 2)
+        # Still collapsed: switching tabs must not resurrect the body.
+        self.assertFalse(window._is_expanded)
+        self.assertEqual(window._bottom_panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT)
+
+    # -- collapse / expand ------------------------------------------------
+
+    def test_collapse_and_expand_preserve_tab_and_height(self):
+        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
+        # Move to a non-default tab and give the panel a known taller height.
+        window._bottom_tabs.setCurrentIndex(4)  # Tests
+        QApplication.processEvents()
+        total = sum(window._vertical_splitter.sizes())
+        window._vertical_splitter.setSizes([total - 300, 300])
+        QApplication.processEvents()
+        expanded_height = window._bottom_panel.height()
+        self.assertGreaterEqual(expanded_height, style.BOTTOM_PANEL_MIN_HEIGHT)
+        workspace_expanded = window._horizontal_splitter.height()
+
+        # Collapse: only the header row remains; height returns to the workspace.
+        window._set_expanded(False)
+        QApplication.processEvents()
+        self.assertFalse(window._is_expanded)
+        self.assertTrue(window._bottom_body.isHidden())
         self.assertEqual(
-            hsplit.height() + style.SPLITTER_HANDLE_WIDTH + lower.height(),
+            window._bottom_panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT
+        )
+        self.assertGreater(window._horizontal_splitter.height(), workspace_expanded)
+        # The selected tab survives the collapse.
+        self.assertEqual(window._selected_tab, "tests")
+        self.assertEqual(window._bottom_tabs.currentIndex(), 4)
+
+        # Expand: the tab and the last usable height are restored.
+        window._set_expanded(True)
+        QApplication.processEvents()
+        self.assertTrue(window._is_expanded)
+        self.assertFalse(window._bottom_body.isHidden())
+        self.assertEqual(window._selected_tab, "tests")
+        self.assertEqual(window._bottom_tabs.currentIndex(), 4)
+        self.assertEqual(window._bottom_body.currentIndex(), 4)
+        self.assertEqual(window._bottom_panel.height(), expanded_height)
+        self.assertEqual(window._horizontal_splitter.height(), workspace_expanded)
+
+    def test_repeated_collapse_expand_cycles_are_stable(self):
+        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
+        total = sum(window._vertical_splitter.sizes())
+        window._vertical_splitter.setSizes([total - 280, 280])
+        QApplication.processEvents()
+        expanded_height = window._bottom_panel.height()
+
+        for _ in range(3):
+            window._set_expanded(False)
+            QApplication.processEvents()
+            self.assertFalse(window._is_expanded)
+            self.assertEqual(
+                window._bottom_panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT
+            )
+            window._set_expanded(True)
+            QApplication.processEvents()
+            self.assertTrue(window._is_expanded)
+            self.assertEqual(window._bottom_panel.height(), expanded_height)
+
+    def test_set_expanded_is_idempotent(self):
+        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
+        expanded_sizes = list(window._vertical_splitter.sizes())
+        window._set_expanded(True)  # already expanded — must not move anything
+        QApplication.processEvents()
+        self.assertEqual(list(window._vertical_splitter.sizes()), expanded_sizes)
+
+        window._set_expanded(False)
+        QApplication.processEvents()
+        collapsed_sizes = list(window._vertical_splitter.sizes())
+        window._set_expanded(False)  # already collapsed — must not move anything
+        QApplication.processEvents()
+        self.assertEqual(list(window._vertical_splitter.sizes()), collapsed_sizes)
+
+    # -- disclosure control ----------------------------------------------
+
+    def test_disclosure_chevron_and_accessibility(self):
+        window = MainWindow()
+        # Expanded: down chevron + "Collapse ..." semantics.
+        self.assertEqual(window._disclosure_button.text(), "▾")
+        self.assertEqual(
+            window._disclosure_button.accessibleName(), "Collapse bottom panel"
+        )
+        self.assertEqual(
+            window._disclosure_button.toolTip(), "Collapse bottom panel"
+        )
+
+        window._set_expanded(False)
+        self.assertEqual(window._disclosure_button.text(), "▴")
+        self.assertEqual(
+            window._disclosure_button.accessibleName(), "Expand bottom panel"
+        )
+        self.assertEqual(
+            window._disclosure_button.toolTip(), "Expand bottom panel"
+        )
+
+        window._set_expanded(True)
+        self.assertEqual(window._disclosure_button.text(), "▾")
+
+    def test_disclosure_click_toggles(self):
+        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
+        self.assertTrue(window._is_expanded)
+        window._disclosure_button.click()
+        QApplication.processEvents()
+        self.assertFalse(window._is_expanded)
+        self.assertTrue(window._bottom_body.isHidden())
+        window._disclosure_button.click()
+        QApplication.processEvents()
+        self.assertTrue(window._is_expanded)
+        self.assertFalse(window._bottom_body.isHidden())
+
+    # -- vertical tiling --------------------------------------------------
+
+    def _assert_vertical_tiling(self, window):
+        vsplit = window._vertical_splitter
+        hsplit = window._horizontal_splitter
+        panel = window._bottom_panel
+        header = window._bottom_panel_header
+
+        # The vertical splitter allocates its full height to the workspace, the
+        # handle and the panel — no slack.
+        self.assertEqual(
+            hsplit.height() + style.SPLITTER_HANDLE_WIDTH + panel.height(),
             vsplit.height(),
         )
 
-        # The lower area sits directly on the status bar (no dead band between
-        # the content region and the bar).
+        # The panel is exactly its header plus (when expanded) the body.
+        if window._is_expanded:
+            self.assertGreater(window._bottom_body.height(), 0)
+            self.assertEqual(
+                header.height() + window._bottom_body.height(), panel.height()
+            )
+        else:
+            self.assertEqual(panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT)
+
+        # The panel sits directly on the status bar (no dead band).
         status_bar = window.findChild(QWidget, "statusBar")
         self.assertIsNotNone(status_bar)
         self.assertEqual(
-            lower.mapTo(window, lower.rect().topLeft()).y() + lower.height(),
+            panel.mapTo(window, panel.rect().topLeft()).y() + panel.height(),
             status_bar.mapTo(window, status_bar.rect().topLeft()).y(),
         )
 
-    def test_vertical_tiling_in_all_states(self):
+    def test_vertical_tiling_expanded_and_collapsed(self):
         for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
             for width, height in self.SIZES:
-                for drawer_state in ("collapsed", "expanded"):
+                for state in ("expanded", "collapsed"):
                     with self.subTest(
-                        palette=palette.name, size=(width, height), drawer=drawer_state
+                        palette=palette.name, size=(width, height), state=state
                     ):
                         window = self._laid_out(palette, width, height)
-                        if drawer_state == "expanded":
-                            window._set_drawer_expanded(True)
+                        if state == "collapsed":
+                            window._set_expanded(False)
                             QApplication.processEvents()
                         self._assert_vertical_tiling(window)
 
@@ -557,87 +783,31 @@ class VerticalDensityAndControlTests(unittest.TestCase):
                     QApplication.processEvents()
                     self._assert_vertical_tiling(window)
 
-    def test_chat_body_respects_min_height(self):
+    def test_expanded_panel_respects_min_height(self):
         for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
             for width, height in self.SIZES:
                 with self.subTest(palette=palette.name, size=(width, height)):
                     window = self._laid_out(palette, width, height)
                     self.assertGreaterEqual(
-                        window._chat_body.height(), style.CHAT_BODY_MIN_HEIGHT
+                        window._bottom_panel.height(), style.BOTTOM_PANEL_MIN_HEIGHT
                     )
-
-    def test_expanded_drawer_body_respects_min_height(self):
-        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
-            for width, height in self.SIZES:
-                with self.subTest(palette=palette.name, size=(width, height)):
-                    window = self._laid_out(palette, width, height)
-                    window._set_drawer_expanded(True)
-                    QApplication.processEvents()
                     self.assertGreaterEqual(
-                        window._drawer_body.height(), style.DRAWER_BODY_MIN_HEIGHT
+                        window._bottom_body.height(), style.BOTTOM_PANEL_BODY_MIN_HEIGHT
                     )
 
-    def test_collapsed_drawer_reserves_only_header(self):
+    def test_collapsed_panel_reserves_only_header(self):
         for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
             with self.subTest(palette=palette.name):
                 window = self._laid_out(palette, 1360, 840)
-                self.assertTrue(window._drawer_body.isHidden())
+                window._set_expanded(False)
+                QApplication.processEvents()
+                self.assertTrue(window._bottom_body.isHidden())
                 self.assertEqual(
-                    window._drawer.height(), window._drawer_header.height()
+                    window._bottom_panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT
                 )
-
-    def test_drawer_toggle_chevron_and_accessibility(self):
-        window = MainWindow()
-        # Collapsed: down chevron + "Open ..." semantics.
-        self.assertEqual(window._drawer_toggle_button.text(), "▾")
-        self.assertEqual(
-            window._drawer_toggle_button.accessibleName(), "Open Review & Evidence"
-        )
-        self.assertEqual(
-            window._drawer_toggle_button.toolTip(), "Open Review & Evidence"
-        )
-        self.assertFalse(window._drawer_toggle_button.isChecked())
-
-        window._set_drawer_expanded(True)
-        self.assertEqual(window._drawer_toggle_button.text(), "▴")
-        self.assertEqual(
-            window._drawer_toggle_button.accessibleName(), "Close Review & Evidence"
-        )
-        self.assertEqual(
-            window._drawer_toggle_button.toolTip(), "Close Review & Evidence"
-        )
-        self.assertTrue(window._drawer_toggle_button.isChecked())
-
-        window._set_drawer_expanded(False)
-        self.assertEqual(window._drawer_toggle_button.text(), "▾")
-
-    def test_review_evidence_label_is_plain_text(self):
-        window = MainWindow()
-        labels = [
-            widget
-            for widget in window._drawer_header.findChildren(QLabel)
-            if widget.text() == "Review & Evidence"
-        ]
-        self.assertEqual(len(labels), 1)
-        # No leading disclosure glyph tool-button remains in the header.
-        self.assertEqual(window._drawer_header.findChildren(QToolButton), [])
-
-    def test_chat_collapse_chevron_not_emoji(self):
-        window = MainWindow()
-        window.resize(1360, 840)
-        window.show()
-        QApplication.processEvents()
-        self.assertEqual(window._chat_collapse_button.text(), "▴")
-        self.assertEqual(
-            window._chat_collapse_button.accessibleName(), "Collapse Agent Chat"
-        )
-        window._toggle_chat()
-        self.assertEqual(window._chat_collapse_button.text(), "▾")
-        self.assertEqual(
-            window._chat_collapse_button.accessibleName(), "Expand Agent Chat"
-        )
-        window._toggle_chat()
-        self.assertEqual(window._chat_collapse_button.text(), "▴")
+                self.assertEqual(
+                    window._bottom_panel_header.height(), style.BOTTOM_PANEL_HEADER_HEIGHT
+                )
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")

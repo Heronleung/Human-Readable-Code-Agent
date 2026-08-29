@@ -79,17 +79,19 @@ CODE_LINE_HEIGHT_PERCENT = 145  # int(CODE_LINE_SPACING * 100), Qt proportional 
 COMMAND_BAR_HEIGHT = 40
 STATUS_BAR_HEIGHT = 24
 PANEL_HEADER_HEIGHT = 28
-CHAT_HEADER_HEIGHT = 28
-DRAWER_HEADER_HEIGHT = 28
 CHAT_COMPOSER_HEIGHT = 56
 
-# Useful minimum heights for the two vertically-stretchable lower-area bodies.
-# Without an explicit floor, Qt compresses each body to its bare size hint when
-# the drawer expands — the tabbed drawer body collapses to about 100 px and the
-# chat body to its composer-only minimum. These floors keep both usable at every
-# supported window size while still letting the chat body absorb surplus space.
-CHAT_BODY_MIN_HEIGHT = 180
-DRAWER_BODY_MIN_HEIGHT = 200
+# Bottom utility panel geometry. The panel is a single header (the flat tab bar
+# plus the disclosure control) above one body. The header must be tall enough to
+# fit the tab bar; the body floor keeps the selected surface usable at every
+# supported window size while the header height is the only height the panel
+# reserves when collapsed.
+BOTTOM_PANEL_HEADER_HEIGHT = 32
+BOTTOM_PANEL_BODY_MIN_HEIGHT = 200
+BOTTOM_PANEL_MIN_HEIGHT = BOTTOM_PANEL_HEADER_HEIGHT + BOTTOM_PANEL_BODY_MIN_HEIGHT
+BOTTOM_PANEL_MAX_HEIGHT = 10000
+BOTTOM_PANEL_DEFAULT_HEIGHT = 240
+BOTTOM_PANEL_STRETCH = 1
 
 TREE_ROW_HEIGHT = 22
 TREE_INDENT = 12
@@ -114,14 +116,12 @@ EXPLORER_STRETCH = 0
 SOURCE_STRETCH = 3
 TWIN_STRETCH = 2
 
-LOWER_DEFAULT_HEIGHT = 220
 TWIN_CONTENT_MAX_WIDTH = 720
 
 # Initial vertical-splitter primary-workspace height (px) and the
-# workspace : lower-area stretch ratio (3 : 1).
+# workspace : bottom-panel stretch ratio (3 : 1).
 PRIMARY_WORKSPACE_INITIAL_HEIGHT = 560
 PRIMARY_WORKSPACE_STRETCH = 3
-LOWER_AREA_STRETCH = 1
 
 # Persistent status-field maximum widths (px); the Root and File fields carry
 # long paths and are capped so the six fields stay on one row.
@@ -158,6 +158,8 @@ class Palette:
     text_secondary: str
     text_disabled: str
     accent: str
+    accent_hover: str
+    accent_pressed: str
     focus: str
     on_accent: str
     info: str
@@ -198,10 +200,12 @@ LIGHT_PALETTE = Palette(
     text="#1f2328",
     text_secondary="#57606a",
     text_disabled="#8c959f",
-    accent="#0969da",
-    focus="#0969da",
+    accent="#1f2328",
+    accent_hover="#333a41",
+    accent_pressed="#0e1013",
+    focus="#1f2328",
     on_accent="#ffffff",
-    info="#0969da",
+    info="#57606a",
     success="#1a7f37",
     warning="#9a6700",
     error="#cf222e",
@@ -223,10 +227,12 @@ DARK_PALETTE = Palette(
     text="#dcddde",
     text_secondary="#9aa0a6",
     text_disabled="#6e7681",
-    accent="#1f6feb",
-    focus="#58a6ff",
-    on_accent="#ffffff",
-    info="#58a6ff",
+    accent="#ffffff",
+    accent_hover="#e6e6e6",
+    accent_pressed="#cccccc",
+    focus="#e6e6e6",
+    on_accent="#1f2328",
+    info="#9aa0a6",
     success="#3fb950",
     warning="#d29922",
     error="#ff7b72",
@@ -388,6 +394,8 @@ def build_stylesheet(palette: Palette) -> str:
         "$text_secondary": palette.text_secondary,
         "$text_disabled": palette.text_disabled,
         "$accent": palette.accent,
+        "$accent_hover": palette.accent_hover,
+        "$accent_pressed": palette.accent_pressed,
         "$focus": palette.focus,
         "$on_accent": palette.on_accent,
         "$radius": f"{RADIUS_CONTAINER}px",
@@ -404,8 +412,7 @@ QWidget#commandBar { background: $window; border-bottom: 1px solid $border; }
 
 /* ---- pane backgrounds ---- */
 QWidget#explorerPanel, QWidget#sourcePanel, QWidget#twinPanel,
-QWidget#chatPanel, QWidget#drawer { background: $surface; }
-QWidget#chatHeader, QWidget#drawerHeader { background: $surface; }
+QWidget#chatPanel { background: $surface; }
 
 /* ---- generic flat push button ---- */
 QPushButton {
@@ -424,13 +431,14 @@ QPushButton:disabled {
 }
 QPushButton:focus { border: 1px solid $focus; }
 
-/* primary action */
+/* primary action — monochrome: near-black on light, white on dark */
 QPushButton#primaryButton {
     background: $accent;
     color: $on_accent;
     border: 1px solid $accent;
 }
-QPushButton#primaryButton:hover { background: $accent; }
+QPushButton#primaryButton:hover { background: $accent_hover; border-color: $accent_hover; }
+QPushButton#primaryButton:pressed { background: $accent_pressed; border-color: $accent_pressed; }
 QPushButton#primaryButton:disabled {
     background: $sunken;
     color: $text_disabled;
@@ -483,7 +491,7 @@ QPlainTextEdit { background: $sunken; color: $text; border: none; }
 /* ---- Twin body is a QLabel (not a text edit), so target the real class ---- */
 QLabel#twinBody { background: $surface; border: none; padding: 0; }
 
-/* ---- Source Code flat tabs ---- */
+/* ---- flat tabs (Source Code and bottom panel) ---- */
 QTabWidget#sourceTabs::pane {
     border: none;
     border-top: 1px solid $border;
@@ -505,8 +513,12 @@ QTabBar::tab:selected {
 QTabBar::tab:hover:!selected { color: $text; }
 QTabBar::close-button { subcontrol-origin: padding; }
 
-/* ---- Review & Evidence drawer tabs ---- */
-QTabWidget#drawerTabs::pane { border: 1px solid $border; background: $sunken; }
+/* ---- bottom utility panel: header (tab bar + disclosure) and body ---- */
+QWidget#bottomPanelHeader {
+    background: $surface;
+    border-bottom: 1px solid $border;
+}
+QTabBar#bottomPanelTabs { background: transparent; }
 
 /* ---- Agent Chat composer ---- */
 QTextEdit#chatComposer {
@@ -611,11 +623,13 @@ __all__ = [
     "COMMAND_BAR_HEIGHT",
     "STATUS_BAR_HEIGHT",
     "PANEL_HEADER_HEIGHT",
-    "CHAT_HEADER_HEIGHT",
-    "DRAWER_HEADER_HEIGHT",
     "CHAT_COMPOSER_HEIGHT",
-    "CHAT_BODY_MIN_HEIGHT",
-    "DRAWER_BODY_MIN_HEIGHT",
+    "BOTTOM_PANEL_HEADER_HEIGHT",
+    "BOTTOM_PANEL_BODY_MIN_HEIGHT",
+    "BOTTOM_PANEL_MIN_HEIGHT",
+    "BOTTOM_PANEL_MAX_HEIGHT",
+    "BOTTOM_PANEL_DEFAULT_HEIGHT",
+    "BOTTOM_PANEL_STRETCH",
     "TREE_ROW_HEIGHT",
     "TREE_INDENT",
     "TAB_HEIGHT",
@@ -631,11 +645,9 @@ __all__ = [
     "EXPLORER_STRETCH",
     "SOURCE_STRETCH",
     "TWIN_STRETCH",
-    "LOWER_DEFAULT_HEIGHT",
     "TWIN_CONTENT_MAX_WIDTH",
     "PRIMARY_WORKSPACE_INITIAL_HEIGHT",
     "PRIMARY_WORKSPACE_STRETCH",
-    "LOWER_AREA_STRETCH",
     "STATUS_ROOT_MAX_WIDTH",
     "STATUS_FILE_MAX_WIDTH",
     "WINDOW_DEFAULT_WIDTH",

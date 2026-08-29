@@ -9,12 +9,14 @@ selector. These tests import PySide6 and are skipped when it is not installed.
 from __future__ import annotations
 
 import os
+import re
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import Qt
+    from PySide6.QtGui import QColor
     from PySide6.QtWidgets import QApplication
 
     from hrca import style
@@ -157,6 +159,103 @@ class ContrastTests(unittest.TestCase):
                     self.assertGreaterEqual(
                         style.contrast_ratio(fg, bg), style.CONTRAST_BODY
                     )
+
+
+# ---------------------------------------------------------------------------
+# Monochrome audit: the rework removed blue as the default accent, so no
+# ordinary UI token (buttons / tabs / selection / focus / borders / hover)
+# may be blue-dominant. Semantic success/warning/error hues and the syntax
+# palette are code/state colours and are deliberately excluded.
+# ---------------------------------------------------------------------------
+_BLUE_DOMINANCE_LIMIT = 24
+_HEX_COLOR_RE = re.compile(r"#[0-9a-fA-F]{6}\b")
+
+# Palette fields that are ordinary UI chrome and must stay non-blue.
+_MONOCHROME_TOKENS = (
+    "window",
+    "surface",
+    "sunken",
+    "border",
+    "text",
+    "text_secondary",
+    "text_disabled",
+    "accent",
+    "accent_hover",
+    "accent_pressed",
+    "focus",
+    "on_accent",
+    "info",
+    "neutral",
+)
+
+
+def _blue_dominance(hex_color: str) -> int:
+    """Return blue minus max(red, green); positive means blue dominates."""
+    color = QColor(hex_color)
+    return color.blue() - max(color.red(), color.green())
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class MonochromeAuditTests(unittest.TestCase):
+    def test_ordinary_ui_tokens_are_not_blue_dominant(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            for token in _MONOCHROME_TOKENS:
+                with self.subTest(palette=palette.name, token=token):
+                    value = getattr(palette, token)
+                    self.assertLess(
+                        _blue_dominance(value),
+                        _BLUE_DOMINANCE_LIMIT,
+                        f"{token}={value} is blue-dominant",
+                    )
+
+    def test_stylesheet_has_no_blue_dominant_color(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            with self.subTest(palette=palette.name):
+                qss = style.build_stylesheet(palette)
+                for match in _HEX_COLOR_RE.finditer(qss):
+                    color = match.group(0)
+                    self.assertLess(
+                        _blue_dominance(color),
+                        _BLUE_DOMINANCE_LIMIT,
+                        f"{color} in the {palette.name} stylesheet is blue-dominant",
+                    )
+
+    def test_semantic_state_colors_preserve_their_hue(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            with self.subTest(palette=palette.name):
+                success = QColor(palette.success)
+                warning = QColor(palette.warning)
+                error = QColor(palette.error)
+                # success is green, warning is orange/amber, error is red.
+                self.assertGreater(success.green(), success.red())
+                self.assertGreater(success.green(), success.blue())
+                self.assertGreater(warning.red(), warning.blue())
+                self.assertGreater(error.red(), error.green())
+                self.assertGreater(error.red(), error.blue())
+
+    def test_focus_indicator_meets_wcag_non_text_contrast(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            with self.subTest(palette=palette.name):
+                self.assertGreaterEqual(
+                    style.contrast_ratio(palette.focus, palette.surface),
+                    style.CONTRAST_LARGE,
+                )
+
+    def test_accent_meets_wcag_against_surface(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            with self.subTest(palette=palette.name):
+                self.assertGreaterEqual(
+                    style.contrast_ratio(palette.accent, palette.surface),
+                    style.CONTRAST_LARGE,
+                )
+
+    def test_primary_button_text_meets_wcag(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            with self.subTest(palette=palette.name):
+                self.assertGreaterEqual(
+                    style.contrast_ratio(palette.on_accent, palette.accent),
+                    style.CONTRAST_BODY,
+                )
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")

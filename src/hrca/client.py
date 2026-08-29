@@ -17,12 +17,13 @@ Layout (presentation only, no semantics invented):
   **Project Explorer** (collapsible tree, 240 px default), **Source Code**
   (flat closable tabs over a read-only document view) and an independent
   **Human-Readable Twin** pane (never nested inside Source Code);
-* **Agent Chat** — a full-width lower surface directly beneath the three panes:
-  a message area, a disabled composer and send action, labelled provider-
-  unavailable; no provider, credential, network or inference call is ever made;
-* **Review & Evidence drawer** — a collapsed-by-default secondary surface that
-  carries the P3.1 plan / diff / problems / tests / evidence, opened from a
-  labelled control near the chat header; it is never written to disk;
+* **Bottom utility panel** — one full-width surface directly beneath the three
+  panes: a flat six-tab bar (**Agent Chat | Plan | Diff | Problems | Tests |
+  Evidence**) plus a single disclosure control. Agent Chat keeps a message
+  area, a disabled composer and send action labelled provider-unavailable (no
+  provider, credential, network or inference call is ever made); the other five
+  tabs carry the read-only P3.1 plan / diff / problems / tests / evidence.
+  Diff is explicitly unavailable in this slice; nothing is ever written to disk;
 * **Status bar** — one row with a transient message and six right-aligned
   persistent fields.
 
@@ -79,6 +80,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QSplitterHandle,
     QStackedWidget,
+    QTabBar,
     QTabWidget,
     QTextEdit,
     QToolButton,
@@ -143,6 +145,22 @@ _DIFF_UNAVAILABLE = (
     "No code proposal capability exists yet, so there is nothing to diff and "
     "no way to apply changes."
 )
+
+# The six bottom-panel tabs, in the fixed order the tab bar presents them. The
+# first key ("chat") maps to the Agent Chat surface; the remaining five map to
+# the read-only secondary surfaces populated by the scan pipeline. The keys are
+# the single source of truth for the ``selected_tab`` state.
+_BOTTOM_TAB_KEYS = ("chat", "plan", "diff", "problems", "tests", "evidence")
+
+# Human-readable tab labels (one per key, same order).
+_BOTTOM_TAB_LABELS = {
+    "chat": "Agent Chat",
+    "plan": "Plan",
+    "diff": "Diff",
+    "problems": "Problems",
+    "tests": "Tests",
+    "evidence": "Evidence",
+}
 
 _PY_KEYWORDS = (
     "and", "as", "assert", "async", "await", "break", "class", "continue",
@@ -377,7 +395,12 @@ class MainWindow(QMainWindow):
         self._tree: Optional[Dict[str, Any]] = None
         self._open_tabs: Dict[str, CodeView] = {}
         self._pending: Dict[str, tuple] = {}
-        self._drawer_expanded: bool = False
+        # Single bottom-panel state model (replaces the old drawer/chat booleans):
+        # the selected tab key, whether the panel body is visible, and the last
+        # usable expanded height to restore on the next expand.
+        self._selected_tab: str = "chat"
+        self._is_expanded: bool = True
+        self._last_expanded_height: int = style.BOTTOM_PANEL_DEFAULT_HEIGHT
 
         self._supervisor = BackendSupervisor()
         self._supervisor.completed.connect(self._on_completed)
@@ -419,16 +442,16 @@ class MainWindow(QMainWindow):
         self._horizontal_splitter.addWidget(self._twin_panel)
         self._configure_primary_splitter()
 
-        self._lower_area = self._build_lower_area()
+        self._bottom_panel = self._build_bottom_panel()
 
         self._vertical_splitter.addWidget(self._horizontal_splitter)
-        self._vertical_splitter.addWidget(self._lower_area)
+        self._vertical_splitter.addWidget(self._bottom_panel)
         self._vertical_splitter.setStretchFactor(0, style.PRIMARY_WORKSPACE_STRETCH)
-        self._vertical_splitter.setStretchFactor(1, style.LOWER_AREA_STRETCH)
+        self._vertical_splitter.setStretchFactor(1, style.BOTTOM_PANEL_STRETCH)
         self._vertical_splitter.setCollapsible(0, False)
         self._vertical_splitter.setCollapsible(1, False)
         self._vertical_splitter.setSizes(
-            [style.PRIMARY_WORKSPACE_INITIAL_HEIGHT, style.LOWER_DEFAULT_HEIGHT]
+            [style.PRIMARY_WORKSPACE_INITIAL_HEIGHT, style.BOTTOM_PANEL_DEFAULT_HEIGHT]
         )
 
         root.addWidget(self._vertical_splitter, stretch=1)
@@ -577,50 +600,62 @@ class MainWindow(QMainWindow):
         layout.addWidget(body, stretch=1)
         return panel
 
-    def _build_lower_area(self) -> QWidget:
-        area = QWidget()
-        area.setObjectName("lowerArea")
-        layout = QVBoxLayout(area)
+    def _build_bottom_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setObjectName("bottomPanel")
+        layout = QVBoxLayout(panel)
         layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
         layout.setSpacing(style.SPACE_0)
 
-        # Chat header: title, chat-collapse, and the single labelled control
-        # that opens the Review & Evidence drawer.
-        self._chat_header = QWidget()
-        self._chat_header.setObjectName("chatHeader")
-        chat_header_layout = QHBoxLayout(self._chat_header)
-        chat_header_layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
-        chat_header_layout.setSpacing(style.GAP_TIGHT)
+        # Header: the flat tab bar plus the single disclosure control at the
+        # far right. No separate chat/drawer collapse controls exist.
+        header = QWidget()
+        header.setObjectName("bottomPanelHeader")
+        header.setFixedHeight(style.BOTTOM_PANEL_HEADER_HEIGHT)
+        self._bottom_panel_header = header
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
+        header_layout.setSpacing(style.GAP_TIGHT)
 
-        chat_title = QLabel("Agent Chat".upper())
-        chat_title.setFont(style.panel_header_font())
-        chat_title.setStyleSheet(style.secondary_text_style(self._palette))
-        chat_header_layout.addWidget(chat_title)
-        chat_header_layout.addStretch(1)
+        self._bottom_tabs = QTabBar()
+        self._bottom_tabs.setObjectName("bottomPanelTabs")
+        self._bottom_tabs.setDrawBase(False)
+        self._bottom_tabs.setExpanding(False)
+        self._bottom_tabs.setUsesScrollButtons(True)
+        for key in _BOTTOM_TAB_KEYS:
+            self._bottom_tabs.addTab(_BOTTOM_TAB_LABELS[key])
+        self._bottom_tabs.currentChanged.connect(self._on_bottom_tab_changed)
+        header_layout.addWidget(self._bottom_tabs)
+        header_layout.addStretch(1)
 
-        self._chat_collapse_button = QToolButton()
-        self._chat_collapse_button.setText("▴")
-        self._chat_collapse_button.setToolTip("Collapse chat to its header")
-        self._chat_collapse_button.setAccessibleName("Collapse Agent Chat")
-        self._chat_collapse_button.clicked.connect(self._toggle_chat)
-        chat_header_layout.addWidget(self._chat_collapse_button)
+        self._disclosure_button = QToolButton()
+        self._disclosure_button.setObjectName("bottomPanelDisclosure")
+        self._disclosure_button.clicked.connect(self._toggle_expanded)
+        header_layout.addWidget(self._disclosure_button)
+        layout.addWidget(header)
 
-        self._drawer_toggle_button = QToolButton()
-        self._drawer_toggle_button.setText("▾")
-        self._drawer_toggle_button.setAccessibleName("Open Review & Evidence")
-        self._drawer_toggle_button.setToolTip("Open Review & Evidence")
-        self._drawer_toggle_button.setCheckable(True)
-        self._drawer_toggle_button.clicked.connect(self._on_drawer_toggle)
-        chat_header_layout.addWidget(self._drawer_toggle_button)
-        layout.addWidget(self._chat_header)
+        # Body: one stacked widget with six pages (Agent Chat + five surfaces).
+        self._bottom_body = QStackedWidget()
+        self._bottom_body.setObjectName("bottomPanelBody")
+        self._bottom_body.setMinimumHeight(style.BOTTOM_PANEL_BODY_MIN_HEIGHT)
 
-        self._chat_body = self._build_chat_body()
-        layout.addWidget(self._chat_body, stretch=1)
+        self._bottom_body.addWidget(self._build_chat_page())
+        self._views: Dict[str, CodeView] = {}
+        for key in _BOTTOM_TAB_KEYS[1:]:
+            view = CodeView(self._bottom_body, palette=self._palette)
+            self._views[key] = view
+            self._bottom_body.addWidget(view)
+        self._views["diff"].setPlainText(_DIFF_UNAVAILABLE)
+        self._views["diff"].setStyleSheet(style.secondary_text_style(self._palette))
 
-        layout.addWidget(self._build_drawer())
-        return area
+        layout.addWidget(self._bottom_body, stretch=1)
 
-    def _build_chat_body(self) -> QWidget:
+        # Initial state: Agent Chat selected, panel expanded.
+        self._bottom_body.setCurrentIndex(0)
+        self._update_disclosure()
+        return panel
+
+    def _build_chat_page(self) -> QWidget:
         body = QWidget()
         body.setObjectName("chatPanel")
         layout = QVBoxLayout(body)
@@ -663,58 +698,7 @@ class MainWindow(QMainWindow):
         notice.setAccessibleName("Chat availability")
         layout.addWidget(notice)
 
-        body.setMinimumHeight(style.CHAT_BODY_MIN_HEIGHT)
         return body
-
-    def _build_drawer(self) -> QWidget:
-        self._drawer = QWidget()
-        self._drawer.setObjectName("drawer")
-        layout = QVBoxLayout(self._drawer)
-        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
-        layout.setSpacing(style.SPACE_0)
-
-        # Compact header row: the plain-text label only (no leading glyph).
-        self._drawer_header = QWidget()
-        self._drawer_header.setObjectName("drawerHeader")
-        header_layout = QHBoxLayout(self._drawer_header)
-        header_layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
-        header_layout.setSpacing(style.GAP_TIGHT)
-
-        drawer_label = QLabel("Review & Evidence")
-        drawer_label.setAccessibleName("Review & Evidence")
-        drawer_label.setStyleSheet(style.secondary_text_style(self._palette))
-        header_layout.addWidget(drawer_label)
-        header_layout.addStretch(1)
-        layout.addWidget(self._drawer_header)
-
-        # Body: the five surfaces as tabs inside the expanded drawer.
-        self._drawer_body = QWidget()
-        self._drawer_body.setObjectName("drawerBody")
-        self._drawer_body.setMinimumHeight(style.DRAWER_BODY_MIN_HEIGHT)
-        body_layout = QVBoxLayout(self._drawer_body)
-        body_layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
-        body_layout.setSpacing(style.SPACE_0)
-
-        self._drawer_tabs = QTabWidget()
-        self._drawer_tabs.setObjectName("drawerTabs")
-        self._views: Dict[str, CodeView] = {}
-        for key, label in (
-            ("plan", "Plan"),
-            ("diff", "Diff"),
-            ("problems", "Problems"),
-            ("tests", "Tests"),
-            ("evidence", "Evidence"),
-        ):
-            view = CodeView(self._drawer_tabs, palette=self._palette)
-            self._views[key] = view
-            self._drawer_tabs.addTab(view, label)
-        self._views["diff"].setPlainText(_DIFF_UNAVAILABLE)
-        self._views["diff"].setStyleSheet(style.secondary_text_style(self._palette))
-        body_layout.addWidget(self._drawer_tabs, stretch=1)
-        layout.addWidget(self._drawer_body)
-
-        self._drawer_body.hide()
-        return self._drawer
 
     def _build_status_bar(self) -> QWidget:
         bar = QWidget()
@@ -776,34 +760,61 @@ class MainWindow(QMainWindow):
             label.setMaximumWidth(max_width)
         return label
 
-    # -- drawer / chat toggles ------------------------------------------
+    # -- bottom panel tab selection and collapse ------------------------
 
-    def _on_drawer_toggle(self) -> None:
-        self._set_drawer_expanded(not self._drawer_expanded)
+    def _on_bottom_tab_changed(self, index: int) -> None:
+        if 0 <= index < len(_BOTTOM_TAB_KEYS):
+            self._selected_tab = _BOTTOM_TAB_KEYS[index]
+            self._bottom_body.setCurrentIndex(index)
 
-    def _set_drawer_expanded(self, expanded: bool) -> None:
-        self._drawer_expanded = expanded
-        self._drawer_body.setVisible(expanded)
-        self._drawer_toggle_button.setText("▴" if expanded else "▾")
-        self._drawer_toggle_button.setAccessibleName(
-            "Close Review & Evidence" if expanded else "Open Review & Evidence"
-        )
-        self._drawer_toggle_button.setToolTip(
-            "Close Review & Evidence" if expanded else "Open Review & Evidence"
-        )
-        self._drawer_toggle_button.setChecked(expanded)
+    def _toggle_expanded(self) -> None:
+        self._set_expanded(not self._is_expanded)
 
-    def _toggle_chat(self) -> None:
-        visible = self._chat_body.isVisible()
-        self._chat_body.setVisible(not visible)
-        expanded = not visible
-        self._chat_collapse_button.setText("▴" if expanded else "▾")
-        self._chat_collapse_button.setAccessibleName(
-            "Collapse Agent Chat" if expanded else "Expand Agent Chat"
-        )
-        self._chat_collapse_button.setToolTip(
-            "Collapse chat to its header" if expanded else "Expand Agent Chat"
-        )
+    def _set_expanded(self, expanded: bool) -> None:
+        """Collapse or expand the bottom panel body.
+
+        Collapsing keeps only the tab/header row and returns the body height to
+        the primary workspace; expanding restores the last usable height. The
+        selected tab and its body visibility are independent of the collapsed
+        state, so switching tabs never creates a second panel.
+        """
+        if expanded == self._is_expanded:
+            self._update_disclosure()
+            return
+        if expanded:
+            self._is_expanded = True
+            self._bottom_body.setVisible(True)
+            self._bottom_panel.setMinimumHeight(style.BOTTOM_PANEL_MIN_HEIGHT)
+            self._bottom_panel.setMaximumHeight(style.BOTTOM_PANEL_MAX_HEIGHT)
+            total = sum(self._vertical_splitter.sizes())
+            # Restore the last usable height, clamped so the primary workspace
+            # always keeps a positive band even after a window shrink.
+            panel_height = min(
+                self._last_expanded_height, total - style.BOTTOM_PANEL_HEADER_HEIGHT
+            )
+            panel_height = max(style.BOTTOM_PANEL_MIN_HEIGHT, panel_height)
+            self._vertical_splitter.setSizes([total - panel_height, panel_height])
+        else:
+            self._last_expanded_height = self._vertical_splitter.sizes()[1]
+            self._is_expanded = False
+            self._bottom_body.setVisible(False)
+            header_height = style.BOTTOM_PANEL_HEADER_HEIGHT
+            self._bottom_panel.setMinimumHeight(header_height)
+            self._bottom_panel.setMaximumHeight(header_height)
+            total = sum(self._vertical_splitter.sizes())
+            self._vertical_splitter.setSizes([total - header_height, header_height])
+        self._update_disclosure()
+
+    def _update_disclosure(self) -> None:
+        """Sync the disclosure chevron, accessible name and tooltip to state."""
+        if self._is_expanded:
+            self._disclosure_button.setText("▾")
+            name = "Collapse bottom panel"
+        else:
+            self._disclosure_button.setText("▴")
+            name = "Expand bottom panel"
+        self._disclosure_button.setAccessibleName(name)
+        self._disclosure_button.setToolTip(name)
 
     # -- status helpers --------------------------------------------------
 
