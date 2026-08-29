@@ -599,16 +599,16 @@ class MainWindow(QMainWindow):
         chat_header_layout.addStretch(1)
 
         self._chat_collapse_button = QToolButton()
-        self._chat_collapse_button.setText("⏬")
+        self._chat_collapse_button.setText("▴")
         self._chat_collapse_button.setToolTip("Collapse chat to its header")
         self._chat_collapse_button.setAccessibleName("Collapse Agent Chat")
         self._chat_collapse_button.clicked.connect(self._toggle_chat)
         chat_header_layout.addWidget(self._chat_collapse_button)
 
         self._drawer_toggle_button = QToolButton()
-        self._drawer_toggle_button.setText("Review & Evidence")
-        self._drawer_toggle_button.setAccessibleName("Review & Evidence drawer")
-        self._drawer_toggle_button.setToolTip("Show or hide the Review & Evidence drawer")
+        self._drawer_toggle_button.setText("▾")
+        self._drawer_toggle_button.setAccessibleName("Open Review & Evidence")
+        self._drawer_toggle_button.setToolTip("Open Review & Evidence")
         self._drawer_toggle_button.setCheckable(True)
         self._drawer_toggle_button.clicked.connect(self._on_drawer_toggle)
         chat_header_layout.addWidget(self._drawer_toggle_button)
@@ -662,6 +662,8 @@ class MainWindow(QMainWindow):
         notice.setWordWrap(True)
         notice.setAccessibleName("Chat availability")
         layout.addWidget(notice)
+
+        body.setMinimumHeight(style.CHAT_BODY_MIN_HEIGHT)
         return body
 
     def _build_drawer(self) -> QWidget:
@@ -671,20 +673,15 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
         layout.setSpacing(style.SPACE_0)
 
-        # Compact header row: label + disclosure control.
+        # Compact header row: the plain-text label only (no leading glyph).
         self._drawer_header = QWidget()
         self._drawer_header.setObjectName("drawerHeader")
         header_layout = QHBoxLayout(self._drawer_header)
         header_layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
         header_layout.setSpacing(style.GAP_TIGHT)
 
-        self._drawer_disclosure = QToolButton()
-        self._drawer_disclosure.setText("▸")
-        self._drawer_disclosure.setAccessibleName("Expand Review & Evidence drawer")
-        self._drawer_disclosure.clicked.connect(self._on_drawer_toggle)
-        header_layout.addWidget(self._drawer_disclosure)
-
         drawer_label = QLabel("Review & Evidence")
+        drawer_label.setAccessibleName("Review & Evidence")
         drawer_label.setStyleSheet(style.secondary_text_style(self._palette))
         header_layout.addWidget(drawer_label)
         header_layout.addStretch(1)
@@ -693,6 +690,7 @@ class MainWindow(QMainWindow):
         # Body: the five surfaces as tabs inside the expanded drawer.
         self._drawer_body = QWidget()
         self._drawer_body.setObjectName("drawerBody")
+        self._drawer_body.setMinimumHeight(style.DRAWER_BODY_MIN_HEIGHT)
         body_layout = QVBoxLayout(self._drawer_body)
         body_layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
         body_layout.setSpacing(style.SPACE_0)
@@ -786,18 +784,26 @@ class MainWindow(QMainWindow):
     def _set_drawer_expanded(self, expanded: bool) -> None:
         self._drawer_expanded = expanded
         self._drawer_body.setVisible(expanded)
-        self._drawer_disclosure.setText("▾" if expanded else "▸")
-        self._drawer_disclosure.setAccessibleName(
-            "Collapse Review & Evidence drawer"
-            if expanded
-            else "Expand Review & Evidence drawer"
+        self._drawer_toggle_button.setText("▴" if expanded else "▾")
+        self._drawer_toggle_button.setAccessibleName(
+            "Close Review & Evidence" if expanded else "Open Review & Evidence"
+        )
+        self._drawer_toggle_button.setToolTip(
+            "Close Review & Evidence" if expanded else "Open Review & Evidence"
         )
         self._drawer_toggle_button.setChecked(expanded)
 
     def _toggle_chat(self) -> None:
         visible = self._chat_body.isVisible()
         self._chat_body.setVisible(not visible)
-        self._chat_collapse_button.setText("⏫" if visible else "⏬")
+        expanded = not visible
+        self._chat_collapse_button.setText("▴" if expanded else "▾")
+        self._chat_collapse_button.setAccessibleName(
+            "Collapse Agent Chat" if expanded else "Expand Agent Chat"
+        )
+        self._chat_collapse_button.setToolTip(
+            "Collapse chat to its header" if expanded else "Expand Agent Chat"
+        )
 
     # -- status helpers --------------------------------------------------
 

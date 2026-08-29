@@ -214,5 +214,76 @@ class StyleOwnershipTests(unittest.TestCase):
             )
 
 
+# Unicode ranges that qualify as emoji for the purposes of the product-UI
+# audit. These deliberately exclude the non-emoji text chevrons used by the
+# P3.2 remediation (U+25B4 ``▴`` / U+25BE ``▾`` — Geometric Shapes) and the
+# punctuation marks (em dash, arrow, ellipsis) that remain in prose and elided
+# text.
+_EMOJI_RANGES = (
+    (0x1F000, 0x1FAFF),  # Supplemental Pictographs, Emoticons, Transport, Symbols
+    (0x2600, 0x27BF),    # Miscellaneous Symbols, Dingbats
+    (0x2B00, 0x2BFF),    # Miscellaneous Symbols and Arrows
+    (0x23E9, 0x23F3),    # Media fast-forward/rewind arrows (e.g. U+23EB/U+23EC)
+    (0x23F8, 0x23FA),    # Media control symbols (U+23F8..U+23FA)
+    (0x231A, 0x231B),    # Watch / hourglass
+)
+
+
+def _is_emoji(char: str) -> bool:
+    return any(start <= ord(char) <= end for start, end in _EMOJI_RANGES)
+
+
+def _ui_string_literals(path: str) -> list:
+    """Return every string literal in ``path`` that is not a docstring.
+
+    Docstrings are developer documentation, not product UI, so a prose example
+    that happens to quote an emoji must not fail the audit.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+
+    docstring_nodes = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                docstring_nodes.add(id(body[0].value))
+
+    literals = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) not in docstring_nodes:
+                literals.append(node)
+    return literals
+
+
+class EmojiAuditTests(unittest.TestCase):
+    """No emoji may appear in any product-UI string the client or visual
+    design system emits. The P3.2 remediation replaced the former up/down
+    emoji (U+23EB / U+23EC) with non-emoji text chevrons (U+25B4 / U+25BE).
+    """
+
+    def test_no_emoji_in_ui_strings(self):
+        violations = []
+        for path in (_CLIENT_PATH, _CLIENT_MODULES["hrca.style"]):
+            for node in _ui_string_literals(path):
+                for char in node.value:
+                    if _is_emoji(char):
+                        violations.append(
+                            (os.path.basename(path), node.lineno, char, node.value)
+                        )
+        self.assertFalse(
+            violations,
+            "emoji found in a product-UI string literal: " f"{violations}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

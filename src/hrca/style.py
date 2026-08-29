@@ -83,6 +83,14 @@ CHAT_HEADER_HEIGHT = 28
 DRAWER_HEADER_HEIGHT = 28
 CHAT_COMPOSER_HEIGHT = 56
 
+# Useful minimum heights for the two vertically-stretchable lower-area bodies.
+# Without an explicit floor, Qt compresses each body to its bare size hint when
+# the drawer expands — the tabbed drawer body collapses to about 100 px and the
+# chat body to its composer-only minimum. These floors keep both usable at every
+# supported window size while still letting the chat body absorb surplus space.
+CHAT_BODY_MIN_HEIGHT = 180
+DRAWER_BODY_MIN_HEIGHT = 200
+
 TREE_ROW_HEIGHT = 22
 TREE_INDENT = 12
 TAB_HEIGHT = 30
@@ -606,6 +614,8 @@ __all__ = [
     "CHAT_HEADER_HEIGHT",
     "DRAWER_HEADER_HEIGHT",
     "CHAT_COMPOSER_HEIGHT",
+    "CHAT_BODY_MIN_HEIGHT",
+    "DRAWER_BODY_MIN_HEIGHT",
     "TREE_ROW_HEIGHT",
     "TREE_INDENT",
     "TAB_HEIGHT",

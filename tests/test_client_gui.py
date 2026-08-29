@@ -17,7 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QEventLoop, QProcess, QTimer, qInstallMessageHandler
-    from PySide6.QtWidgets import QApplication, QWidget
+    from PySide6.QtWidgets import QApplication, QLabel, QToolButton, QWidget
 
     from hrca import contract, style
     from hrca.client import (
@@ -475,6 +475,169 @@ class MainWindowLayoutTests(unittest.TestCase):
         root_y = root_label.mapTo(status_bar, root_label.rect().topLeft()).y()
         file_y = file_label.mapTo(status_bar, file_label.rect().topLeft()).y()
         self.assertAlmostEqual(root_y, file_y, delta=1)
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class VerticalDensityAndControlTests(unittest.TestCase):
+    """P3.2 vertical-density + Review & Evidence control remediation.
+
+    The workspace, Agent Chat and the Review & Evidence drawer must tile the
+    vertical content area continuously — no unowned blank band — at every
+    supported size in both palettes, and in the default, manually-moved and
+    both drawer states. The drawer's leading disclosure glyph is gone, and its
+    toggle is a non-emoji text chevron.
+    """
+
+    SIZES = ((1024, 640), (1360, 840), (1920, 1080))
+
+    def setUp(self):
+        _app()
+
+    def _laid_out(self, palette, width, height):
+        window = MainWindow(palette=palette)
+        window.resize(width, height)
+        window.show()
+        QApplication.processEvents()
+        return window
+
+    def _assert_vertical_tiling(self, window):
+        lower = window._lower_area
+        vsplit = window._vertical_splitter
+        hsplit = window._horizontal_splitter
+
+        # The lower area is exactly tiled by its three children (zero margins,
+        # zero spacing), so there is no unowned blank band inside it.
+        self.assertEqual(
+            window._chat_header.height()
+            + window._chat_body.height()
+            + window._drawer.height(),
+            lower.height(),
+        )
+
+        # The vertical splitter allocates its full height to the workspace, the
+        # 6 px handle and the lower area — again with no slack.
+        self.assertEqual(
+            hsplit.height() + style.SPLITTER_HANDLE_WIDTH + lower.height(),
+            vsplit.height(),
+        )
+
+        # The lower area sits directly on the status bar (no dead band between
+        # the content region and the bar).
+        status_bar = window.findChild(QWidget, "statusBar")
+        self.assertIsNotNone(status_bar)
+        self.assertEqual(
+            lower.mapTo(window, lower.rect().topLeft()).y() + lower.height(),
+            status_bar.mapTo(window, status_bar.rect().topLeft()).y(),
+        )
+
+    def test_vertical_tiling_in_all_states(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            for width, height in self.SIZES:
+                for drawer_state in ("collapsed", "expanded"):
+                    with self.subTest(
+                        palette=palette.name, size=(width, height), drawer=drawer_state
+                    ):
+                        window = self._laid_out(palette, width, height)
+                        if drawer_state == "expanded":
+                            window._set_drawer_expanded(True)
+                            QApplication.processEvents()
+                        self._assert_vertical_tiling(window)
+
+    def test_vertical_tiling_after_splitter_move(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            for width, height in self.SIZES:
+                with self.subTest(palette=palette.name, size=(width, height)):
+                    window = self._laid_out(palette, width, height)
+                    # Drag the divider toward each end; the content must stay
+                    # fully tiled with no gap after each move.
+                    window._vertical_splitter.moveSplitter(height // 4, 1)
+                    QApplication.processEvents()
+                    self._assert_vertical_tiling(window)
+                    window._vertical_splitter.moveSplitter(height * 3 // 4, 1)
+                    QApplication.processEvents()
+                    self._assert_vertical_tiling(window)
+
+    def test_chat_body_respects_min_height(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            for width, height in self.SIZES:
+                with self.subTest(palette=palette.name, size=(width, height)):
+                    window = self._laid_out(palette, width, height)
+                    self.assertGreaterEqual(
+                        window._chat_body.height(), style.CHAT_BODY_MIN_HEIGHT
+                    )
+
+    def test_expanded_drawer_body_respects_min_height(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            for width, height in self.SIZES:
+                with self.subTest(palette=palette.name, size=(width, height)):
+                    window = self._laid_out(palette, width, height)
+                    window._set_drawer_expanded(True)
+                    QApplication.processEvents()
+                    self.assertGreaterEqual(
+                        window._drawer_body.height(), style.DRAWER_BODY_MIN_HEIGHT
+                    )
+
+    def test_collapsed_drawer_reserves_only_header(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            with self.subTest(palette=palette.name):
+                window = self._laid_out(palette, 1360, 840)
+                self.assertTrue(window._drawer_body.isHidden())
+                self.assertEqual(
+                    window._drawer.height(), window._drawer_header.height()
+                )
+
+    def test_drawer_toggle_chevron_and_accessibility(self):
+        window = MainWindow()
+        # Collapsed: down chevron + "Open ..." semantics.
+        self.assertEqual(window._drawer_toggle_button.text(), "▾")
+        self.assertEqual(
+            window._drawer_toggle_button.accessibleName(), "Open Review & Evidence"
+        )
+        self.assertEqual(
+            window._drawer_toggle_button.toolTip(), "Open Review & Evidence"
+        )
+        self.assertFalse(window._drawer_toggle_button.isChecked())
+
+        window._set_drawer_expanded(True)
+        self.assertEqual(window._drawer_toggle_button.text(), "▴")
+        self.assertEqual(
+            window._drawer_toggle_button.accessibleName(), "Close Review & Evidence"
+        )
+        self.assertEqual(
+            window._drawer_toggle_button.toolTip(), "Close Review & Evidence"
+        )
+        self.assertTrue(window._drawer_toggle_button.isChecked())
+
+        window._set_drawer_expanded(False)
+        self.assertEqual(window._drawer_toggle_button.text(), "▾")
+
+    def test_review_evidence_label_is_plain_text(self):
+        window = MainWindow()
+        labels = [
+            widget
+            for widget in window._drawer_header.findChildren(QLabel)
+            if widget.text() == "Review & Evidence"
+        ]
+        self.assertEqual(len(labels), 1)
+        # No leading disclosure glyph tool-button remains in the header.
+        self.assertEqual(window._drawer_header.findChildren(QToolButton), [])
+
+    def test_chat_collapse_chevron_not_emoji(self):
+        window = MainWindow()
+        window.resize(1360, 840)
+        window.show()
+        QApplication.processEvents()
+        self.assertEqual(window._chat_collapse_button.text(), "▴")
+        self.assertEqual(
+            window._chat_collapse_button.accessibleName(), "Collapse Agent Chat"
+        )
+        window._toggle_chat()
+        self.assertEqual(window._chat_collapse_button.text(), "▾")
+        self.assertEqual(
+            window._chat_collapse_button.accessibleName(), "Expand Agent Chat"
+        )
+        window._toggle_chat()
+        self.assertEqual(window._chat_collapse_button.text(), "▴")
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
