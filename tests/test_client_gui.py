@@ -519,6 +519,13 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertAlmostEqual(root_y, file_y, delta=1)
 
 
+def _source_doc(rel_path: str) -> dict:
+    """A bounded ``get_document`` result for a Python source file."""
+    name = rel_path.rsplit("/", 1)[-1]
+    return {"path": rel_path, "name": name, "size": 10,
+            "kind": "source", "content": "print('hi')\n"}
+
+
 def _sample_twin_bundle() -> dict:
     """A bounded Twin projection bundle for one method with two behavior nodes."""
     return {
@@ -561,6 +568,32 @@ class TwinPaneTests(unittest.TestCase):
 
         def fake_send(request, on_success, on_error):
             sent.append(request)
+            return True
+
+        window._send = fake_send
+        return sent
+
+    def _chain_send(self, window, sync_result=None, bundle=None,
+                    sync_error=None, get_error=None):
+        """A ``_send`` double that synchronously completes the sync→get chain."""
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            action = request["action"]
+            if action == contract.ACTION_SYNC_TWIN:
+                if sync_error is not None:
+                    on_error(sync_error)
+                else:
+                    on_success(sync_result or {"state": "synchronized",
+                                               "persisted": True, "counts": {}})
+            elif action == contract.ACTION_GET_TWIN:
+                if get_error is not None:
+                    on_error(get_error)
+                else:
+                    on_success(bundle or _sample_twin_bundle())
+            else:
+                on_success({})
             return True
 
         window._send = fake_send
@@ -665,16 +698,15 @@ class TwinPaneTests(unittest.TestCase):
         window = MainWindow()
         window._root = "/some/root"
         sent = self._fake_send(window)
-        window._on_document_opened(
-            "app/main.py",
-            {"path": "app/main.py", "name": "main.py", "size": 10,
-             "kind": "source", "content": "print('hi')\n"},
-        )
-        # Two requests: none from opening (fake boundary), then get_twin.
-        actions = [r["action"] for r in sent]
-        self.assertIn(contract.ACTION_GET_TWIN, actions)
-        twin_req = next(r for r in sent if r["action"] == contract.ACTION_GET_TWIN)
-        self.assertEqual(twin_req["task"]["selector"], "app/main.py")
+        window._on_document_opened("app/main.py", _source_doc("app/main.py"))
+        # Selection immediately sets Loading and issues a scoped sync first; the
+        # projection is fetched only after that sync succeeds.
+        self.assertEqual(window._twin_chip.text(), "Loading")
+        self.assertEqual(window._twin_body.text(),
+                         "Twin synchronization is in progress.")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
+        self.assertEqual(sent[0]["task"]["changed_paths"], ["app/main.py"])
 
     def test_document_open_skips_twin_projection_for_non_python(self):
         window = MainWindow()
@@ -685,6 +717,104 @@ class TwinPaneTests(unittest.TestCase):
             {"path": "notes.txt", "name": "notes.txt", "size": 5,
              "kind": "preview", "content": "hello\n"},
         )
+        self.assertEqual(sent, [])
+        self.assertEqual(window._twin_chip.text(), "Empty")
+        self.assertEqual(window._twin_nodes.count(), 0)
+
+    def test_selection_syncs_then_renders_projection(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        sent = self._chain_send(window)
+        window._on_document_opened("app/main.py", _source_doc("app/main.py"))
+        self.assertEqual([r["action"] for r in sent],
+                         [contract.ACTION_SYNC_TWIN, contract.ACTION_GET_TWIN])
+        self.assertEqual(sent[0]["task"]["changed_paths"], ["app/main.py"])
+        self.assertEqual(sent[1]["task"]["selector"], "app/main.py")
+        self.assertEqual(window._twin_chip.text(), "Available")
+        self.assertIn("Method handle(request)", window._twin_body.text())
+        self.assertEqual(window._twin_nodes.count(), 2)
+
+    def test_no_change_sync_still_renders_projection(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        sent = self._chain_send(
+            window, sync_result={"state": "no_change", "persisted": True, "counts": {}}
+        )
+        window._on_document_opened("app/main.py", _source_doc("app/main.py"))
+        # ``no_change`` is a successful sync: the projection is still fetched.
+        self.assertEqual([r["action"] for r in sent][1], contract.ACTION_GET_TWIN)
+        self.assertEqual(window._twin_chip.text(), "Available")
+        self.assertIn("Method handle(request)", window._twin_body.text())
+
+    def test_pyi_selection_triggers_same_twin_chain(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        sent = self._fake_send(window)
+        window._on_document_opened("app/stubs.pyi", _source_doc("app/stubs.pyi"))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
+        self.assertEqual(sent[0]["task"]["changed_paths"], ["app/stubs.pyi"])
+
+    def test_late_projection_for_previous_selection_is_discarded(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        self._fake_send(window)
+        window._on_document_opened("app/main.py", _source_doc("app/main.py"))  # gen 1
+        window._on_document_opened("app/service.py", _source_doc("app/service.py"))  # gen 2
+        # A late projection for generation 1 must not overwrite generation 2.
+        window._on_twin_projection_loaded(_sample_twin_bundle(), generation=1)
+        self.assertEqual(window._twin_chip.text(), "Loading")
+        self.assertNotIn("Method handle", window._twin_body.text())
+        # A current-generation projection (2) does render.
+        window._on_twin_projection_loaded(_sample_twin_bundle(), generation=2)
+        self.assertEqual(window._twin_chip.text(), "Available")
+        self.assertIn("Method handle(request)", window._twin_body.text())
+
+    def test_late_scoped_sync_does_not_trigger_get_twin(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        sent = self._fake_send(window)
+        window._on_document_opened("app/main.py", _source_doc("app/main.py"))  # gen 1
+        window._on_document_opened("app/service.py", _source_doc("app/service.py"))  # gen 2
+        before = len(sent)  # two scoped syncs, no get_twin yet
+        window._on_selection_synced("app/main.py", 1,
+                                    {"state": "synchronized", "counts": {}})
+        self.assertEqual(len(sent), before)  # stale generation: no get_twin
+
+    def test_get_twin_failure_shows_bounded_state(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        self._chain_send(window, get_error="twin_not_found")
+        window._on_document_opened("app/main.py", _source_doc("app/main.py"))
+        self.assertEqual(window._twin_chip.text(), "Empty")
+        self.assertIn("twin_not_found", window._twin_body.text())
+        self.assertIn("failed", window.status_label.text())
+
+    def test_sync_failure_shows_bounded_state(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        sent = self._chain_send(window, sync_error="blocked")
+        window._on_document_opened("app/main.py", _source_doc("app/main.py"))
+        # Only the scoped sync was issued; its failure surfaces a bounded state.
+        self.assertEqual([r["action"] for r in sent], [contract.ACTION_SYNC_TWIN])
+        self.assertEqual(window._twin_chip.text(), "Empty")
+        self.assertIn("blocked", window._twin_body.text())
+
+    def test_scan_completed_refreshes_selected_twin(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        window._current_document = "app/main.py"
+        sent = self._fake_send(window)
+        window._on_scan_completed(_sample_result())
+        self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
+        self.assertEqual(sent[0]["task"]["changed_paths"], ["app/main.py"])
+
+    def test_scan_completed_without_supported_selection_is_noop(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        window._current_document = None
+        sent = self._fake_send(window)
+        window._on_scan_completed(_sample_result())
         self.assertEqual(sent, [])
 
 

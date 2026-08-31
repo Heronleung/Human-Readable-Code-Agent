@@ -128,6 +128,10 @@ _UNSUPPORTED_BEHAVIOR_REASON = (
 CONF_HIGH = "high"
 CONF_LOW = "low"
 
+# Python source suffixes the Twin models as file artifacts/projections. ``.pyi``
+# type stubs share the same deterministic treatment as ``.py`` modules.
+_PY_SUFFIXES = (".py", ".pyi")
+
 
 def sha256_hex(data: bytes) -> str:
     """Return the lowercase SHA-256 hex digest of ``data``."""
@@ -566,7 +570,7 @@ def build_store(
     correspondences: Dict[str, Dict[str, Any]] = {}
     projections: Dict[str, Dict[str, Any]] = {}
 
-    for rel_path in sorted(p for p in files_by_path if p.endswith(".py")):
+    for rel_path in sorted(p for p in files_by_path if p.endswith(_PY_SUFFIXES)):
         file_rec = files_by_path[rel_path]
         fp = fingerprints.get(rel_path)
         file_state = sync_state if file_rec.get("syntax_status") == "ok" else SYNC_STALE

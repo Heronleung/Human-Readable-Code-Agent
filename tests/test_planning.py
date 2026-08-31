@@ -262,7 +262,7 @@ class FixtureBasedExampleTests(unittest.TestCase):
         self.assertEqual(report["plan"], plan)
         self.assertTrue(all(entry["requires_approval"] is False for entry in report["plan"]))
         # Scanner evidence is present and untouched by planning.
-        self.assertEqual(report["validation"]["scanner_summary"]["files"], 5)
+        self.assertEqual(report["validation"]["scanner_summary"]["files"], 6)
         self.assertEqual(report["outcome"]["status"], "no_change")
         self.assertEqual(report["outcome"]["changed_files"], [])
 

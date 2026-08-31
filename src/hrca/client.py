@@ -123,6 +123,7 @@ from .client_core import (
     default_fixture_root,
     format_twin_projection,
     format_twin_sync,
+    is_twin_source_path,
     resolve_backend_command,
     twin_state_from_sync,
 )
@@ -524,6 +525,10 @@ class MainWindow(QMainWindow):
         self._open_tabs: Dict[str, DocumentView] = {}
         self._pending: Dict[str, tuple] = {}
         self._pending_reveal_line: Optional[int] = None
+        # Monotonic selection generation: every Twin request chain is tagged with
+        # the generation that started it, so a late response for a previously
+        # selected file is discarded instead of overwriting the current one.
+        self._twin_generation: int = 0
         # Single bottom-panel state model (replaces the old drawer/chat booleans):
         # the selected tab key, whether the panel body is visible, and the last
         # usable expanded height to restore on the next expand.
@@ -1099,14 +1104,28 @@ class MainWindow(QMainWindow):
         self._render_scan(result)
         self._set_status(STATE_SUCCESS, "scan complete")
         self._set_validation_state(VALIDATION_OK)
+        # Refresh the selected file's Twin after a successful scan (P3.3): a
+        # supported file re-syncs and re-projects; no supported file is a no-op.
+        if self._current_document and is_twin_source_path(self._current_document):
+            self._load_twin_projection(self._current_document)
 
     # -- Twin synchronization, projection and navigation (P3.3) ----------
+
+    def _next_twin_generation(self) -> int:
+        """Advance the selection generation and return its new value.
+
+        Every Twin request chain is tagged with the generation that started it;
+        a late response whose generation no longer matches is discarded so it can
+        never overwrite the currently selected file's projection.
+        """
+        self._twin_generation += 1
+        return self._twin_generation
 
     def _sync_twin(self, changed_paths: Optional[List[str]] = None) -> None:
         """Auto-synchronize the Structured Twin for the accepted workspace.
 
         A no-op without an open project. ``changed_paths`` optionally scopes the
-        sync to specific root-relative ``.py`` paths; ``None`` means full sync.
+        sync to specific root-relative source paths; ``None`` means full sync.
         """
         if not self._root:
             return
@@ -1117,15 +1136,52 @@ class MainWindow(QMainWindow):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
     def _load_twin_projection(self, rel_path: str) -> None:
-        """Load and render the Twin projection for a Python source file."""
-        if not self._root or not rel_path.endswith(".py"):
+        """Drive the selection -> sync -> get -> render Twin lifecycle (P3.3).
+
+        A supported Python source (``.py`` / ``.pyi``) sets the pane Loading,
+        synchronizes that file's scope, then loads and renders its projection.
+        Any other file shows a bounded state and never triggers a source sync.
+        """
+        if not self._root:
+            return
+        generation = self._next_twin_generation()
+        if not is_twin_source_path(rel_path):
+            self._set_twin_state(TWIN_EMPTY)
+            self._render_behavior_nodes([])
+            return
+        self._set_twin_chip(TWIN_LOADING)
+        self._twin_body.setText(_TWIN_LABELS[TWIN_LOADING])
+        self._render_behavior_nodes([])
+        self._sync_twin_scoped(rel_path, generation)
+
+    def _sync_twin_scoped(self, rel_path: str, generation: int) -> None:
+        """Synchronize the selected file's scope before loading its projection."""
+        cid = contract.new_correlation_id()
+        request = build_sync_twin_request(cid, [rel_path])
+        on_success = partial(self._on_selection_synced, rel_path, generation)
+        on_error = partial(self._on_selection_sync_failed, generation)
+        if not self._send(request, on_success, on_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_selection_synced(
+        self, rel_path: str, generation: int, result: Dict[str, Any]
+    ) -> None:
+        """After a successful scoped sync, load and render the projection."""
+        if generation != self._twin_generation:
             return
         cid = contract.new_correlation_id()
         request = build_get_twin_request(cid, rel_path)
-        if not self._send(
-            request, self._on_twin_projection_loaded, self._on_twin_projection_failed
-        ):
+        on_success = partial(self._on_twin_projection_loaded, generation=generation)
+        on_error = partial(self._on_twin_projection_failed, generation)
+        if not self._send(request, on_success, on_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_selection_sync_failed(self, generation: int, reason: str) -> None:
+        """A failed selection sync shows a bounded failure state with its reason."""
+        if generation != self._twin_generation:
+            return
+        self._set_status(STATE_FAILED, reason)
+        self._set_twin_failure(reason)
 
     def _on_twin_synced(self, result: Dict[str, Any]) -> None:
         state = result.get("state", "synchronized")
@@ -1133,7 +1189,11 @@ class MainWindow(QMainWindow):
         self._twin_body.setText(format_twin_sync(result))
         self._set_status(STATE_SUCCESS, f"twin {state}")
 
-    def _on_twin_projection_loaded(self, bundle: Dict[str, Any]) -> None:
+    def _on_twin_projection_loaded(
+        self, bundle: Dict[str, Any], generation: Optional[int] = None
+    ) -> None:
+        if generation is not None and generation != self._twin_generation:
+            return  # a late response for a previously selected file
         projection = bundle.get("projection") or {}
         sync_state = projection.get("sync_state", "synchronized")
         self._set_twin_chip(twin_state_from_sync(sync_state))
@@ -1146,9 +1206,18 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_FAILED, reason)
         self._set_twin_state(TWIN_EMPTY)
 
-    def _on_twin_projection_failed(self, reason: str) -> None:
-        # A selector-level miss keeps the current projection/summary intact.
+    def _on_twin_projection_failed(self, generation: int, reason: str) -> None:
+        """A selector-level miss shows a bounded failure state, never stale Empty."""
+        if generation != self._twin_generation:
+            return
         self._set_status(STATE_FAILED, reason)
+        self._set_twin_failure(reason)
+
+    def _set_twin_failure(self, reason: str) -> None:
+        """Show an explicit bounded failure state with its reason (Twin pane only)."""
+        self._set_twin_chip(TWIN_EMPTY)
+        self._twin_body.setText(f"Twin projection unavailable.\n\nReason: {reason}")
+        self._render_behavior_nodes([])
 
     def _render_behavior_nodes(self, nodes: List[Dict[str, Any]]) -> None:
         """Populate the clickable behavior-node list for the current projection."""
@@ -1314,6 +1383,9 @@ class MainWindow(QMainWindow):
     def _on_blocked(self, correlation_id: str) -> None:
         self._pending.pop(correlation_id, None)
         self._set_status(STATE_BLOCKED, correlation_id)
+        # A Twin chain interrupted by a timeout/restart must not stay Loading.
+        if self._twin_state == TWIN_LOADING:
+            self._set_twin_failure("blocked")
 
     def _on_unavailable(self, message: str) -> None:
         self._set_status(STATE_UNAVAILABLE, message)

@@ -56,12 +56,18 @@ _SKIP_DIRS = frozenset(
     }
 )
 
+# Python source suffixes the scanner models. ``.pyi`` type stubs are parsed
+# with the same ``ast`` extractor and produce the same symbol/relation records.
+_PY_SUFFIXES = (".py", ".pyi")
+
 
 def module_name_for(rel_path: str) -> str:
     """Derive a dotted module name from a slash-separated relative path."""
     parts = rel_path.replace("\\", "/").split("/")
     if parts and parts[-1] == "__init__.py":
         parts = parts[:-1]
+    elif parts and parts[-1].endswith(".pyi"):
+        parts[-1] = parts[-1][: -len(".pyi")]
     elif parts and parts[-1].endswith(".py"):
         parts[-1] = parts[-1][: -len(".py")]
     return ".".join(part for part in parts if part)
@@ -155,7 +161,7 @@ class Scanner:
         for dirpath, dirnames, filenames in os.walk(self._root):
             dirnames[:] = sorted(d for d in dirnames if d not in _SKIP_DIRS)
             for fn in sorted(filenames):
-                if fn.endswith(".py"):
+                if fn.endswith(_PY_SUFFIXES):
                     full = os.path.join(dirpath, fn)
                     found.append(os.path.relpath(full, self._root).replace(os.sep, "/"))
         return sorted(found)

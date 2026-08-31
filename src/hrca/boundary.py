@@ -276,7 +276,7 @@ def _get_document_result(request: Dict[str, Any], session: WorkspaceSession) -> 
 # -- Twin handlers (P3.3) ------------------------------------------------
 
 def _compute_fingerprints(root: str, scanner_doc: Dict[str, Any]) -> Dict[str, Optional[str]]:
-    """Return ``{path: fingerprint}`` for every ``.py`` file in ``scanner_doc``.
+    """Return ``{path: fingerprint}`` for every ``.py``/``.pyi`` file in ``scanner_doc``.
 
     Fingerprints are read from disk below ``root`` (the accepted project, which
     the scanner already walked); an unreadable file yields ``None`` so its
@@ -286,7 +286,7 @@ def _compute_fingerprints(root: str, scanner_doc: Dict[str, Any]) -> Dict[str, O
     fingerprints: Dict[str, Optional[str]] = {}
     for file_rec in scanner_doc.get("files", []):
         rel_path = file_rec.get("path")
-        if not isinstance(rel_path, str) or not rel_path.endswith(".py"):
+        if not isinstance(rel_path, str) or not rel_path.endswith((".py", ".pyi")):
             continue
         try:
             with open(os.path.join(root, rel_path), "rb") as fh:

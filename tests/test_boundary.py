@@ -397,6 +397,18 @@ class BoundaryTwinTests(unittest.TestCase):
         self.assertIn("confidence", bundle["projection"])
         self.assertIn("sync_state", bundle["projection"])
 
+    def test_get_twin_retrieves_pyi_file_projection(self):
+        self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
+        envs = self._open_and(
+            _twin_request(contract.ACTION_GET_TWIN, task={"selector": "app/stubs.pyi"})
+        )
+        env = envs[1]
+        self.assertTrue(env["ok"])
+        bundle = env["result"]
+        self.assertEqual(bundle["projection"]["kind"], "file")
+        self.assertEqual(bundle["projection"]["path"], "app/stubs.pyi")
+        self.assertIn("sync_state", bundle["projection"])
+
     def test_get_twin_retrieves_symbol_projection_with_behavior_nodes(self):
         self._open_and(_twin_request(contract.ACTION_SYNC_TWIN, task={}))
         envs = self._open_and(

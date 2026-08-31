@@ -357,6 +357,16 @@ def twin_state_from_sync(sync_state: str) -> str:
     return _TWIN_STATE_FROM_SYNC.get(sync_state, TWIN_AVAILABLE)
 
 
+# Root-relative suffixes the Twin models; a selected file outside this set has
+# no projection and must show a bounded state rather than trigger a source sync.
+TWIN_SOURCE_SUFFIXES = (".py", ".pyi")
+
+
+def is_twin_source_path(rel_path: str) -> bool:
+    """Return True when ``rel_path`` names a Python source the Twin models."""
+    return isinstance(rel_path, str) and rel_path.endswith(TWIN_SOURCE_SUFFIXES)
+
+
 def behavior_node_label(node: Dict[str, Any]) -> str:
     """Return one deterministic line describing a behavior ``node`` (P3.3).
 
@@ -464,6 +474,8 @@ __all__ = [
     "build_get_twin_request",
     "build_get_anchor_request",
     "twin_state_from_sync",
+    "TWIN_SOURCE_SUFFIXES",
+    "is_twin_source_path",
     "behavior_node_label",
     "format_twin_projection",
     "format_twin_sync",

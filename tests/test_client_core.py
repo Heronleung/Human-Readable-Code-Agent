@@ -39,6 +39,7 @@ from hrca.client_core import (
     default_fixture_root,
     format_twin_projection,
     format_twin_sync,
+    is_twin_source_path,
     resolve_backend_command,
     twin_state_from_sync,
 )
@@ -271,6 +272,15 @@ class TwinPresentationTests(unittest.TestCase):
 
     def test_unknown_sync_state_is_bounded(self):
         self.assertEqual(twin_state_from_sync("not-a-sync-state"), TWIN_AVAILABLE)
+
+    def test_is_twin_source_path_accepts_python_and_stub(self):
+        self.assertTrue(is_twin_source_path("app/main.py"))
+        self.assertTrue(is_twin_source_path("app/stubs.pyi"))
+        self.assertFalse(is_twin_source_path("app/notes.txt"))
+        self.assertFalse(is_twin_source_path("app/data.json"))
+        self.assertFalse(is_twin_source_path("app/module"))
+        self.assertFalse(is_twin_source_path(None))
+        self.assertFalse(is_twin_source_path(""))
 
     def test_behavior_node_label_lists_items(self):
         self.assertEqual(

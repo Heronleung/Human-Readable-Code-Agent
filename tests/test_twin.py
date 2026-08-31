@@ -174,6 +174,29 @@ class BuildStoreTests(unittest.TestCase):
         b = build_store(doc, fps, _WS, 1, "T")
         self.assertEqual(dumps(a), dumps(b))
 
+    def test_build_store_models_pyi_stub_files(self):
+        # ``.pyi`` type stubs are modelled like ``.py`` modules: a file artifact
+        # plus symbol artifacts with stable, suffix-stripped qualified IDs.
+        doc = {
+            "files": [{"path": "app/stubs.pyi", "module": "app.stubs",
+                       "size_bytes": 1, "syntax_status": "ok"}],
+            "symbols": [
+                {"id": "app.stubs", "kind": "module", "name": "app.stubs",
+                 "file": "app/stubs.pyi", "source_range": _sr(1)},
+                {"id": "app.stubs.parse", "kind": "function", "name": "parse",
+                 "parent_id": "app.stubs", "file": "app/stubs.pyi",
+                 "confidence": CONF_HIGH, "source_range": _sr(2)},
+            ],
+            "relations": [],
+            "parse_errors": [],
+            "confidence": "high",
+        }
+        store = build_store(doc, {"app/stubs.pyi": "fp:stub"}, _WS, 1, "T")
+        file_artifacts = _artifacts(store, ARTIFACT_FILE)
+        self.assertEqual([r["path"] for r in file_artifacts], ["app/stubs.pyi"])
+        fn = [r for r in store["artifacts"] if r["kind"] == ARTIFACT_FUNCTION]
+        self.assertEqual([r["locator"] for r in fn], ["app.stubs.parse"])
+
     def test_dumps_is_ascii_and_single_line(self):
         doc = _doc([("a.py", [_fn("a.py", "f", return_annotation="dict")], [])])
         store = build_store(doc, _fingerprints(doc), _WS, 1, "T")
