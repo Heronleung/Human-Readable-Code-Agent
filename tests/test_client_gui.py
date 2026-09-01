@@ -18,9 +18,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import QEvent, QEventLoop, QPointF, QProcess, QTimer, Qt, qInstallMessageHandler
     from PySide6.QtGui import QKeyEvent, QMouseEvent
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (
         QApplication,
         QLabel,
+        QPushButton,
         QStackedWidget,
         QTabBar,
         QToolButton,
@@ -184,7 +186,7 @@ class MainWindowLayoutTests(unittest.TestCase):
     def test_twin_default_state_is_empty(self):
         window = MainWindow()
         self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertIn("No Human-Readable Twin", window._twin_body.text())
+        self.assertIn("No Code Map", window._twin_body.text())
         self.assertIn("empty", window._twin_label.text())
 
     def test_twin_state_transitions(self):
@@ -703,7 +705,7 @@ class TwinPaneTests(unittest.TestCase):
         # projection is fetched only after that sync succeeds.
         self.assertEqual(window._twin_chip.text(), "Loading")
         self.assertEqual(window._twin_body.text(),
-                         "Twin synchronization is in progress.")
+                         "Code Map synchronization is in progress.")
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
         self.assertEqual(sent[0]["task"]["changed_paths"], ["app/main.py"])
@@ -816,6 +818,305 @@ class TwinPaneTests(unittest.TestCase):
         sent = self._fake_send(window)
         window._on_scan_completed(_sample_result())
         self.assertEqual(sent, [])
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class CodeMapPinTests(unittest.TestCase):
+    """P3.3 Code Map pane follow/pin (lock) and interactive behavior nodes.
+
+    The pane is renamed "Code Map", starts unlocked and auto-follows the active
+    supported source tab; a single monochrome lock pins the displayed projection
+    to its source path until unpinned. Anchorable behavior nodes render as
+    accessible, focusable buttons that navigate by their stored backend id.
+    """
+
+    def setUp(self):
+        _app()
+
+    def _fake_send(self, window):
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        return sent
+
+    def _chain_send(self, window, bundle=None):
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            action = request["action"]
+            if action == contract.ACTION_SYNC_TWIN:
+                on_success({"state": "synchronized", "persisted": True, "counts": {}})
+            elif action == contract.ACTION_GET_TWIN:
+                on_success(bundle or _sample_twin_bundle())
+            return True
+
+        window._send = fake_send
+        return sent
+
+    def _function_bundle(self):
+        return {
+            "projection": {
+                "kind": "module",
+                "path": "calculator.py",
+                "locator": "calculator",
+                "summary": "Calculator module",
+                "provenance": "verified",
+                "confidence": "high",
+                "sync_state": "synchronized",
+                "details": ["Function add(left: float, right: float) -> float"],
+                "limitations": [],
+            },
+            "behavior_nodes": [
+                {
+                    "id": "behavior:calculator:add:0",
+                    "category": "Function",
+                    "provenance": "verified",
+                    "confidence": "high",
+                    "items": ["add(left: float, right: float) -> float"],
+                },
+                {
+                    "id": "behavior:calculator:divide:0",
+                    "category": "Function",
+                    "provenance": "verified",
+                    "confidence": "high",
+                    "items": ["divide(left: float, right: float) -> float"],
+                },
+            ],
+        }
+
+    # -- rename + lock control ------------------------------------------
+
+    def test_pane_title_is_code_map(self):
+        window = MainWindow()
+        self.assertEqual(window._twin_header_label.text(), "CODE MAP")
+        self.assertEqual(window._twin_header_label.accessibleName(), "Code Map")
+        self.assertEqual(window._twin_body.accessibleName(), "Code Map content")
+
+    def test_single_non_emoji_lock_control(self):
+        window = MainWindow()
+        lock = window._twin_lock_button
+        self.assertIsInstance(lock, QToolButton)
+        self.assertTrue(lock.isCheckable())
+        self.assertEqual(lock.text(), "")
+        self.assertFalse(lock.icon().isNull())
+        buttons = window._twin_panel.findChildren(QToolButton, "twinLockButton")
+        self.assertEqual(len(buttons), 1)
+
+    def test_starts_unlocked(self):
+        window = MainWindow()
+        self.assertFalse(window._twin_pinned)
+        self.assertFalse(window._twin_lock_button.isChecked())
+        self.assertEqual(window._twin_lock_button.accessibleName(), "Pin Code Map")
+
+    def test_lock_disabled_without_selection(self):
+        window = MainWindow()
+        self.assertFalse(window._twin_lock_button.isEnabled())
+        self.assertIn("No supported source file", window._twin_lock_button.toolTip())
+        window._root = "/some/root"
+        window._on_twin_projection_loaded(_sample_twin_bundle())
+        self.assertTrue(window._twin_lock_button.isEnabled())
+
+    # -- follow / pin / unpin -------------------------------------------
+
+    def test_python_selection_auto_renders(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        sent = self._chain_send(window)
+        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
+        self.assertEqual(
+            [r["action"] for r in sent],
+            [contract.ACTION_SYNC_TWIN, contract.ACTION_GET_TWIN],
+        )
+        self.assertEqual(window._twin_chip.text(), "Available")
+        self.assertIn("Method handle(request)", window._twin_body.text())
+
+    def test_switch_follows_new_selection(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        sent = self._fake_send(window)
+        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
+        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
+        syncs = [r for r in sent if r["action"] == contract.ACTION_SYNC_TWIN]
+        self.assertEqual(len(syncs), 2)
+        self.assertEqual(syncs[0]["task"]["changed_paths"], ["calculator.py"])
+        self.assertEqual(syncs[1]["task"]["changed_paths"], ["helpers.py"])
+
+    def test_pin_retains_projection_across_switch(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        window._on_twin_projection_loaded(_sample_twin_bundle())
+        window._twin_lock_button.click()  # pin to app/service.py
+        self.assertTrue(window._twin_pinned)
+        self.assertTrue(window._twin_lock_button.isChecked())
+        self.assertEqual(window._twin_lock_button.accessibleName(), "Unpin Code Map")
+        body_before = window._twin_body.text()
+        sent = self._fake_send(window)
+        window._on_document_opened("other.py", _source_doc("other.py"))
+        self.assertEqual(sent, [])
+        self.assertEqual(window._twin_body.text(), body_before)
+        self.assertEqual(window._active_twin_path, "app/service.py")
+
+    def test_unlock_immediately_follows_active_tab(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        window._on_twin_projection_loaded(_sample_twin_bundle())
+        window._twin_lock_button.click()  # pin
+        self._fake_send(window)
+        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
+        sent = self._fake_send(window)
+        window._twin_lock_button.click()  # unpin -> follow helpers.py now
+        self.assertFalse(window._twin_pinned)
+        syncs = [r for r in sent if r["action"] == contract.ACTION_SYNC_TWIN]
+        self.assertEqual(len(syncs), 1)
+        self.assertEqual(syncs[0]["task"]["changed_paths"], ["helpers.py"])
+
+    def test_late_response_does_not_relabel_pinned_content(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        self._chain_send(window)
+        window._on_document_opened("app/service.py", _source_doc("app/service.py"))
+        self.assertEqual(window._twin_chip.text(), "Available")
+        window._twin_lock_button.click()  # pin advances the generation
+        body_before = window._twin_body.text()
+        window._on_twin_projection_loaded(_sample_twin_bundle(), generation=1)
+        self.assertEqual(window._twin_body.text(), body_before)
+
+    def test_pinned_survives_unsupported_switch(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        window._on_twin_projection_loaded(_sample_twin_bundle())
+        window._twin_lock_button.click()
+        body_before = window._twin_body.text()
+        sent = self._fake_send(window)
+        window._on_document_opened(
+            "notes.txt",
+            {
+                "path": "notes.txt",
+                "name": "notes.txt",
+                "size": 5,
+                "kind": "preview",
+                "content": "hello\n",
+            },
+        )
+        self.assertEqual(sent, [])
+        self.assertEqual(window._twin_body.text(), body_before)
+        self.assertTrue(window._twin_lock_button.isChecked())
+
+    # -- interactive behavior nodes -------------------------------------
+
+    def test_behavior_nodes_are_interactive_controls(self):
+        window = MainWindow()
+        window._on_twin_projection_loaded(self._function_bundle())
+        self.assertEqual(window._twin_nodes.count(), 2)
+        for i in range(2):
+            item = window._twin_nodes.item(i)
+            button = window._twin_nodes.itemWidget(item)
+            self.assertIsInstance(button, QPushButton)
+            self.assertNotIsInstance(button, QLabel)
+            self.assertTrue(button.accessibleName().startswith("Navigate to Function"))
+            self.assertTrue(button.toolTip().startswith("Reveal source for Function"))
+            self.assertEqual(button.focusPolicy(), Qt.StrongFocus)
+
+    def test_divide_sends_get_anchor_with_stored_id(self):
+        window = MainWindow()
+        window._on_twin_projection_loaded(self._function_bundle())
+        divide_button = window._twin_nodes.itemWidget(window._twin_nodes.item(1))
+        self.assertEqual(divide_button._node_id, "behavior:calculator:divide:0")
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        divide_button.click()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_GET_ANCHOR)
+        self.assertEqual(sent[0]["task"]["node_id"], "behavior:calculator:divide:0")
+
+    def test_valid_anchor_opens_document_and_sets_reveal_line(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        window._on_twin_projection_loaded(self._function_bundle())
+        divide_button = window._twin_nodes.itemWidget(window._twin_nodes.item(1))
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            if request["action"] == contract.ACTION_GET_ANCHOR:
+                on_success(
+                    {
+                        "available": True,
+                        "file": "calculator.py",
+                        "source_range": {"lineno": 7},
+                    }
+                )
+            return True
+
+        window._send = fake_send
+        divide_button.click()
+        self.assertEqual(
+            [r["action"] for r in sent],
+            [contract.ACTION_GET_ANCHOR, contract.ACTION_GET_DOCUMENT],
+        )
+        self.assertEqual(sent[1]["path"], "calculator.py")
+        self.assertEqual(window._pending_reveal_line, 7)
+
+    def test_behavior_node_mouse_and_keyboard_activation(self):
+        window = MainWindow()
+        window._on_twin_projection_loaded(self._function_bundle())
+        divide_button = window._twin_nodes.itemWidget(window._twin_nodes.item(1))
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+
+        divide_button.click()
+        self.assertEqual(sent[-1]["task"]["node_id"], "behavior:calculator:divide:0")
+
+        QTest.keyClick(divide_button, Qt.Key_Space)
+        self.assertEqual(sent[-1]["task"]["node_id"], "behavior:calculator:divide:0")
+
+        QTest.keyClick(divide_button, Qt.Key_Enter)
+        self.assertEqual(sent[-1]["task"]["node_id"], "behavior:calculator:divide:0")
+
+        self.assertEqual(len(sent), 3)
+
+    def test_missing_anchor_does_not_move_and_preserves_projection(self):
+        window = MainWindow()
+        window._on_twin_projection_loaded(self._function_bundle())
+        body_before = window._twin_body.text()
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        window._on_anchor_loaded({"available": False, "reason": "no_anchor"})
+        self.assertEqual(sent, [])
+        self.assertEqual(window._twin_body.text(), body_before)
+        self.assertIn("failed", window.status_label.text())
+
+    def test_projection_details_are_non_clickable_text(self):
+        window = MainWindow()
+        window._on_twin_projection_loaded(self._function_bundle())
+        self.assertIsInstance(window._twin_body, QLabel)
+        self.assertIn("Details:", window._twin_body.text())
+        self.assertIn("Function add", window._twin_body.text())
+        self.assertEqual(window._twin_nodes.count(), 2)
+        for i in range(window._twin_nodes.count()):
+            self.assertIsInstance(
+                window._twin_nodes.itemWidget(window._twin_nodes.item(i)), QPushButton
+            )
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")

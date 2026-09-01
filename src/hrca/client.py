@@ -16,7 +16,7 @@ Layout (presentation only, no semantics invented):
 * **Primary workspace** — one horizontal splitter with exactly three children:
   **Project Explorer** (collapsible tree, 240 px default), **Source Code**
   (flat closable tabs over a read-only document view) and an independent
-  **Human-Readable Twin** pane (never nested inside Source Code);
+  **Code Map** pane (never nested inside Source Code);
 * **Bottom utility panel** — one full-width surface directly beneath the three
   panes: a flat six-tab bar (**Agent Chat | Plan | Diff | Problems | Tests |
   Evidence**) plus a single disclosure control. Agent Chat keeps a message
@@ -90,6 +90,7 @@ from PySide6.QtWidgets import (
     QTreeView,
     QVBoxLayout,
     QWidget,
+    QSizePolicy,
 )
 
 from . import contract, style
@@ -142,12 +143,12 @@ _DEFAULT_TIMEOUT_MS = 15000
 # No Twin entity exists in P3.2, so none of these is derived from source; they
 # are the only text the surface ever shows and are not persisted.
 _TWIN_LABELS = {
-    "empty": "No Human-Readable Twin has been generated for this project.",
-    "loading": "Twin synchronization is in progress.",
-    "available": "A Human-Readable Twin is available.",
-    "stale": "The Human-Readable Twin is stale relative to the source.",
-    "conflict": "The Human-Readable Twin conflicts with the source.",
-    "unsupported": "Human-Readable Twin generation is unsupported for this project.",
+    "empty": "No Code Map has been generated for this project.",
+    "loading": "Code Map synchronization is in progress.",
+    "available": "A Code Map is available.",
+    "stale": "The Code Map is stale relative to the source.",
+    "conflict": "The Code Map conflicts with the source.",
+    "unsupported": "Code Map generation is unsupported for this project.",
 }
 
 # Fixed, honest unavailable text for the Diff surface. Until a code proposal
@@ -293,9 +294,15 @@ class CodeView(QPlainTextEdit):
         cursor.mergeBlockFormat(fmt)
 
     def reveal_line(self, lineno: int) -> None:
-        """Move the cursor to ``lineno`` (1-based) and scroll it into view."""
+        """Move the cursor to ``lineno`` (1-based), select the line, and scroll it into view.
+
+        Selecting the whole line gives a brief visible highlight of the anchored
+        source after a behavior-node navigation, without leaving an edit cursor
+        (the view stays read-only).
+        """
         block = self.document().findBlockByNumber(max(0, int(lineno) - 1))
         cursor = QTextCursor(block)
+        cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
         self.setTextCursor(cursor)
         self.centerCursor()
 
@@ -502,6 +509,35 @@ class _ProjectTreeView(QTreeView):
         return True
 
 
+class _BehaviorNodeButton(QPushButton):
+    """A flat, text-like, focusable control for one anchorable behavior node.
+
+    It renders a node's deterministic label as a clean, left-aligned list row
+    (never a raised button) but is a real button: mouse click, Enter and Space
+    all activate it, it is keyboard-focusable, and it retains the node's
+    backend identifier so activation always navigates the stored identity,
+    never a guess from the displayed text.
+    """
+
+    def __init__(self, label: str, node_id: str, parent=None) -> None:
+        super().__init__(label, parent)
+        self._node_id = node_id
+        self.setObjectName("behaviorNodeButton")
+        self.setAccessibleName(f"Navigate to {label}")
+        self.setToolTip(f"Reveal source for {label}")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def keyPressEvent(self, event) -> None:
+        # Enter/Return activate like a click; Space is handled by QAbstractButton.
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.click()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class MainWindow(QMainWindow):
     """Render the IDE workspace shell (P3.2 presentation-only surface)."""
 
@@ -529,6 +565,10 @@ class MainWindow(QMainWindow):
         # the generation that started it, so a late response for a previously
         # selected file is discarded instead of overwriting the current one.
         self._twin_generation: int = 0
+        # Follow/pin state for the Code Map pane: unlocked (follow) by default,
+        # pinned (lock) to the currently displayed projection's source path.
+        self._twin_pinned: bool = False
+        self._active_twin_path: Optional[str] = None
         # Single bottom-panel state model (replaces the old drawer/chat booleans):
         # the selected tab key, whether the panel body is visible, and the last
         # usable expanded height to restore on the next expand.
@@ -710,11 +750,28 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
         layout.setSpacing(style.SPACE_0)
 
-        header, header_layout = self._header_row("Human-Readable Twin")
+        header, header_layout = self._header_row("Code Map")
+        self._twin_header_label = header_layout.itemAt(0).widget()
+        self._twin_header_label.setAccessibleName("Code Map")
         self._twin_chip = QLabel()
         self._twin_chip.setObjectName("twinChip")
         self._twin_chip.setAccessibleName("Twin state")
         header_layout.addWidget(self._twin_chip)
+        header_layout.addStretch(1)
+
+        # Single monochrome pin control on the right of the header, after the
+        # state chip. It is a checkable vector-drawn lock, never an emoji, glyph
+        # or icon asset.
+        self._twin_lock_button = QToolButton()
+        self._twin_lock_button.setObjectName("twinLockButton")
+        self._twin_lock_button.setCheckable(True)
+        self._twin_lock_button.setFocusPolicy(Qt.StrongFocus)
+        self._twin_lock_button.setAccessibleDescription(
+            "Pins the Code Map to the current file; unpinning follows the active "
+            "source tab."
+        )
+        self._twin_lock_button.toggled.connect(self._on_twin_lock_toggled)
+        header_layout.addWidget(self._twin_lock_button)
         layout.addWidget(header)
 
         body = QWidget()
@@ -728,17 +785,18 @@ class MainWindow(QMainWindow):
         self._twin_body.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self._twin_body.setTextFormat(Qt.PlainText)
         self._twin_body.setMaximumWidth(style.TWIN_CONTENT_MAX_WIDTH)
-        self._twin_body.setAccessibleName("Human-Readable Twin content")
+        self._twin_body.setAccessibleName("Code Map content")
         body_layout.addWidget(self._twin_body)
 
         self._twin_nodes = QListWidget()
         self._twin_nodes.setObjectName("twinNodes")
         self._twin_nodes.setAccessibleName("Behavior nodes")
         self._twin_nodes.setVisible(False)
-        self._twin_nodes.itemClicked.connect(self._on_behavior_node_clicked)
         body_layout.addWidget(self._twin_nodes)
         body_layout.addStretch(1)
         layout.addWidget(body, stretch=1)
+
+        self._update_lock_control()
         return panel
 
     def _build_bottom_panel(self) -> QWidget:
@@ -1121,6 +1179,53 @@ class MainWindow(QMainWindow):
         self._twin_generation += 1
         return self._twin_generation
 
+    def _set_active_twin_path(self, path: Optional[str]) -> None:
+        """Record the source path backing the displayed projection and refresh
+        the pin control. ``None`` means no valid projection is shown, so the pin
+        control is disabled (unless the pane is already pinned)."""
+        self._active_twin_path = path
+        self._update_lock_control()
+
+    def _update_lock_control(self) -> None:
+        """Sync the pin control's accessible name, tooltip, enablement and icon
+        to the follow/pin state (P3.3)."""
+        locked = self._twin_pinned
+        enabled = locked or self._active_twin_path is not None
+        if locked:
+            name = "Unpin Code Map"
+            tooltip = "Follow the active source tab"
+        elif enabled:
+            name = "Pin Code Map"
+            tooltip = "Pin Code Map to the current file"
+        else:
+            name = "Pin Code Map"
+            tooltip = "No supported source file is active; open one to pin the Code Map."
+        self._twin_lock_button.setAccessibleName(name)
+        self._twin_lock_button.setToolTip(tooltip)
+        self._twin_lock_button.setEnabled(enabled)
+        self._twin_lock_button.setIcon(style.lock_icon(self._palette, locked, enabled))
+
+    def _on_twin_lock_toggled(self, checked: bool) -> None:
+        """Pin or unpin the Code Map pane (P3.3).
+
+        Pinning freezes the displayed projection to its current source path and
+        invalidates any in-flight chain so no late response relabels it.
+        Unpinning immediately follows the active supported source tab (a scoped
+        sync plus projection), or shows a bounded empty state when there is none.
+        """
+        self._twin_pinned = checked
+        if checked:
+            self._next_twin_generation()
+            self._update_lock_control()
+            return
+        self._update_lock_control()
+        if self._current_document and is_twin_source_path(self._current_document):
+            self._load_twin_projection(self._current_document)
+        else:
+            self._set_twin_state(TWIN_EMPTY)
+            self._render_behavior_nodes([])
+            self._set_active_twin_path(None)
+
     def _sync_twin(self, changed_paths: Optional[List[str]] = None) -> None:
         """Auto-synchronize the Structured Twin for the accepted workspace.
 
@@ -1141,17 +1246,23 @@ class MainWindow(QMainWindow):
         A supported Python source (``.py`` / ``.pyi``) sets the pane Loading,
         synchronizes that file's scope, then loads and renders its projection.
         Any other file shows a bounded state and never triggers a source sync.
+        When the pane is pinned, the current projection is frozen and the pin
+        guard returns without following, clearing, reloading or relabelling it.
         """
         if not self._root:
             return
+        if self._twin_pinned:
+            return  # pinned: never follow, clear, reload or relabel the pinned Code Map
         generation = self._next_twin_generation()
         if not is_twin_source_path(rel_path):
             self._set_twin_state(TWIN_EMPTY)
             self._render_behavior_nodes([])
+            self._set_active_twin_path(None)
             return
         self._set_twin_chip(TWIN_LOADING)
         self._twin_body.setText(_TWIN_LABELS[TWIN_LOADING])
         self._render_behavior_nodes([])
+        self._set_active_twin_path(None)
         self._sync_twin_scoped(rel_path, generation)
 
     def _sync_twin_scoped(self, rel_path: str, generation: int) -> None:
@@ -1199,12 +1310,14 @@ class MainWindow(QMainWindow):
         self._set_twin_chip(twin_state_from_sync(sync_state))
         self._twin_body.setText(format_twin_projection(bundle))
         self._render_behavior_nodes(bundle.get("behavior_nodes") or [])
+        self._set_active_twin_path(projection.get("path"))
         self._set_status(STATE_SUCCESS, f"twin {sync_state}")
 
     def _on_twin_failed(self, reason: str) -> None:
         # A workspace-level sync failure leaves no synchronized Twin.
         self._set_status(STATE_FAILED, reason)
         self._set_twin_state(TWIN_EMPTY)
+        self._set_active_twin_path(None)
 
     def _on_twin_projection_failed(self, generation: int, reason: str) -> None:
         """A selector-level miss shows a bounded failure state, never stale Empty."""
@@ -1214,27 +1327,34 @@ class MainWindow(QMainWindow):
         self._set_twin_failure(reason)
 
     def _set_twin_failure(self, reason: str) -> None:
-        """Show an explicit bounded failure state with its reason (Twin pane only)."""
+        """Show an explicit bounded failure state with its reason (Code Map pane only)."""
         self._set_twin_chip(TWIN_EMPTY)
-        self._twin_body.setText(f"Twin projection unavailable.\n\nReason: {reason}")
+        self._twin_body.setText(f"Code Map projection unavailable.\n\nReason: {reason}")
         self._render_behavior_nodes([])
+        self._set_active_twin_path(None)
 
     def _render_behavior_nodes(self, nodes: List[Dict[str, Any]]) -> None:
-        """Populate the clickable behavior-node list for the current projection."""
+        """Populate the behavior-node list as accessible interactive controls.
+
+        Each node becomes a flat, text-like, focusable button (not a plain label
+        or list text) that retains the node's backend identifier; activation
+        navigates that stored identity via ``get_anchor``.
+        """
         self._twin_nodes.clear()
         for node in nodes:
-            item = QListWidgetItem(behavior_node_label(node))
-            item.setData(Qt.UserRole, node.get("id"))
-            item.setToolTip(
-                f"{node.get('provenance', 'unknown')} / "
-                f"{node.get('confidence', 'unknown')}"
-            )
+            node_id = node.get("id")
+            label = behavior_node_label(node)
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, node_id)
             self._twin_nodes.addItem(item)
+            button = _BehaviorNodeButton(label, node_id)
+            button.clicked.connect(partial(self._navigate_to_behavior_node, node_id))
+            self._twin_nodes.setItemWidget(item, button)
+            item.setSizeHint(button.sizeHint())
         self._twin_nodes.setVisible(bool(nodes))
 
-    def _on_behavior_node_clicked(self, item) -> None:
-        """Navigate a clicked behavior node to its source anchor (P3.3)."""
-        node_id = item.data(Qt.UserRole)
+    def _navigate_to_behavior_node(self, node_id: str) -> None:
+        """Request the source anchor for a stored behavior-node id (P3.3)."""
         if not node_id:
             return
         cid = contract.new_correlation_id()
@@ -1242,6 +1362,14 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_RUNNING, "navigating to source anchor")
         if not self._send(request, self._on_anchor_loaded, self._on_anchor_failed):
             self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_behavior_node_clicked(self, item) -> None:
+        """Navigate a clicked behavior node to its source anchor (P3.3).
+
+        Reads the stored backend node id from the item's user data (never the
+        display text); button activation routes through the same stored id.
+        """
+        self._navigate_to_behavior_node(item.data(Qt.UserRole))
 
     def _on_anchor_loaded(self, anchor: Dict[str, Any]) -> None:
         """Open the anchored source file and reveal its line, or report why not."""

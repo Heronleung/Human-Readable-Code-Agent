@@ -83,10 +83,15 @@ semantics are invented):
   response, never a direct directory walk or `QFileSystemModel`); a central
   **Source Code** area with flat, closable, read-only `QPlainTextEdit` +
   `QSyntaxHighlighter` tabs opened via `get_document` (the client never reads
-  files itself); and an independent right-hand **Human-Readable Twin** pane
+  files itself); and an independent right-hand **Code Map** pane
   (never nested inside Source Code) that can display the bounded
   `empty` / `loading` / `available` / `stale` / `conflict` / `unsupported`
   states — in P3.2 no Twin entity exists, so the honest default is `empty`.
+  In P3.3 the pane follows the active supported `.py`/`.pyi` tab by default;
+  a single monochrome lock button on its header pins the displayed projection
+  to its source path (tab switches no longer replace it), and unpinning
+  immediately follows the active tab again. Closing a pinned tab keeps the last
+  rendered projection until unpinned.
 - **One bottom utility panel** — a single full-width surface directly beneath
   all three panes, with one flat tab bar (`Agent Chat | Plan | Diff | Problems
   | Tests | Evidence`, Agent Chat first) and one disclosure chevron (`▾`/`▴`)

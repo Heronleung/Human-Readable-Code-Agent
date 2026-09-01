@@ -33,14 +33,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
     QFontDatabase,
     QGuiApplication,
+    QIcon,
     QPainter,
     QPen,
+    QPixmap,
     QPolygonF,
 )
 from PySide6.QtWidgets import QProxyStyle, QStyle
@@ -115,6 +117,12 @@ TREE_DISCLOSURE_SLOT_WIDTH = 20
 TREE_CHEVRON_SIZE = 6
 TREE_CHEVRON_STROKE = 1.5
 TREE_DISCLOSURE_HIT_SIZE = 20
+
+# Code Map header pin control (P3.3). The lock is a monochrome vector padlock
+# painted at LOCK_ICON_SIZE with a LOCK_STROKE outline; only its shape (closed
+# vs open shackle) and colour change with the pin state.
+LOCK_ICON_SIZE = 16
+LOCK_STROKE = 1.75
 
 SPLITTER_HANDLE_WIDTH = 6          # 6 px interactive hit area
 SPLITTER_HAIRLINE_WIDTH = 1        # visually a 1 px hairline
@@ -345,6 +353,50 @@ def tree_chevron_vertices(open_state: bool) -> List[QPointF]:
     return [QPointF(-half, -half), QPointF(half, 0.0), QPointF(-half, half)]
 
 
+def lock_icon(palette: Palette, locked: bool, enabled: bool = True) -> QIcon:
+    """Return a monochrome vector padlock icon for the Code Map pin control.
+
+    The closed glyph (``locked`` true) has a full shackle and is drawn in the
+    palette's ``on_accent`` colour (over the accent checked background); the
+    open glyph has a gap on one side and is drawn in ``text_secondary`` (or
+    ``text_disabled`` when the control is disabled). The icon is painted with
+    :class:`QPainter` — no emoji, glyph, icon pack or image asset.
+    """
+    if locked:
+        color = palette.on_accent
+    elif enabled:
+        color = palette.text_secondary
+    else:
+        color = palette.text_disabled
+
+    size = LOCK_ICON_SIZE
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(color), LOCK_STROKE)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(QColor(color))
+
+    # Body: a filled rounded rectangle in the lower half.
+    painter.drawRoundedRect(QRectF(4.0, 9.0, 8.0, 5.0), 1.5, 1.5)
+
+    # Shackle: a stroked arc plus the leg(s) that descend into the body. The
+    # open (unlocked) glyph leaves the left leg un-drawn so the gap is the
+    # only shape difference between the two states.
+    painter.setBrush(Qt.NoBrush)
+    if locked:
+        painter.drawArc(QRectF(5.0, 4.0, 6.0, 6.0), 0, 180 * 16)
+        painter.drawLine(QPointF(5.0, 7.0), QPointF(5.0, 10.0))
+    else:
+        painter.drawArc(QRectF(5.0, 4.0, 6.0, 6.0), 0, 135 * 16)
+    painter.drawLine(QPointF(11.0, 7.0), QPointF(11.0, 10.0))
+    painter.end()
+    return QIcon(pixmap)
+
+
 class TreeBranchStyle(QProxyStyle):
     """Draw the tree branch indicator as a monochrome vector chevron.
 
@@ -545,6 +597,24 @@ QToolButton {
 }
 QToolButton:hover { color: $text; background: $sunken; }
 QToolButton:focus { border: 1px solid $focus; }
+
+/* ---- Code Map pin control (checkable, monochrome lock) ---- */
+QToolButton#twinLockButton { padding: 2px; }
+QToolButton#twinLockButton:checked { background: $accent; color: $on_accent; }
+QToolButton#twinLockButton:checked:hover { background: $accent_hover; }
+
+/* ---- Code Map behavior-node controls (flat, text-like, left-aligned) ---- */
+QPushButton#behaviorNodeButton {
+    background: transparent;
+    color: $text;
+    border: 1px solid transparent;
+    border-radius: $chip_radius;
+    padding: 4px 8px;
+    text-align: left;
+}
+QPushButton#behaviorNodeButton:hover { background: $sunken; border-color: $border; }
+QPushButton#behaviorNodeButton:pressed { background: $border; }
+QPushButton#behaviorNodeButton:focus { border: 1px solid $focus; }
 
 /* ---- panel header label ---- */
 QLabel#panelHeader {
@@ -758,6 +828,8 @@ __all__ = [
     "TREE_CHEVRON_SIZE",
     "TREE_CHEVRON_STROKE",
     "TREE_DISCLOSURE_HIT_SIZE",
+    "LOCK_ICON_SIZE",
+    "LOCK_STROKE",
     "TAB_HEIGHT",
     "SPLITTER_HANDLE_WIDTH",
     "SPLITTER_HAIRLINE_WIDTH",
@@ -798,6 +870,7 @@ __all__ = [
     "panel_header_font",
     "tree_folder_font",
     "tree_chevron_vertices",
+    "lock_icon",
     "TreeBranchStyle",
     "detect_color_scheme",
     "palette_for",
