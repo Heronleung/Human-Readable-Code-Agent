@@ -25,13 +25,18 @@ import os
 import tempfile
 from typing import Optional, Tuple
 
-from . import twin
+from . import twin, twin_draft
 
 # App-data directory name (per user), independent of any selected repository.
 _APP_DIR_NAME = "human-readable-code-agent"
 
 # File name of the canonical Twin store within a workspace directory.
 TWIN_STORE_FILENAME = "twin.json"
+
+# File name of the editable Twin Draft (P3.4) within a workspace directory. The
+# draft lives alongside ``twin.json`` under the same per-workspace directory and
+# is never written into the selected repository.
+DRAFT_STORE_FILENAME = "draft.json"
 
 # Prefix for temporary files during the atomic write; kept in the same
 # directory as the target so ``os.replace`` is atomic on the same filesystem.
@@ -70,6 +75,11 @@ def workspace_store_path(base_dir: str, workspace_id: str) -> str:
     return os.path.join(base_dir, _namespace(workspace_id), TWIN_STORE_FILENAME)
 
 
+def workspace_draft_path(base_dir: str, workspace_id: str) -> str:
+    """Return the absolute path of the editable Twin Draft for a workspace."""
+    return os.path.join(base_dir, _namespace(workspace_id), DRAFT_STORE_FILENAME)
+
+
 def load(base_dir: str, workspace_id: str) -> Tuple[Optional[dict], Optional[str]]:
     """Fail-closed load of a workspace's Twin store.
 
@@ -98,27 +108,26 @@ def load(base_dir: str, workspace_id: str) -> Tuple[Optional[dict], Optional[str
     return store, None
 
 
-def save(base_dir: str, workspace_id: str, store: dict) -> Optional[str]:
-    """Atomically persist ``store``; returns a reason on failure or ``None``.
-
-    The complete store is serialized deterministically, written to a temporary
-    file, flushed and ``fsync``-ed, then atomically replaced over the live
-    store. On any failure the previous valid store is retained and the
-    temporary file is removed.
-    """
-    path = workspace_store_path(base_dir, workspace_id)
-    dirpath = os.path.dirname(path)
+def _ensure_dir(dirpath: str) -> Optional[str]:
+    """Create ``dirpath`` if needed; return a reason on failure or ``None``."""
     try:
         os.makedirs(dirpath, exist_ok=True)
     except OSError as exc:
-        return f"could not create Twin storage directory: {exc}"
+        return f"could not create storage directory: {exc}"
+    return None
 
-    data = twin.dumps(store).encode("utf-8")
+
+def _atomic_write(dirpath: str, path: str, data: bytes, label: str) -> Optional[str]:
+    """Atomically write ``data`` to ``path``; return a reason on failure or ``None``.
+
+    The complete payload is written to a temporary file in ``dirpath``, flushed
+    and ``fsync``-ed, then atomically ``os.replace``-ed over ``path``. On any
+    failure the previous file is retained and the temporary file is removed.
+    """
     try:
         fd, tmp_path = tempfile.mkstemp(dir=dirpath, prefix=_TMP_PREFIX, suffix=_TMP_SUFFIX)
     except OSError as exc:
-        return f"could not create Twin temporary file: {exc}"
-
+        return f"could not create {label} temporary file: {exc}"
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
@@ -130,14 +139,94 @@ def save(base_dir: str, workspace_id: str, store: dict) -> Optional[str]:
             os.unlink(tmp_path)
         except OSError:
             pass
-        return f"could not write Twin store: {exc}"
+        return f"could not write {label}: {exc}"
+    return None
+
+
+def save(base_dir: str, workspace_id: str, store: dict) -> Optional[str]:
+    """Atomically persist ``store``; returns a reason on failure or ``None``.
+
+    The complete store is serialized deterministically, written to a temporary
+    file, flushed and ``fsync``-ed, then atomically replaced over the live
+    store. On any failure the previous valid store is retained and the
+    temporary file is removed.
+    """
+    path = workspace_store_path(base_dir, workspace_id)
+    dirpath = os.path.dirname(path)
+    err = _ensure_dir(dirpath)
+    if err is not None:
+        return err
+    return _atomic_write(dirpath, path, twin.dumps(store).encode("utf-8"), "Twin store")
+
+
+def load_draft(base_dir: str, workspace_id: str) -> Tuple[Optional[dict], Optional[str]]:
+    """Fail-closed load of a workspace's Twin Draft.
+
+    Returns ``(draft, error)`` where exactly one of ``draft`` / ``error`` is
+    ``None`` (an absent draft yields ``(None, None)``). Any read, parse or
+    migration failure returns ``(None, reason)`` and leaves the on-disk draft
+    untouched. The same future/unknown-version fail-closed rule as the Twin
+    store applies via :func:`hrca.twin_draft.migrate_draft`.
+    """
+    path = workspace_draft_path(base_dir, workspace_id)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw_text = fh.read()
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        return None, f"could not read Twin Draft: {exc}"
+
+    try:
+        raw = json.loads(raw_text)
+    except ValueError as exc:
+        return None, f"Twin Draft is not valid JSON: {exc}"
+
+    draft, err = twin_draft.migrate_draft(raw)
+    if err is not None:
+        return None, err
+    return draft, None
+
+
+def save_draft(base_dir: str, workspace_id: str, draft: dict) -> Optional[str]:
+    """Atomically persist ``draft``; returns a reason on failure or ``None``.
+
+    Serialization and atomic-write semantics match :func:`save` exactly; a
+    failed write retains the previous valid draft.
+    """
+    path = workspace_draft_path(base_dir, workspace_id)
+    dirpath = os.path.dirname(path)
+    err = _ensure_dir(dirpath)
+    if err is not None:
+        return err
+    return _atomic_write(dirpath, path, twin_draft.dumps(draft).encode("utf-8"), "Twin Draft")
+
+
+def discard_draft(base_dir: str, workspace_id: str) -> Optional[str]:
+    """Remove the persisted Twin Draft; returns a reason on failure or ``None``.
+
+    An absent draft is an idempotent success (``None``), so discarding a
+    non-existent draft never errors.
+    """
+    path = workspace_draft_path(base_dir, workspace_id)
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return f"could not discard Twin Draft: {exc}"
     return None
 
 
 __all__ = [
     "TWIN_STORE_FILENAME",
+    "DRAFT_STORE_FILENAME",
     "app_data_dir",
     "workspace_store_path",
+    "workspace_draft_path",
     "load",
     "save",
+    "load_draft",
+    "save_draft",
+    "discard_draft",
 ]

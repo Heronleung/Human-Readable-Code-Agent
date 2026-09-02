@@ -92,6 +92,13 @@ STATUS_BAR_HEIGHT = 24
 PANEL_HEADER_HEIGHT = 28
 CHAT_COMPOSER_HEIGHT = 56
 
+# Editable Code Map draft controls (P3.4). A single-line field is a QLineEdit
+# (its natural height); a list field is a bounded multi-line editor of this
+# fixed height, and the read-only Compare / Generate result area below the
+# controls is this fixed height.
+EDIT_FIELD_LIST_HEIGHT = 96
+DRAFT_RESULT_HEIGHT = 120
+
 # Bottom utility panel geometry. The panel is a single header (the flat tab bar
 # plus the disclosure control) above one body. The header must be tall enough to
 # fit the tab bar; the body floor keeps the selected surface usable at every
@@ -794,6 +801,20 @@ def unavailable_banner_style(palette: Palette) -> str:
     )
 
 
+def draft_notice_style(palette: Palette) -> str:
+    """Return the style sheet for the "Edits create a draft only" notice.
+
+    Muted secondary text; the caller sets word-wrap so the notice stays on one
+    bounded surface without ever implying the edit touches source.
+    """
+    return f"color: {palette.text_secondary}; font-size: {STATUS_FONT_SIZE}px;"
+
+
+def draft_field_label_style(palette: Palette) -> str:
+    """Return the style sheet for a structured draft field label."""
+    return f"color: {palette.text_secondary};"
+
+
 __all__ = [
     "SPACE_0",
     "SPACE_4",
@@ -816,6 +837,8 @@ __all__ = [
     "STATUS_BAR_HEIGHT",
     "PANEL_HEADER_HEIGHT",
     "CHAT_COMPOSER_HEIGHT",
+    "EDIT_FIELD_LIST_HEIGHT",
+    "DRAFT_RESULT_HEIGHT",
     "BOTTOM_PANEL_HEADER_HEIGHT",
     "BOTTOM_PANEL_BODY_MIN_HEIGHT",
     "BOTTOM_PANEL_MIN_HEIGHT",
@@ -885,4 +908,6 @@ __all__ = [
     "twin_chip_style",
     "preview_banner_style",
     "unavailable_banner_style",
+    "draft_notice_style",
+    "draft_field_label_style",
 ]

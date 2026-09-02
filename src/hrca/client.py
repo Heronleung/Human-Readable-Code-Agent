@@ -75,11 +75,14 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QSplitterHandle,
     QStackedWidget,
@@ -95,6 +98,12 @@ from PySide6.QtWidgets import (
 
 from . import contract, style
 from .client_core import (
+    ARTIFACT_FIELDS,
+    BEHAVIOR_FIELDS,
+    DRAFT_LIST,
+    DRAFT_SINGLE,
+    FIELD_CARDINALITY,
+    FIELD_LABELS,
     PROVIDER_UNAVAILABLE,
     REPOSITORY_UNVERIFIED,
     STATE_BLOCKED,
@@ -113,15 +122,28 @@ from .client_core import (
     LineBuffer,
     ResponseRouter,
     behavior_node_label,
+    build_compare_draft_request,
+    build_discard_draft_request,
+    build_generate_intent_delta_request,
     build_get_anchor_request,
+    build_get_code_map_request,
     build_get_document_request,
+    build_get_draft_request,
     build_get_tree_request,
     build_get_twin_request,
     build_open_project_request,
     build_request,
+    build_reset_draft_request,
+    build_save_draft_request,
     build_scan_request,
     build_sync_twin_request,
     default_fixture_root,
+    draft_edit,
+    field_cardinality,
+    field_label,
+    format_draft_changes,
+    format_draft_facts,
+    format_intent_delta,
     format_twin_projection,
     format_twin_sync,
     is_twin_source_path,
@@ -159,6 +181,10 @@ _DIFF_UNAVAILABLE = (
     "No code proposal capability exists yet, so there is nothing to diff and "
     "no way to apply changes."
 )
+
+# The fixed, honest notice shown on the editable Code Map surface. Every edit
+# becomes a Twin Draft only — it never modifies source, Git state or files.
+_DRAFT_NOTICE = "Edits create a draft only. Source code is unchanged."
 
 # Fixed, honest unavailable messages for the document surface. Each ``reason``
 # is one of the workspace's bounded unavailable reasons; the banner never echoes
@@ -569,6 +595,19 @@ class MainWindow(QMainWindow):
         # pinned (lock) to the currently displayed projection's source path.
         self._twin_pinned: bool = False
         self._active_twin_path: Optional[str] = None
+        # Editable Code Map (P3.4) state: the currently shown artifact id and
+        # projection bundle, plus edit-mode / dirty / schema / control bookkeeping.
+        self._active_twin_artifact_id: Optional[str] = None
+        self._active_twin_bundle: Dict[str, Any] = {}
+        self._edit_mode: bool = False
+        self._draft_dirty: bool = False
+        self._draft_schema: Dict[str, Any] = {}
+        self._draft_controls: Dict[tuple, QWidget] = {}
+        self._draft_cardinality: Dict[tuple, str] = {}
+        # Deferred exit intents resolved after a save completes: "edit" returns
+        # to the read-only projection; "close" closes the window.
+        self._leave_after_save: bool = False
+        self._close_after_save: bool = False
         # Single bottom-panel state model (replaces the old drawer/chat booleans):
         # the selected tab key, whether the panel body is visible, and the last
         # usable expanded height to restore on the next expand.
@@ -759,6 +798,18 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self._twin_chip)
         header_layout.addStretch(1)
 
+        # Editable Code Map action (P3.4): a checkable control that switches the
+        # pane between the read-only projection and the draft editing surface.
+        self._edit_button = QPushButton("Edit Code Map")
+        self._edit_button.setObjectName("editCodeMapButton")
+        self._edit_button.setCheckable(True)
+        self._edit_button.setAccessibleName("Edit Code Map")
+        self._edit_button.setToolTip(
+            "Edit the Code Map interpretation fields; edits become a draft only."
+        )
+        self._edit_button.toggled.connect(self._on_edit_toggled)
+        header_layout.addWidget(self._edit_button)
+
         # Single monochrome pin control on the right of the header, after the
         # state chip. It is a checkable vector-drawn lock, never an emoji, glyph
         # or icon asset.
@@ -774,6 +825,20 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self._twin_lock_button)
         layout.addWidget(header)
 
+        # The pane body is a two-page stack: page 0 is the read-only projection
+        # (facts + anchorable behavior nodes); page 1 is the editable draft
+        # surface. Editing never removes the read-only projection.
+        self._twin_stack = QStackedWidget()
+        self._twin_stack.setObjectName("twinStack")
+        self._twin_stack.addWidget(self._build_twin_readonly_body())
+        self._twin_stack.addWidget(self._build_edit_surface())
+        layout.addWidget(self._twin_stack, stretch=1)
+
+        self._update_lock_control()
+        self._update_edit_control()
+        return panel
+
+    def _build_twin_readonly_body(self) -> QWidget:
         body = QWidget()
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(
@@ -794,10 +859,86 @@ class MainWindow(QMainWindow):
         self._twin_nodes.setVisible(False)
         body_layout.addWidget(self._twin_nodes)
         body_layout.addStretch(1)
-        layout.addWidget(body, stretch=1)
+        return body
 
-        self._update_lock_control()
-        return panel
+    def _build_edit_surface(self) -> QWidget:
+        surface = QWidget()
+        surface.setObjectName("editCodeMapSurface")
+        layout = QVBoxLayout(surface)
+        layout.setContentsMargins(style.INSET, style.GAP_TIGHT, style.INSET, style.INSET)
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self._draft_notice = QLabel(_DRAFT_NOTICE)
+        self._draft_notice.setObjectName("draftNotice")
+        self._draft_notice.setWordWrap(True)
+        self._draft_notice.setStyleSheet(style.draft_notice_style(self._palette))
+        self._draft_notice.setAccessibleName("Draft notice")
+        layout.addWidget(self._draft_notice)
+
+        self._draft_facts = QLabel("")
+        self._draft_facts.setObjectName("draftFacts")
+        self._draft_facts.setWordWrap(True)
+        self._draft_facts.setTextFormat(Qt.PlainText)
+        self._draft_facts.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self._draft_facts.setStyleSheet(style.secondary_text_style(self._palette))
+        self._draft_facts.setAccessibleName("Read-only facts")
+        layout.addWidget(self._draft_facts)
+
+        # Scrollable structured controls: one labelled section per editable
+        # target (the active artifact plus its anchorable behavior nodes).
+        self._draft_fields = QWidget()
+        self._draft_fields_layout = QVBoxLayout(self._draft_fields)
+        self._draft_fields_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._draft_fields_layout.setSpacing(style.GAP_TIGHT)
+        self._draft_scroll = QScrollArea()
+        self._draft_scroll.setObjectName("draftFieldsScroll")
+        self._draft_scroll.setWidgetResizable(True)
+        self._draft_scroll.setFrameShape(QFrame.NoFrame)
+        self._draft_scroll.setWidget(self._draft_fields)
+        layout.addWidget(self._draft_scroll, stretch=1)
+
+        # Read-only Compare / Generate result area (hidden until produced).
+        self._draft_result = QPlainTextEdit()
+        self._draft_result.setObjectName("draftResult")
+        self._draft_result.setReadOnly(True)
+        self._draft_result.setFixedHeight(style.DRAFT_RESULT_HEIGHT)
+        self._draft_result.setAccessibleName("Draft result")
+        self._draft_result.setVisible(False)
+        layout.addWidget(self._draft_result)
+
+        actions = QWidget()
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        actions_layout.setSpacing(style.GAP_TIGHT)
+        self.save_draft_button = QPushButton("Save")
+        self.discard_draft_button = QPushButton("Discard")
+        self.reset_draft_button = QPushButton("Reset")
+        self.compare_draft_button = QPushButton("Compare")
+        self.generate_draft_button = QPushButton("Generate")
+        self.save_draft_button.setAccessibleName("Save Code Map draft")
+        self.discard_draft_button.setAccessibleName("Discard Code Map draft")
+        self.reset_draft_button.setAccessibleName("Reset Code Map draft")
+        self.compare_draft_button.setAccessibleName("Compare Code Map draft")
+        self.generate_draft_button.setAccessibleName("Generate Intent Delta")
+        self.save_draft_button.clicked.connect(self._save_draft)
+        self.discard_draft_button.clicked.connect(self._discard_draft)
+        self.reset_draft_button.clicked.connect(self._reset_draft)
+        self.compare_draft_button.clicked.connect(self._compare_draft)
+        self.generate_draft_button.clicked.connect(self._generate_intent_delta)
+        for button in (
+            self.save_draft_button,
+            self.discard_draft_button,
+            self.reset_draft_button,
+            self.compare_draft_button,
+            self.generate_draft_button,
+        ):
+            actions_layout.addWidget(button)
+        layout.addWidget(actions)
+        return surface
 
     def _build_bottom_panel(self) -> QWidget:
         panel = QWidget()
@@ -1182,9 +1323,15 @@ class MainWindow(QMainWindow):
     def _set_active_twin_path(self, path: Optional[str]) -> None:
         """Record the source path backing the displayed projection and refresh
         the pin control. ``None`` means no valid projection is shown, so the pin
-        control is disabled (unless the pane is already pinned)."""
+        control is disabled (unless the pane is already pinned). Clearing the
+        path also clears the editable Code Map target, which disables the edit
+        action."""
         self._active_twin_path = path
+        if path is None:
+            self._active_twin_artifact_id = None
+            self._active_twin_bundle = {}
         self._update_lock_control()
+        self._update_edit_control()
 
     def _update_lock_control(self) -> None:
         """Sync the pin control's accessible name, tooltip, enablement and icon
@@ -1310,7 +1457,10 @@ class MainWindow(QMainWindow):
         self._set_twin_chip(twin_state_from_sync(sync_state))
         self._twin_body.setText(format_twin_projection(bundle))
         self._render_behavior_nodes(bundle.get("behavior_nodes") or [])
+        self._active_twin_bundle = bundle
+        self._active_twin_artifact_id = projection.get("artifact_id")
         self._set_active_twin_path(projection.get("path"))
+        self._update_edit_control()
         self._set_status(STATE_SUCCESS, f"twin {sync_state}")
 
     def _on_twin_failed(self, reason: str) -> None:
@@ -1388,6 +1538,303 @@ class MainWindow(QMainWindow):
 
     def _on_anchor_failed(self, reason: str) -> None:
         self._set_status(STATE_FAILED, reason)
+
+    # -- Editable Code Map draft (P3.4) ----------------------------------
+
+    def _update_edit_control(self) -> None:
+        """Enable the ``Edit Code Map`` action only when a projectable artifact
+        is displayed, and leave edit mode when the target disappears."""
+        enabled = self._active_twin_artifact_id is not None
+        self._edit_button.setEnabled(enabled)
+        if not enabled and self._edit_mode:
+            self._exit_edit_mode()
+
+    def _on_edit_toggled(self, checked: bool) -> None:
+        """Toggle the editable Code Map surface (P3.4)."""
+        if checked:
+            self._enter_edit_mode()
+        else:
+            self._attempt_leave_edit_mode()
+
+    def _enter_edit_mode(self) -> None:
+        """Show the edit surface and load the editable Code Map baseline."""
+        if not self._active_twin_artifact_id:
+            self._edit_button.setChecked(False)
+            return
+        self._edit_mode = True
+        self._draft_dirty = False
+        self._twin_stack.setCurrentIndex(1)
+        cid = contract.new_correlation_id()
+        request = build_get_code_map_request(cid)
+        self._set_status(STATE_RUNNING, "loading editable Code Map")
+        if not self._send(request, self._on_code_map_loaded, self._on_draft_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _attempt_leave_edit_mode(self) -> None:
+        """Leave edit mode, prompting to save or discard a dirty draft first.
+
+        A dirty draft is never auto-saved; the user chooses save, discard or
+        remain. Discard drops only the unsaved edits and returns to read-only;
+        save leaves after the save completes; remain stays put."""
+        if self._draft_dirty:
+            choice = self._prompt_dirty_leave()
+            if choice == "save":
+                self._leave_after_save = True
+                self._save_draft()
+                return  # exit after a successful save
+            if choice == "remain":
+                self._edit_button.setChecked(True)
+                return
+        self._exit_edit_mode()
+
+    def _exit_edit_mode(self) -> None:
+        """Return the Code Map pane to its read-only projection."""
+        self._edit_mode = False
+        self._draft_dirty = False
+        self._twin_stack.setCurrentIndex(0)
+        self._edit_button.setChecked(False)
+        self._set_status(STATE_IDLE, "edit mode closed")
+
+    def _prompt_dirty_leave(self) -> str:
+        """Ask how to resolve a dirty draft; returns ``save``/``discard``/
+        ``remain``. This is a bounded modal; it never writes or auto-saves."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Unsaved Code Map edits")
+        box.setText(
+            "You have unsaved Code Map edits. Edits create a draft only; "
+            "source code is unchanged."
+        )
+        save_button = box.addButton("Save", QMessageBox.AcceptRole)
+        discard_button = box.addButton("Discard", QMessageBox.DestructiveRole)
+        remain_button = box.addButton("Remain", QMessageBox.RejectRole)
+        box.setDefaultButton(save_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_button:
+            return "save"
+        if clicked is discard_button:
+            return "discard"
+        return "remain"
+
+    def _collect_edits(self) -> List[Dict[str, Any]]:
+        """Read the current controls into ordered draft edits.
+
+        Only fields with authored content are included; an empty control is
+        skipped so clearing a field never fabricates a spurious "clear" edit."""
+        edits: List[Dict[str, Any]] = []
+        for (target_id, field), control in self._draft_controls.items():
+            cardinality = self._draft_cardinality.get((target_id, field), DRAFT_SINGLE)
+            if cardinality == DRAFT_LIST:
+                proposed = self._read_list_value(control)
+            else:
+                proposed = self._read_single_value(control)
+            if not proposed:
+                continue
+            edits.append(draft_edit(target_id, field, proposed))
+        return edits
+
+    def _read_single_value(self, control: QWidget) -> Optional[str]:
+        if isinstance(control, QLineEdit):
+            return control.text().strip() or None
+        if isinstance(control, QPlainTextEdit):
+            return control.toPlainText().strip() or None
+        return None
+
+    def _read_list_value(self, control: QWidget) -> List[str]:
+        text = ""
+        if isinstance(control, QPlainTextEdit):
+            text = control.toPlainText()
+        elif isinstance(control, QLineEdit):
+            text = control.text()
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
+    def _save_draft(self) -> None:
+        """Collect the current controls into ordered edits and save the draft."""
+        edits = self._collect_edits()
+        cid = contract.new_correlation_id()
+        request = build_save_draft_request(cid, edits)
+        self._set_status(STATE_RUNNING, "saving Code Map draft")
+        if not self._send(request, self._on_draft_saved, self._on_draft_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _discard_draft(self) -> None:
+        """Discard the saved draft (never touches source)."""
+        cid = contract.new_correlation_id()
+        request = build_discard_draft_request(cid)
+        self._set_status(STATE_RUNNING, "discarding Code Map draft")
+        if not self._send(request, self._on_draft_discarded, self._on_draft_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _reset_draft(self) -> None:
+        """Reset the draft to the baseline (removes every saved edit)."""
+        cid = contract.new_correlation_id()
+        request = build_reset_draft_request(cid)
+        self._set_status(STATE_RUNNING, "resetting Code Map draft")
+        if not self._send(request, self._on_draft_reset, self._on_draft_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _compare_draft(self) -> None:
+        """Compare the saved draft against the baseline."""
+        cid = contract.new_correlation_id()
+        request = build_compare_draft_request(cid)
+        self._set_status(STATE_RUNNING, "comparing Code Map draft")
+        if not self._send(request, self._on_draft_compared, self._on_draft_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _generate_intent_delta(self) -> None:
+        """Generate the deterministic, non-executable Intent Delta."""
+        cid = contract.new_correlation_id()
+        request = build_generate_intent_delta_request(cid)
+        self._set_status(STATE_RUNNING, "generating Intent Delta")
+        if not self._send(request, self._on_intent_delta_ready, self._on_draft_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _mark_draft_dirty(self, *_args: Any) -> None:
+        self._draft_dirty = True
+
+    def _show_draft_result(self, text: str) -> None:
+        self._draft_result.setPlainText(text)
+        self._draft_result.setVisible(bool(text))
+
+    def _render_edit_surface(self, result: Dict[str, Any]) -> None:
+        """Populate the edit surface's read-only facts and structured controls."""
+        bundle = self._active_twin_bundle or {}
+        projection = bundle.get("projection") or {}
+        self._draft_facts.setText(format_draft_facts(projection))
+        self._clear_draft_controls()
+
+        draft = result.get("draft") or {}
+        proposed = {
+            (change.get("target_id"), change.get("field")): change.get("proposed")
+            for change in draft.get("changes", [])
+        }
+
+        artifact_id = self._active_twin_artifact_id
+        if artifact_id:
+            title = projection.get("locator") or projection.get("name") or "Artifact"
+            self._add_draft_section(artifact_id, title, list(ARTIFACT_FIELDS), proposed)
+
+        for node in bundle.get("behavior_nodes") or []:
+            node_id = node.get("id")
+            if not node_id:
+                continue
+            self._add_draft_section(
+                node_id, behavior_node_label(node), list(BEHAVIOR_FIELDS), proposed
+            )
+
+        self._draft_fields_layout.addStretch(1)
+        self._show_draft_result("")
+
+    def _clear_draft_controls(self) -> None:
+        """Remove every previously built control and its bookkeeping."""
+        while self._draft_fields_layout.count():
+            item = self._draft_fields_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._draft_controls.clear()
+        self._draft_cardinality.clear()
+
+    def _add_draft_section(
+        self,
+        target_id: str,
+        title: str,
+        fields: Sequence[str],
+        proposed: Dict[tuple, Any],
+    ) -> None:
+        """Add one labelled, structured control section for an editable target.
+
+        Each single field is a one-line edit; each list field is a multiline
+        edit (one item per line). Controls are pre-filled from a saved draft
+        *before* their change signals are connected, so loading never marks the
+        surface dirty."""
+        heading = QLabel(title)
+        heading.setObjectName("draftSectionHeading")
+        heading.setWordWrap(True)
+        heading.setStyleSheet(style.draft_field_label_style(self._palette))
+        heading.setAccessibleName("Code Map draft section")
+        self._draft_fields_layout.addWidget(heading)
+
+        for field in fields:
+            label = QLabel(field_label(field))
+            label.setObjectName("draftFieldLabel")
+            label.setWordWrap(True)
+            label.setStyleSheet(style.draft_field_label_style(self._palette))
+            label.setAccessibleName(field_label(field))
+            self._draft_fields_layout.addWidget(label)
+
+            key = (target_id, field)
+            cardinality = field_cardinality(field) or DRAFT_SINGLE
+            value = proposed.get(key)
+            if cardinality == DRAFT_LIST:
+                control = QPlainTextEdit()
+                control.setObjectName("draftListEdit")
+                control.setFixedHeight(style.EDIT_FIELD_LIST_HEIGHT)
+                control.setAccessibleName(f"{field_label(field)} editor")
+                if isinstance(value, list):
+                    control.setPlainText("\n".join(str(v) for v in value))
+            else:
+                control = QLineEdit()
+                control.setObjectName("draftSingleEdit")
+                control.setAccessibleName(f"{field_label(field)} editor")
+                if isinstance(value, str):
+                    control.setText(value)
+            self._draft_fields_layout.addWidget(control)
+            self._draft_controls[key] = control
+            self._draft_cardinality[key] = cardinality
+            control.textChanged.connect(self._mark_draft_dirty)
+
+    # -- Editable Code Map draft result handlers -------------------------
+
+    def _on_code_map_loaded(self, result: Dict[str, Any]) -> None:
+        self._draft_schema = result.get("field_schema") or {}
+        self._render_edit_surface(result)
+        self._set_status(STATE_SUCCESS, "editable Code Map ready")
+
+    def _on_draft_saved(self, result: Dict[str, Any]) -> None:
+        draft = result.get("draft") or {}
+        changes = draft.get("changes", [])
+        self._draft_dirty = False
+        self._show_draft_result(format_draft_changes(changes))
+        self._set_status(STATE_SUCCESS, "draft saved")
+        if self._close_after_save:
+            self._close_after_save = False
+            self.close()  # re-enter closeEvent with a clean draft
+        elif self._leave_after_save:
+            self._leave_after_save = False
+            self._exit_edit_mode()
+
+    def _on_draft_discarded(self, result: Dict[str, Any]) -> None:
+        self._draft_dirty = False
+        self._clear_draft_controls()
+        self._show_draft_result("Draft discarded.")
+        self._set_status(STATE_SUCCESS, "draft discarded")
+
+    def _on_draft_reset(self, result: Dict[str, Any]) -> None:
+        self._draft_dirty = False
+        self._show_draft_result("Draft reset to baseline.")
+        self._set_status(STATE_SUCCESS, "draft reset")
+
+    def _on_draft_compared(self, result: Dict[str, Any]) -> None:
+        conflict = result.get("conflict") or {}
+        changes = result.get("changes", [])
+        text = format_draft_changes(changes)
+        if conflict.get("state") not in (None, "none"):
+            text = f"Conflict: {conflict.get('reason', conflict.get('state'))}\n\n{text}"
+        self._show_draft_result(text)
+        self._set_status(STATE_SUCCESS, "draft compared")
+
+    def _on_intent_delta_ready(self, result: Dict[str, Any]) -> None:
+        if result.get("no_change"):
+            self._show_draft_result("No changes. The draft is a no-op.")
+            self._set_status(STATE_SUCCESS, "no changes")
+            return
+        self._show_draft_result(format_intent_delta(result.get("intent_delta") or {}))
+        self._set_status(STATE_SUCCESS, "Intent Delta generated")
+
+    def _on_draft_error(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+        self._show_draft_result(f"Draft action unavailable.\n\nReason: {reason}")
 
     # -- action error handlers ------------------------------------------
 
@@ -1519,7 +1966,20 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_UNAVAILABLE, message)
 
     def closeEvent(self, event) -> None:
-        """Reap the supervised backend when the window closes."""
+        """Reap the supervised backend when the window closes.
+
+        A dirty Code Map draft blocks close until the user resolves it (save,
+        discard or remain); it is never auto-saved."""
+        if self._edit_mode and self._draft_dirty:
+            choice = self._prompt_dirty_leave()
+            if choice == "save":
+                self._close_after_save = True
+                self._save_draft()
+                event.ignore()
+                return
+            if choice == "remain":
+                event.ignore()
+                return
         self._supervisor.terminate()
         super().closeEvent(event)
 

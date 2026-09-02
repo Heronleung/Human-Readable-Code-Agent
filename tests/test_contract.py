@@ -7,17 +7,26 @@ import unittest
 
 from hrca import contract
 from hrca.contract import (
+    ACTION_COMPARE_DRAFT,
+    ACTION_DISCARD_DRAFT,
+    ACTION_GENERATE_INTENT_DELTA,
     ACTION_GET_ANCHOR,
+    ACTION_GET_CODE_MAP,
     ACTION_GET_DOCUMENT,
+    ACTION_GET_DRAFT,
     ACTION_GET_TREE,
     ACTION_GET_TWIN,
     ACTION_OPEN_PROJECT,
+    ACTION_RESET_DRAFT,
+    ACTION_SAVE_DRAFT,
     ACTION_SCAN,
     ACTION_SYNC_TWIN,
     ALLOWED_ACTIONS,
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
+    DRAFT_ACTIONS,
     MAX_DOCUMENT_BYTES,
+    MAX_DRAFT_BYTES,
     MAX_MESSAGE_BYTES,
     MAX_TREE_DEPTH,
     MAX_TREE_ENTRIES,
@@ -43,7 +52,7 @@ _FORBIDDEN_ACTIONS = ("write", "git", "commit", "command", "exec", "network",
 
 class ContractVersionTests(unittest.TestCase):
     def test_contract_version_is_pinned(self):
-        self.assertEqual(CONTRACT_VERSION, "3.3.0")
+        self.assertEqual(CONTRACT_VERSION, "3.4.0")
 
     def test_serve_sentinel(self):
         self.assertEqual(SERVE_SENTINEL, "--serve")
@@ -56,15 +65,18 @@ class ContractVersionTests(unittest.TestCase):
         self.assertGreater(MAX_TREE_ENTRIES, 0)
         self.assertGreater(MAX_TREE_DEPTH, 0)
         self.assertGreater(MAX_DOCUMENT_BYTES, 0)
-        # A document is bounded to fit on the wire even when every byte escapes.
+        self.assertGreater(MAX_DRAFT_BYTES, 0)
+        # A document and a draft are bounded to fit on the wire even when every
+        # byte escapes.
         self.assertLessEqual(MAX_DOCUMENT_BYTES, MAX_MESSAGE_BYTES)
+        self.assertLessEqual(MAX_DRAFT_BYTES, MAX_MESSAGE_BYTES)
 
 
 class AllowedActionTests(unittest.TestCase):
     def test_allowed_actions_are_read_only(self):
         self.assertEqual(
             ALLOWED_ACTIONS,
-            SCAN_ACTIONS | WORKSPACE_ACTIONS | TWIN_ACTIONS,
+            SCAN_ACTIONS | WORKSPACE_ACTIONS | TWIN_ACTIONS | DRAFT_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -84,6 +96,27 @@ class AllowedActionTests(unittest.TestCase):
             self.assertIn(action, ALLOWED_ACTIONS)
             self.assertNotIn(action, WORKSPACE_ACTIONS)
             self.assertNotIn(action, SCAN_ACTIONS)
+
+    def test_draft_actions_are_allowlisted(self):
+        self.assertEqual(
+            DRAFT_ACTIONS,
+            frozenset({
+                ACTION_GET_CODE_MAP,
+                ACTION_SAVE_DRAFT,
+                ACTION_GET_DRAFT,
+                ACTION_DISCARD_DRAFT,
+                ACTION_RESET_DRAFT,
+                ACTION_COMPARE_DRAFT,
+                ACTION_GENERATE_INTENT_DELTA,
+            }),
+        )
+
+    def test_draft_actions_are_read_only(self):
+        for action in DRAFT_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, WORKSPACE_ACTIONS)
+            self.assertNotIn(action, TWIN_ACTIONS)
 
     def test_no_forbidden_action_is_allowed(self):
         for action in _FORBIDDEN_ACTIONS:

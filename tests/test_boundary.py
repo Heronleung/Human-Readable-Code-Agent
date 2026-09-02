@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hrca import boundary, contract
+from hrca import boundary, contract, twin, twin_store
 from hrca.client_core import build_fixture_task
 from hrca.contract import dumps, loads
 
@@ -469,6 +469,178 @@ class BoundaryTwinTests(unittest.TestCase):
         self.assertTrue(store_files)
         # Nothing is written into the selected repository.
         self.assertFalse(any(FIXTURES in f for f in store_files))
+
+
+class BoundaryDraftTests(unittest.TestCase):
+    """The P3.4 editable Code Map protocol over the NDJSON boundary.
+
+    A single :class:`~hrca.boundary.WorkspaceSession` is shared across requests
+    (as in a live boundary loop) so ``open_project`` establishes the root that
+    later draft actions operate on. Draft storage is isolated to a temporary
+    base directory so the real per-user app-data directory is never written and
+    the selected repository is never modified.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store_base = self._tmp.name
+        self.session = boundary.WorkspaceSession(store_base=self.store_base)
+        self.wsid = twin.workspace_id_for(os.path.realpath(FIXTURES))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _do(self, action, **overrides):
+        req = _twin_request(action, **overrides)
+        return boundary.handle_request(req, self.session)
+
+    def _open_sync(self):
+        open_env = self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        self.assertTrue(open_env["ok"])
+        sync_env = self._do(contract.ACTION_SYNC_TWIN, task={})
+        self.assertTrue(sync_env["ok"])
+        return sync_env
+
+    def _file_id(self):
+        return twin.file_artifact_id("app/service.py")
+
+    def _purpose_edits(self, value="entry point for the service"):
+        return [{"target_id": self._file_id(), "field": "purpose", "proposed": value}]
+
+    def test_get_code_map_without_open_rejected(self):
+        env = self._do(contract.ACTION_GET_CODE_MAP)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "project_not_open")
+
+    def test_get_code_map_without_sync_rejected(self):
+        self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        env = self._do(contract.ACTION_GET_CODE_MAP)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "twin_not_synchronized")
+
+    def test_get_code_map_returns_schema_baseline_and_no_draft(self):
+        self._open_sync()
+        result = self._do(contract.ACTION_GET_CODE_MAP)["result"]
+        schema = result["field_schema"]
+        self.assertIn("purpose", schema["editable_fields"])
+        self.assertEqual(schema["editable_fields"]["purpose"], "single")
+        self.assertEqual(schema["editable_fields"]["workflow_steps"], "list")
+        self.assertIn("path", schema["read_only_fields"])
+        self.assertIn("provenance", schema["read_only_fields"])
+        self.assertIn("baseline_revision", result["baseline"])
+        self.assertIsNone(result["draft"])
+        self.assertEqual(result["conflict"]["state"], "none")
+
+    def test_save_draft_persists_and_round_trips(self):
+        self._open_sync()
+        save_env = self._do(
+            contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()}
+        )
+        self.assertTrue(save_env["ok"])
+        self.assertTrue(save_env["result"]["persisted"])
+        self.assertEqual(len(save_env["result"]["draft"]["changes"]), 1)
+        get_env = self._do(contract.ACTION_GET_DRAFT)
+        self.assertTrue(get_env["ok"])
+        self.assertEqual(
+            get_env["result"]["draft"]["draft_id"],
+            save_env["result"]["draft"]["draft_id"],
+        )
+
+    def test_save_draft_read_only_field_rejected(self):
+        self._open_sync()
+        edits = [{"target_id": self._file_id(), "field": "path", "proposed": "hacked.py"}]
+        env = self._do(contract.ACTION_SAVE_DRAFT, task={"edits": edits})
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "draft_invalid")
+        self.assertNotIn("hacked.py", dumps(env))
+
+    def test_save_draft_unknown_target_rejected(self):
+        self._open_sync()
+        edits = [{"target_id": "artifact:file:missing.py", "field": "purpose",
+                  "proposed": "x"}]
+        env = self._do(contract.ACTION_SAVE_DRAFT, task={"edits": edits})
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "draft_invalid")
+
+    def test_save_draft_oversized_rejected(self):
+        self._open_sync()
+        edits = [{"target_id": self._file_id(), "field": "purpose",
+                  "proposed": "x" * 5000}]
+        env = self._do(contract.ACTION_SAVE_DRAFT, task={"edits": edits})
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "draft_oversized")
+
+    def test_noop_draft_generates_no_change(self):
+        self._open_sync()
+        save_env = self._do(contract.ACTION_SAVE_DRAFT, task={"edits": []})
+        self.assertTrue(save_env["ok"])
+        delta_env = self._do(contract.ACTION_GENERATE_INTENT_DELTA)
+        self.assertTrue(delta_env["ok"])
+        self.assertTrue(delta_env["result"]["no_change"])
+        self.assertIsNone(delta_env["result"]["intent_delta"])
+
+    def test_intent_delta_is_deterministic(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        first = self._do(contract.ACTION_GENERATE_INTENT_DELTA)["result"]["intent_delta"]
+        second = self._do(contract.ACTION_GENERATE_INTENT_DELTA)["result"]["intent_delta"]
+        self.assertIsNotNone(first)
+        self.assertFalse(first["executable"])
+        self.assertEqual(dumps(first), dumps(second))
+
+    def test_stale_draft_blocks_intent_delta(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        # Simulate a re-sync that changed the baseline fingerprint.
+        store, _ = twin_store.load(self.store_base, self.wsid)
+        store["workspace_revision"]["baseline_fingerprint"] = "fp:changed"
+        twin_store.save(self.store_base, self.wsid, store)
+        env = self._do(contract.ACTION_GENERATE_INTENT_DELTA)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "draft_stale")
+
+    def test_compare_draft_returns_changes(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        result = self._do(contract.ACTION_COMPARE_DRAFT)["result"]
+        self.assertEqual(len(result["changes"]), 1)
+        self.assertEqual(result["changes"][0]["field"], "purpose")
+        self.assertEqual(result["changes"][0]["original"], None)
+        self.assertEqual(result["changes"][0]["proposed"], "entry point for the service")
+        self.assertEqual(result["conflict"]["state"], "none")
+
+    def test_discard_draft_then_get_is_not_found(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        discard_env = self._do(contract.ACTION_DISCARD_DRAFT)
+        self.assertTrue(discard_env["ok"])
+        self.assertTrue(discard_env["result"]["discarded"])
+        get_env = self._do(contract.ACTION_GET_DRAFT)
+        self.assertFalse(get_env["ok"])
+        self.assertEqual(get_env["error"]["code"], "draft_not_found")
+
+    def test_reset_draft_returns_to_baseline(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        reset_env = self._do(contract.ACTION_RESET_DRAFT)
+        self.assertTrue(reset_env["ok"])
+        self.assertTrue(reset_env["result"]["reset"])
+        get_env = self._do(contract.ACTION_GET_DRAFT)
+        self.assertEqual(get_env["error"]["code"], "draft_not_found")
+
+    def test_get_draft_without_draft_rejected(self):
+        self._open_sync()
+        env = self._do(contract.ACTION_GET_DRAFT)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "draft_not_found")
+
+    def test_draft_write_stays_out_of_repository(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        draft_path = twin_store.workspace_draft_path(self.store_base, self.wsid)
+        self.assertTrue(os.path.isfile(draft_path))
+        # The draft lives under the app-data store base, never the repository.
+        self.assertFalse(draft_path.startswith(FIXTURES))
 
 
 if __name__ == "__main__":

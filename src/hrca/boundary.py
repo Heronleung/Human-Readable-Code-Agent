@@ -34,7 +34,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TextIO, Sequence
 
-from . import contract, twin, twin_store, workspace
+from . import contract, twin, twin_draft, twin_store, workspace
 from .planning import TaskValidationError, build_plan, validate_task
 from .report import build_report
 from .scanner import scan_directory
@@ -198,6 +198,20 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _get_twin_result(request, session)
     elif action == contract.ACTION_GET_ANCHOR:
         result = _get_anchor_result(request, session)
+    elif action == contract.ACTION_GET_CODE_MAP:
+        result = _get_code_map_result(request, session)
+    elif action == contract.ACTION_SAVE_DRAFT:
+        result = _save_draft_result(request, session)
+    elif action == contract.ACTION_GET_DRAFT:
+        result = _get_draft_result(request, session)
+    elif action == contract.ACTION_DISCARD_DRAFT:
+        result = _discard_draft_result(request, session)
+    elif action == contract.ACTION_RESET_DRAFT:
+        result = _reset_draft_result(request, session)
+    elif action == contract.ACTION_COMPARE_DRAFT:
+        result = _compare_draft_result(request, session)
+    elif action == contract.ACTION_GENERATE_INTENT_DELTA:
+        result = _generate_intent_delta_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -389,6 +403,159 @@ def _get_anchor_result(request: Dict[str, Any], session: WorkspaceSession) -> Di
     if anchor is None:
         raise contract.ContractError("twin_not_found")
     return anchor
+
+
+# -- Editable Code Map handlers (P3.4) -----------------------------------
+
+def _workspace_id(session: WorkspaceSession) -> str:
+    """Return the canonical workspace identifier for the accepted root."""
+    return twin.workspace_id_for(session.root)
+
+
+def _field_schema() -> Dict[str, Any]:
+    """Return the editable Code Map field schema (cardinality + scope + read-only)."""
+    return {
+        "editable_fields": {
+            field: twin_draft.FIELD_CARDINALITY[field]
+            for field in sorted(twin_draft.EDITABLE_FIELDS)
+        },
+        "artifact_fields": list(twin_draft.ARTIFACT_FIELDS),
+        "behavior_fields": list(twin_draft.BEHAVIOR_FIELDS),
+        "read_only_fields": sorted(twin_draft.READ_ONLY_FIELDS),
+    }
+
+
+def _load_draft_or_raise(session: WorkspaceSession) -> Dict[str, Any]:
+    """Load the saved draft, raising a bounded ``draft_not_found`` when absent.
+
+    A corrupt or future-version draft also maps to ``draft_not_found`` (the
+    fail-closed load returns an error reason), so no draft content ever leaks.
+    """
+    draft, err = twin_store.load_draft(session.store_base, _workspace_id(session))
+    if err is not None or draft is None:
+        raise contract.ContractError("draft_not_found")
+    return draft
+
+
+def _get_code_map_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the editable Code Map baseline, field schema and saved draft state."""
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    store = _twin_store(session)
+    workspace_id = _workspace_id(session)
+    draft, _ = twin_store.load_draft(session.store_base, workspace_id)
+    revision = store.get("workspace_revision") or {}
+    return {
+        "field_schema": _field_schema(),
+        "baseline": {
+            "workspace_id": revision.get("workspace_id"),
+            "baseline_revision": revision.get("baseline_fingerprint"),
+            "scan_generation": revision.get("scan_generation"),
+            "sync_state": revision.get("sync_state"),
+        },
+        "draft": draft,
+        "conflict": (
+            twin_draft.conflict_for(draft, store)
+            if draft is not None else {"state": twin_draft.CONFLICT_NONE, "reason": None}
+        ),
+    }
+
+
+def _save_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Validate and atomically persist a Twin Draft against the current baseline.
+
+    The draft is built from a list of ``{target_id, field, proposed}`` edits and
+    validated against the synchronized Twin. A read-only-field edit, an unknown
+    target, an unsupported field, or an oversized value is rejected with a
+    bounded error — never persisted.
+    """
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    store = _twin_store(session)
+
+    task = request.get("task")
+    if not isinstance(task, dict):
+        raise contract.ContractError("invalid_request")
+    edits = task.get("edits")
+    if not isinstance(edits, list):
+        raise contract.ContractError("invalid_request")
+    if len(contract.dumps(edits).encode("utf-8")) > contract.MAX_DRAFT_BYTES:
+        raise contract.ContractError("draft_oversized")
+
+    workspace_id = _workspace_id(session)
+    now = _now_iso()
+    draft, err = twin_draft.build_draft(workspace_id, store, edits, now, now)
+    if err is not None:
+        # Only the oversized reason maps to ``draft_oversized``; every other
+        # domain rejection (read-only, unknown target, unsupported, duplicate)
+        # maps to the fixed ``draft_invalid`` code. The reason never leaks.
+        if err == twin_draft.REASON_OVERSIZED:
+            raise contract.ContractError("draft_oversized")
+        raise contract.ContractError("draft_invalid")
+
+    persisted = twin_store.save_draft(session.store_base, workspace_id, draft) is None
+    return {"draft": draft, "persisted": persisted}
+
+
+def _get_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the saved Twin Draft plus its conflict state against the baseline."""
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    store = _twin_store(session)
+    draft = _load_draft_or_raise(session)
+    return {"draft": draft, "conflict": twin_draft.conflict_for(draft, store)}
+
+
+def _discard_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Discard (delete) the saved Twin Draft. Idempotent; never touches source."""
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    twin_store.discard_draft(session.store_base, _workspace_id(session))
+    return {"discarded": True, "draft": None}
+
+
+def _reset_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Reset the draft to the baseline by removing every saved edit."""
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    twin_store.discard_draft(session.store_base, _workspace_id(session))
+    return {"reset": True, "draft": None}
+
+
+def _compare_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the draft's field-level changes relative to the baseline."""
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    store = _twin_store(session)
+    draft = _load_draft_or_raise(session)
+    return {
+        "draft_id": draft.get("draft_id"),
+        "changes": draft.get("changes", []),
+        "conflict": twin_draft.conflict_for(draft, store),
+    }
+
+
+def _generate_intent_delta_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Generate (or retrieve) the deterministic, non-executable Intent Delta.
+
+    A no-op draft yields an honest ``no_change`` result; a stale draft is
+    blocked with a bounded ``draft_stale`` error. The delta is never claimed to
+    be executable and never contains source content.
+    """
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    store = _twin_store(session)
+    draft = _load_draft_or_raise(session)
+    if twin_draft.is_noop(draft):
+        return {"intent_delta": None, "no_change": True}
+    if twin_draft.conflict_for(draft, store)["state"] != twin_draft.CONFLICT_NONE:
+        raise contract.ContractError("draft_stale")
+    delta, err = twin_draft.generate_intent_delta(draft, store)
+    if err is not None:  # pragma: no cover - guarded by the checks above
+        raise contract.ContractError("draft_invalid")
+    return {"intent_delta": delta, "no_change": False}
 
 
 if __name__ == "__main__":

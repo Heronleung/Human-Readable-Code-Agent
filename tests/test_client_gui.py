@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import unittest
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -22,6 +23,8 @@ try:
     from PySide6.QtWidgets import (
         QApplication,
         QLabel,
+        QLineEdit,
+        QPlainTextEdit,
         QPushButton,
         QStackedWidget,
         QTabBar,
@@ -1117,6 +1120,268 @@ class CodeMapPinTests(unittest.TestCase):
             self.assertIsInstance(
                 window._twin_nodes.itemWidget(window._twin_nodes.item(i)), QPushButton
             )
+
+
+def _draft_bundle() -> dict:
+    """A Twin projection bundle carrying an ``artifact_id`` so the edit action
+    is enabled, plus one behavior node target."""
+    bundle = _sample_twin_bundle()
+    bundle["projection"]["artifact_id"] = "artifact:app.service.Service.handle"
+    return bundle
+
+
+def _code_map_result() -> dict:
+    """A bounded ``get_code_map`` result with a field schema and no saved draft."""
+    return {
+        "field_schema": {
+            "editable_fields": {"purpose": "single", "workflow_steps": "list"},
+            "artifact_fields": ["purpose", "dependencies", "invariants", "limitations"],
+            "behavior_fields": ["purpose", "workflow_steps", "conditions", "inputs_outputs",
+                                "exception_handling", "side_effects", "dependencies",
+                                "invariants", "limitations"],
+            "read_only_fields": ["id", "path", "locator", "provenance", "confidence"],
+        },
+        "baseline": {
+            "workspace_id": "ws-1",
+            "baseline_revision": "abc123",
+            "scan_generation": 1,
+            "sync_state": "synchronized",
+        },
+        "draft": None,
+        "conflict": {"state": "none", "reason": None},
+    }
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class CodeMapDraftTests(unittest.TestCase):
+    """P3.4 editable Code Map draft surface (offscreen, presentation-only).
+
+    These tests drive the presentation half only: they feed a bounded
+    ``get_code_map`` result and a fake ``_send``, then assert the edit surface
+    renders read-only facts and structured controls and issues the seven draft
+    actions through the boundary. No Twin store, draft persistence, source
+    mutation or network is exercised.
+    """
+
+    def setUp(self):
+        _app()
+
+    def _fake_send(self, window):
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        return sent
+
+    def _loaded_edit_surface(self):
+        """A window with a projectable artifact loaded, edit mode entered, and a
+        ``get_code_map`` result rendered. Returns ``(window, sent)``."""
+        window = MainWindow()
+        window._root = "/some/root"
+        window._on_twin_projection_loaded(_draft_bundle())
+        sent = self._fake_send(window)
+        window._edit_button.click()  # enter edit mode -> get_code_map
+        window._on_code_map_loaded(_code_map_result())
+        return window, sent
+
+    # -- edit action enablement + surface ----------------------------------
+
+    def test_edit_button_disabled_without_projectable_artifact(self):
+        window = MainWindow()
+        self.assertFalse(window._edit_button.isEnabled())
+        # A projection without an artifact_id leaves the action disabled.
+        window._on_twin_projection_loaded(_sample_twin_bundle())
+        self.assertFalse(window._edit_button.isEnabled())
+
+    def test_edit_button_enabled_with_projectable_artifact(self):
+        window = MainWindow()
+        window._on_twin_projection_loaded(_draft_bundle())
+        self.assertTrue(window._edit_button.isEnabled())
+        self.assertEqual(window._edit_button.objectName(), "editCodeMapButton")
+
+    def test_enter_edit_mode_requests_code_map_and_switches_page(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        window._on_twin_projection_loaded(_draft_bundle())
+        sent = self._fake_send(window)
+        window._edit_button.click()
+        self.assertEqual([r["action"] for r in sent], [contract.ACTION_GET_CODE_MAP])
+        self.assertEqual(window._twin_stack.currentIndex(), 1)
+        self.assertTrue(window._edit_mode)
+
+    def test_exit_edit_mode_returns_to_readonly(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        window._on_twin_projection_loaded(_draft_bundle())
+        self._fake_send(window)
+        window._edit_button.click()
+        self.assertEqual(window._twin_stack.currentIndex(), 1)
+        window._exit_edit_mode()
+        self.assertFalse(window._edit_mode)
+        self.assertFalse(window._edit_button.isChecked())
+        self.assertEqual(window._twin_stack.currentIndex(), 0)
+
+    def test_draft_notice_is_present_and_bounded(self):
+        window, _ = self._loaded_edit_surface()
+        self.assertEqual(
+            window._draft_notice.text(),
+            "Edits create a draft only. Source code is unchanged.",
+        )
+        self.assertIn("Source code is unchanged", window._draft_notice.text())
+
+    # -- structured controls -----------------------------------------------
+
+    def test_read_only_facts_are_a_label_not_editable(self):
+        window, _ = self._loaded_edit_surface()
+        self.assertIsInstance(window._draft_facts, QLabel)
+        text = window._draft_facts.text()
+        self.assertIn("Path: app/service.py", text)
+        self.assertIn("Locator: app.service.Service.handle", text)
+        self.assertIn("Provenance: verified", text)
+
+    def test_controls_cover_artifact_and_behavior_targets(self):
+        window, _ = self._loaded_edit_surface()
+        # One section per target: the artifact plus two behavior nodes.
+        self.assertEqual(len(window._draft_controls), 4 + 2 * 9)
+
+    def test_single_field_uses_line_edit_and_list_uses_multiline(self):
+        window, _ = self._loaded_edit_surface()
+        artifact_purpose = window._draft_controls[("artifact:app.service.Service.handle", "purpose")]
+        artifact_invariants = window._draft_controls[("artifact:app.service.Service.handle", "invariants")]
+        self.assertIsInstance(artifact_purpose, QLineEdit)
+        self.assertIsInstance(artifact_invariants, QPlainTextEdit)
+
+    # -- save / dirty lifecycle -------------------------------------------
+
+    def test_typing_marks_dirty_and_save_collects_edits(self):
+        window, sent = self._loaded_edit_surface()
+        purpose = window._draft_controls[("artifact:app.service.Service.handle", "purpose")]
+        purpose.setText("  A service handler  ")
+        self.assertTrue(window._draft_dirty)
+        window.save_draft_button.click()
+        self.assertEqual(sent[-1]["action"], contract.ACTION_SAVE_DRAFT)
+        edits = sent[-1]["task"]["edits"]
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0]["target_id"], "artifact:app.service.Service.handle")
+        self.assertEqual(edits[0]["field"], "purpose")
+        self.assertEqual(edits[0]["proposed"], "A service handler")
+
+    def test_save_success_shows_changes_and_clears_dirty(self):
+        window, _ = self._loaded_edit_surface()
+        window._draft_dirty = True
+        window._on_draft_saved(
+            {
+                "draft": {
+                    "changes": [
+                        {"target_id": "artifact:app.service.Service.handle",
+                         "field": "purpose", "proposed": "A service handler"},
+                    ]
+                },
+                "persisted": True,
+            }
+        )
+        self.assertFalse(window._draft_dirty)
+        self.assertIn("Purpose: A service handler", window._draft_result.toPlainText())
+
+    # -- lifecycle actions -------------------------------------------------
+
+    def test_discard_reset_compare_generate_send_actions(self):
+        for button, action in (
+            ("discard_draft_button", contract.ACTION_DISCARD_DRAFT),
+            ("reset_draft_button", contract.ACTION_RESET_DRAFT),
+            ("compare_draft_button", contract.ACTION_COMPARE_DRAFT),
+            ("generate_draft_button", contract.ACTION_GENERATE_INTENT_DELTA),
+        ):
+            window, sent = self._loaded_edit_surface()
+            getattr(window, button).click()
+            self.assertEqual(sent[-1]["action"], action)
+
+    # -- result rendering --------------------------------------------------
+
+    def test_no_change_intent_delta_is_honest(self):
+        window, _ = self._loaded_edit_surface()
+        window._on_intent_delta_ready({"no_change": True})
+        self.assertIn("No changes", window._draft_result.toPlainText())
+        self.assertIn("no changes", window.status_label.text())
+
+    def test_intent_delta_marks_non_executable(self):
+        window, _ = self._loaded_edit_surface()
+        window._on_intent_delta_ready(
+            {
+                "no_change": False,
+                "intent_delta": {
+                    "intent": "user_authored",
+                    "targets": [{"target_id": "artifact:app.service.Service.handle"}],
+                    "affected_sources": ["artifact:app.service.Service.handle"],
+                    "affected_behavior_nodes": [],
+                    "acceptance_criteria": [],
+                    "constraints": [],
+                },
+            }
+        )
+        text = window._draft_result.toPlainText()
+        self.assertIn("Executable: false", text)
+
+    def test_compare_conflict_is_surfaced(self):
+        window, _ = self._loaded_edit_surface()
+        window._on_draft_compared(
+            {
+                "draft_id": "draft:1",
+                "changes": [{"field": "purpose", "proposed": "Changed"}],
+                "conflict": {"state": "stale", "reason": "baseline moved"},
+            }
+        )
+        self.assertIn("Conflict", window._draft_result.toPlainText())
+
+    def test_draft_error_shows_bounded_reason(self):
+        window, _ = self._loaded_edit_surface()
+        window._on_draft_error("draft_stale")
+        self.assertIn("draft_stale", window._draft_result.toPlainText())
+        self.assertIn("failed", window.status_label.text())
+
+    # -- dirty leave (no auto-save) ----------------------------------------
+
+    def test_dirty_leave_save_routes_to_save_then_exit(self):
+        window, sent = self._loaded_edit_surface()
+        purpose = window._draft_controls[("artifact:app.service.Service.handle", "purpose")]
+        purpose.setText("A service handler")
+        self.assertTrue(window._draft_dirty)
+        with mock.patch.object(window, "_prompt_dirty_leave", return_value="save"):
+            window._attempt_leave_edit_mode()
+        self.assertEqual(sent[-1]["action"], contract.ACTION_SAVE_DRAFT)
+        # Leaving is deferred until the save completes.
+        self.assertTrue(window._edit_mode)
+        window._on_draft_saved({"draft": {"changes": []}, "persisted": True})
+        self.assertFalse(window._edit_mode)
+        self.assertEqual(window._twin_stack.currentIndex(), 0)
+
+    def test_dirty_leave_discard_exits_without_saving(self):
+        window, sent = self._loaded_edit_surface()
+        window._draft_dirty = True
+        with mock.patch.object(window, "_prompt_dirty_leave", return_value="discard"):
+            window._attempt_leave_edit_mode()
+        self.assertFalse(any(r["action"] == contract.ACTION_SAVE_DRAFT for r in sent))
+        self.assertFalse(window._edit_mode)
+
+    def test_dirty_leave_remain_keeps_edit_mode(self):
+        window, sent = self._loaded_edit_surface()
+        window._draft_dirty = True
+        with mock.patch.object(window, "_prompt_dirty_leave", return_value="remain"):
+            window._attempt_leave_edit_mode()
+        self.assertTrue(window._edit_mode)
+        self.assertTrue(window._edit_button.isChecked())
+
+    # -- stale guard --------------------------------------------------------
+
+    def test_clearing_active_path_disables_edit_action(self):
+        window, _ = self._loaded_edit_surface()
+        self.assertTrue(window._edit_button.isEnabled())
+        window._exit_edit_mode()
+        window._set_active_twin_path(None)
+        self.assertFalse(window._edit_button.isEnabled())
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")

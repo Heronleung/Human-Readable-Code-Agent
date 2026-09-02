@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional
 # The version of the desktop-to-core contract. A boundary rejects any request
 # whose ``contract_version`` differs from this constant with a bounded
 # ``unknown_contract_version`` error.
-CONTRACT_VERSION = "3.3.0"
+CONTRACT_VERSION = "3.4.0"
 
 # Correlation identifier: a client-generated opaque string that the boundary
 # echoes verbatim so a client can match each response to its in-flight request.
@@ -54,6 +54,13 @@ ACTION_GET_DOCUMENT = "get_document"
 ACTION_SYNC_TWIN = "sync_twin"
 ACTION_GET_TWIN = "get_twin"
 ACTION_GET_ANCHOR = "get_anchor"
+ACTION_GET_CODE_MAP = "get_code_map"
+ACTION_SAVE_DRAFT = "save_draft"
+ACTION_GET_DRAFT = "get_draft"
+ACTION_DISCARD_DRAFT = "discard_draft"
+ACTION_RESET_DRAFT = "reset_draft"
+ACTION_COMPARE_DRAFT = "compare_draft"
+ACTION_GENERATE_INTENT_DELTA = "generate_intent_delta"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -63,7 +70,23 @@ WORKSPACE_ACTIONS = frozenset(
 # the accepted workspace (optionally scoped to changed paths), retrieve one
 # source-linked projection, and navigate a behavior node to its source anchor.
 TWIN_ACTIONS = frozenset({ACTION_SYNC_TWIN, ACTION_GET_TWIN, ACTION_GET_ANCHOR})
-ALLOWED_ACTIONS = SCAN_ACTIONS | WORKSPACE_ACTIONS | TWIN_ACTIONS
+# The P3.4 editable Code Map protocol: retrieve the editable Code Map baseline
+# plus any saved draft, validate/save/discard/reset a Twin Draft, compare a
+# draft with the baseline, and generate/retrieve a non-executable Intent Delta.
+# Every action here writes only the per-workspace draft store — never source,
+# Git state, a command, or the network.
+DRAFT_ACTIONS = frozenset(
+    {
+        ACTION_GET_CODE_MAP,
+        ACTION_SAVE_DRAFT,
+        ACTION_GET_DRAFT,
+        ACTION_DISCARD_DRAFT,
+        ACTION_RESET_DRAFT,
+        ACTION_COMPARE_DRAFT,
+        ACTION_GENERATE_INTENT_DELTA,
+    }
+)
+ALLOWED_ACTIONS = SCAN_ACTIONS | WORKSPACE_ACTIONS | TWIN_ACTIONS | DRAFT_ACTIONS
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
 # names a mutating action (edit / commit / remote) is rejected even though the
@@ -90,6 +113,10 @@ MAX_MESSAGE_BYTES = 1_048_576  # 1 MiB
 MAX_TREE_ENTRIES = 2000
 MAX_TREE_DEPTH = 32
 MAX_DOCUMENT_BYTES = 64 * 1024  # 64 KiB
+
+# Maximum inbound Twin Draft size, in UTF-8 bytes, enforced by the boundary so
+# an oversized draft is rejected with a bounded error before any validation.
+MAX_DRAFT_BYTES = 64 * 1024  # 64 KiB
 
 # Argument sentinel that turns the unified entry executable into the headless
 # boundary. A frozen build launches ``[sys.executable, "--serve"]``; a source
@@ -119,6 +146,14 @@ _ERROR_MESSAGES = {
     # path or file content, so caller text cannot leak.
     "twin_not_synchronized": "no Twin has been synchronized for this workspace",
     "twin_not_found": "the requested Twin entity does not exist",
+    # Editable Code Map / Twin Draft errors (P3.4). Messages are fixed and never
+    # interpolate caller text, so draft content cannot leak into a protocol
+    # error.
+    "draft_invalid": "the Twin Draft is invalid",
+    "draft_not_found": "no Twin Draft exists for this workspace",
+    "draft_stale": "the Twin Draft is stale against the current baseline",
+    "draft_no_change": "the Twin Draft contains no changes",
+    "draft_oversized": "the Twin Draft exceeds the maximum allowed size",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)
@@ -222,15 +257,24 @@ __all__ = [
     "ACTION_SYNC_TWIN",
     "ACTION_GET_TWIN",
     "ACTION_GET_ANCHOR",
+    "ACTION_GET_CODE_MAP",
+    "ACTION_SAVE_DRAFT",
+    "ACTION_GET_DRAFT",
+    "ACTION_DISCARD_DRAFT",
+    "ACTION_RESET_DRAFT",
+    "ACTION_COMPARE_DRAFT",
+    "ACTION_GENERATE_INTENT_DELTA",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
+    "DRAFT_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",
     "MAX_TREE_ENTRIES",
     "MAX_TREE_DEPTH",
     "MAX_DOCUMENT_BYTES",
+    "MAX_DRAFT_BYTES",
     "SERVE_SENTINEL",
     "ERROR_CODES",
     "error_message",

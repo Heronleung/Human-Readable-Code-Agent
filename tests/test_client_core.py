@@ -10,6 +10,12 @@ from unittest import mock
 
 from hrca import contract
 from hrca.client_core import (
+    ARTIFACT_FIELDS,
+    BEHAVIOR_FIELDS,
+    DRAFT_LIST,
+    DRAFT_SINGLE,
+    FIELD_CARDINALITY,
+    FIELD_LABELS,
     PROVIDER_UNAVAILABLE,
     REPOSITORY_UNVERIFIED,
     TWIN_AVAILABLE,
@@ -26,17 +32,30 @@ from hrca.client_core import (
     LineBuffer,
     ResponseRouter,
     behavior_node_label,
+    build_compare_draft_request,
+    build_discard_draft_request,
     build_fixture_task,
+    build_generate_intent_delta_request,
     build_get_anchor_request,
+    build_get_code_map_request,
     build_get_document_request,
+    build_get_draft_request,
     build_get_tree_request,
     build_get_twin_request,
     build_open_project_request,
     build_request,
+    build_reset_draft_request,
+    build_save_draft_request,
     build_scan_request,
     build_scan_task,
     build_sync_twin_request,
     default_fixture_root,
+    draft_edit,
+    field_cardinality,
+    field_label,
+    format_draft_changes,
+    format_draft_facts,
+    format_intent_delta,
     format_twin_projection,
     format_twin_sync,
     is_twin_source_path,
@@ -350,6 +369,125 @@ class TwinPresentationTests(unittest.TestCase):
     def test_format_twin_sync_includes_reason_when_present(self):
         result = {"state": "stale", "counts": {}, "reason": "parse error"}
         self.assertIn("Reason: parse error", format_twin_sync(result))
+
+
+class DraftRequestBuilderTests(unittest.TestCase):
+    def test_get_code_map_request_shape(self):
+        req = build_get_code_map_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_CODE_MAP)
+        self.assertNotIn("path", req)
+
+    def test_save_draft_request_copies_edits(self):
+        source = [draft_edit("artifact:a", "purpose", "A service module")]
+        req = build_save_draft_request("cid-1", source)
+        self.assertEqual(req["action"], contract.ACTION_SAVE_DRAFT)
+        self.assertEqual(
+            req["task"]["edits"],
+            [{"target_id": "artifact:a", "field": "purpose", "proposed": "A service module"}],
+        )
+        source.append(draft_edit("artifact:a", "invariants", ["idempotent"]))
+        self.assertEqual(len(req["task"]["edits"]), 1)
+
+    def test_get_draft_request_shape(self):
+        req = build_get_draft_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_DRAFT)
+        self.assertNotIn("path", req)
+
+    def test_discard_draft_request_shape(self):
+        req = build_discard_draft_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_DISCARD_DRAFT)
+
+    def test_reset_draft_request_shape(self):
+        req = build_reset_draft_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_RESET_DRAFT)
+
+    def test_compare_draft_request_shape(self):
+        req = build_compare_draft_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_COMPARE_DRAFT)
+
+    def test_generate_intent_delta_request_shape(self):
+        req = build_generate_intent_delta_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GENERATE_INTENT_DELTA)
+
+
+class DraftVocabularyTests(unittest.TestCase):
+    def test_field_cardinality_matches_schema(self):
+        self.assertEqual(field_cardinality("purpose"), DRAFT_SINGLE)
+        self.assertEqual(field_cardinality("workflow_steps"), DRAFT_LIST)
+        self.assertIsNone(field_cardinality("not_a_field"))
+
+    def test_field_label_falls_back_to_key(self):
+        self.assertEqual(field_label("purpose"), "Purpose")
+        self.assertEqual(field_label("unknown_field"), "unknown_field")
+
+    def test_artifact_and_behavior_fields_are_disjoint_scopes(self):
+        self.assertEqual(
+            set(ARTIFACT_FIELDS), {"purpose", "dependencies", "invariants", "limitations"}
+        )
+        self.assertLess(set(ARTIFACT_FIELDS), set(BEHAVIOR_FIELDS))
+        self.assertIn("workflow_steps", BEHAVIOR_FIELDS)
+        self.assertNotIn("workflow_steps", ARTIFACT_FIELDS)
+
+    def test_field_labels_cover_editable_fields(self):
+        self.assertEqual(set(FIELD_LABELS), set(FIELD_CARDINALITY))
+
+    def test_draft_edit_shape(self):
+        self.assertEqual(
+            draft_edit("behavior:b1", "conditions", ["x > 0"]),
+            {"target_id": "behavior:b1", "field": "conditions", "proposed": ["x > 0"]},
+        )
+
+
+class DraftPresentationTests(unittest.TestCase):
+    def test_format_draft_facts_lists_read_only_facts(self):
+        projection = {
+            "path": "app/service.py",
+            "locator": "app.service.Service.handle",
+            "kind": "method",
+            "provenance": "verified",
+            "confidence": "high",
+            "sync_state": "synchronized",
+        }
+        text = format_draft_facts(projection)
+        self.assertIn("Path: app/service.py", text)
+        self.assertIn("Locator: app.service.Service.handle", text)
+        self.assertIn("Kind: method", text)
+        self.assertIn("Provenance: verified", text)
+        self.assertIn("Confidence: high", text)
+        self.assertIn("Sync state: synchronized", text)
+
+    def test_format_draft_changes_empty(self):
+        self.assertEqual(format_draft_changes([]), "No changes.")
+
+    def test_format_draft_changes_single_and_list(self):
+        changes = [
+            {"field": "purpose", "proposed": "A service module"},
+            {"field": "workflow_steps", "proposed": ["load", "parse", "emit"]},
+            {"field": "invariants", "proposed": []},
+        ]
+        text = format_draft_changes(changes)
+        self.assertIn("Purpose: A service module", text)
+        self.assertIn("Workflow steps:", text)
+        self.assertIn("  - load", text)
+        self.assertIn("Explicit invariants:", text)
+        self.assertIn("  - (cleared)", text)
+
+    def test_format_intent_delta_marks_non_executable(self):
+        delta = {
+            "intent": "user_authored",
+            "targets": [{"target_id": "artifact:a"}],
+            "affected_sources": ["artifact:a"],
+            "affected_behavior_nodes": [],
+            "acceptance_criteria": ["artifact:a: purpose authored"],
+            "constraints": [],
+        }
+        text = format_intent_delta(delta)
+        self.assertIn("Intent Delta (not executable)", text)
+        self.assertIn("Executable: false", text)
+        self.assertIn("Targets: 1", text)
+        self.assertIn("Affected sources: artifact:a", text)
 
 
 class ClientStateConstantsTests(unittest.TestCase):
