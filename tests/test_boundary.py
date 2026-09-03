@@ -501,11 +501,41 @@ class BoundaryDraftTests(unittest.TestCase):
         self.assertTrue(sync_env["ok"])
         return sync_env
 
-    def _file_id(self):
-        return twin.file_artifact_id("app/service.py")
+    def _blocks(self):
+        return self._do(contract.ACTION_GET_CODE_MAP)["result"]["blocks"]
 
-    def _purpose_edits(self, value="entry point for the service"):
-        return [{"target_id": self._file_id(), "field": "purpose", "proposed": value}]
+    def _module_entity_id(self):
+        return next(
+            b["block_id"]
+            for b in self._blocks()
+            if b.get("block_type") == "entity"
+            and (b.get("payload") or {}).get("kind") == "module"
+            and (b.get("payload") or {}).get("locator") == "app.service"
+        )
+
+    def _module_purpose_id(self):
+        blocks = self._blocks()
+        module_id = next(
+            b["block_id"]
+            for b in blocks
+            if b.get("block_type") == "entity"
+            and (b.get("payload") or {}).get("kind") == "module"
+            and (b.get("payload") or {}).get("locator") == "app.service"
+        )
+        return next(
+            b["block_id"]
+            for b in blocks
+            if b.get("block_type") == "purpose" and b.get("parent_id") == module_id
+        )
+
+    def _purpose_ops(self, value="entry point for the service"):
+        return [
+            {
+                "op": "replace_description",
+                "target_block_id": self._module_purpose_id(),
+                "proposed_text": value,
+            }
+        ]
 
     def test_get_code_map_without_open_rejected(self):
         env = self._do(contract.ACTION_GET_CODE_MAP)
@@ -518,15 +548,14 @@ class BoundaryDraftTests(unittest.TestCase):
         self.assertFalse(env["ok"])
         self.assertEqual(env["error"]["code"], "twin_not_synchronized")
 
-    def test_get_code_map_returns_schema_baseline_and_no_draft(self):
+    def test_get_code_map_returns_language_version_and_no_draft(self):
         self._open_sync()
         result = self._do(contract.ACTION_GET_CODE_MAP)["result"]
-        schema = result["field_schema"]
-        self.assertIn("purpose", schema["editable_fields"])
-        self.assertEqual(schema["editable_fields"]["purpose"], "single")
-        self.assertEqual(schema["editable_fields"]["workflow_steps"], "list")
-        self.assertIn("path", schema["read_only_fields"])
-        self.assertIn("provenance", schema["read_only_fields"])
+        self.assertEqual(result["language_version"], "0.1")
+        self.assertEqual(result["generator"], "hrca-codemap")
+        self.assertTrue(result["document"])
+        self.assertTrue(result["entities"])
+        self.assertTrue(result["blocks"])
         self.assertIn("baseline_revision", result["baseline"])
         self.assertIsNone(result["draft"])
         self.assertEqual(result["conflict"]["state"], "none")
@@ -534,11 +563,11 @@ class BoundaryDraftTests(unittest.TestCase):
     def test_save_draft_persists_and_round_trips(self):
         self._open_sync()
         save_env = self._do(
-            contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()}
+            contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()}
         )
         self.assertTrue(save_env["ok"])
         self.assertTrue(save_env["result"]["persisted"])
-        self.assertEqual(len(save_env["result"]["draft"]["changes"]), 1)
+        self.assertEqual(len(save_env["result"]["draft"]["operations"]), 1)
         get_env = self._do(contract.ACTION_GET_DRAFT)
         self.assertTrue(get_env["ok"])
         self.assertEqual(
@@ -546,33 +575,49 @@ class BoundaryDraftTests(unittest.TestCase):
             save_env["result"]["draft"]["draft_id"],
         )
 
-    def test_save_draft_read_only_field_rejected(self):
+    def test_save_draft_read_only_block_rejected(self):
         self._open_sync()
-        edits = [{"target_id": self._file_id(), "field": "path", "proposed": "hacked.py"}]
-        env = self._do(contract.ACTION_SAVE_DRAFT, task={"edits": edits})
+        ops = [
+            {
+                "op": "replace_description",
+                "target_block_id": self._module_entity_id(),
+                "proposed_text": "hacked.py",
+            }
+        ]
+        env = self._do(contract.ACTION_SAVE_DRAFT, task={"operations": ops})
         self.assertFalse(env["ok"])
         self.assertEqual(env["error"]["code"], "draft_invalid")
         self.assertNotIn("hacked.py", dumps(env))
 
     def test_save_draft_unknown_target_rejected(self):
         self._open_sync()
-        edits = [{"target_id": "artifact:file:missing.py", "field": "purpose",
-                  "proposed": "x"}]
-        env = self._do(contract.ACTION_SAVE_DRAFT, task={"edits": edits})
+        ops = [
+            {
+                "op": "replace_description",
+                "target_block_id": "codemap:app.service:purpose:99999",
+                "proposed_text": "x",
+            }
+        ]
+        env = self._do(contract.ACTION_SAVE_DRAFT, task={"operations": ops})
         self.assertFalse(env["ok"])
         self.assertEqual(env["error"]["code"], "draft_invalid")
 
     def test_save_draft_oversized_rejected(self):
         self._open_sync()
-        edits = [{"target_id": self._file_id(), "field": "purpose",
-                  "proposed": "x" * 5000}]
-        env = self._do(contract.ACTION_SAVE_DRAFT, task={"edits": edits})
+        ops = [
+            {
+                "op": "replace_description",
+                "target_block_id": self._module_purpose_id(),
+                "proposed_text": "x" * 5000,
+            }
+        ]
+        env = self._do(contract.ACTION_SAVE_DRAFT, task={"operations": ops})
         self.assertFalse(env["ok"])
         self.assertEqual(env["error"]["code"], "draft_oversized")
 
     def test_noop_draft_generates_no_change(self):
         self._open_sync()
-        save_env = self._do(contract.ACTION_SAVE_DRAFT, task={"edits": []})
+        save_env = self._do(contract.ACTION_SAVE_DRAFT, task={"operations": []})
         self.assertTrue(save_env["ok"])
         delta_env = self._do(contract.ACTION_GENERATE_INTENT_DELTA)
         self.assertTrue(delta_env["ok"])
@@ -581,7 +626,7 @@ class BoundaryDraftTests(unittest.TestCase):
 
     def test_intent_delta_is_deterministic(self):
         self._open_sync()
-        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()})
         first = self._do(contract.ACTION_GENERATE_INTENT_DELTA)["result"]["intent_delta"]
         second = self._do(contract.ACTION_GENERATE_INTENT_DELTA)["result"]["intent_delta"]
         self.assertIsNotNone(first)
@@ -590,7 +635,7 @@ class BoundaryDraftTests(unittest.TestCase):
 
     def test_stale_draft_blocks_intent_delta(self):
         self._open_sync()
-        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()})
         # Simulate a re-sync that changed the baseline fingerprint.
         store, _ = twin_store.load(self.store_base, self.wsid)
         store["workspace_revision"]["baseline_fingerprint"] = "fp:changed"
@@ -599,19 +644,21 @@ class BoundaryDraftTests(unittest.TestCase):
         self.assertFalse(env["ok"])
         self.assertEqual(env["error"]["code"], "draft_stale")
 
-    def test_compare_draft_returns_changes(self):
+    def test_compare_draft_returns_operations(self):
         self._open_sync()
-        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()})
         result = self._do(contract.ACTION_COMPARE_DRAFT)["result"]
-        self.assertEqual(len(result["changes"]), 1)
-        self.assertEqual(result["changes"][0]["field"], "purpose")
-        self.assertEqual(result["changes"][0]["original"], None)
-        self.assertEqual(result["changes"][0]["proposed"], "entry point for the service")
+        self.assertEqual(len(result["operations"]), 1)
+        self.assertEqual(result["operations"][0]["op"], "replace_description")
+        self.assertEqual(
+            result["operations"][0]["proposed"]["display_text"],
+            "entry point for the service",
+        )
         self.assertEqual(result["conflict"]["state"], "none")
 
     def test_discard_draft_then_get_is_not_found(self):
         self._open_sync()
-        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()})
         discard_env = self._do(contract.ACTION_DISCARD_DRAFT)
         self.assertTrue(discard_env["ok"])
         self.assertTrue(discard_env["result"]["discarded"])
@@ -621,7 +668,7 @@ class BoundaryDraftTests(unittest.TestCase):
 
     def test_reset_draft_returns_to_baseline(self):
         self._open_sync()
-        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()})
         reset_env = self._do(contract.ACTION_RESET_DRAFT)
         self.assertTrue(reset_env["ok"])
         self.assertTrue(reset_env["result"]["reset"])
@@ -636,7 +683,7 @@ class BoundaryDraftTests(unittest.TestCase):
 
     def test_draft_write_stays_out_of_repository(self):
         self._open_sync()
-        self._do(contract.ACTION_SAVE_DRAFT, task={"edits": self._purpose_edits()})
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()})
         draft_path = twin_store.workspace_draft_path(self.store_base, self.wsid)
         self.assertTrue(os.path.isfile(draft_path))
         # The draft lives under the app-data store base, never the repository.

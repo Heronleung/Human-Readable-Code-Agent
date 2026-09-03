@@ -10,12 +10,9 @@ from unittest import mock
 
 from hrca import contract
 from hrca.client_core import (
-    ARTIFACT_FIELDS,
-    BEHAVIOR_FIELDS,
-    DRAFT_LIST,
-    DRAFT_SINGLE,
-    FIELD_CARDINALITY,
-    FIELD_LABELS,
+    BLOCK_TYPE_LABELS,
+    INTENT_CLASS_LABELS,
+    OPERATION_LABELS,
     PROVIDER_UNAVAILABLE,
     REPOSITORY_UNVERIFIED,
     TWIN_AVAILABLE,
@@ -32,6 +29,7 @@ from hrca.client_core import (
     LineBuffer,
     ResponseRouter,
     behavior_node_label,
+    block_type_label,
     build_compare_draft_request,
     build_discard_draft_request,
     build_fixture_task,
@@ -50,15 +48,15 @@ from hrca.client_core import (
     build_scan_task,
     build_sync_twin_request,
     default_fixture_root,
-    draft_edit,
-    field_cardinality,
-    field_label,
-    format_draft_changes,
-    format_draft_facts,
+    format_draft_operations,
+    format_entity_list,
     format_intent_delta,
+    format_procedural_document,
     format_twin_projection,
     format_twin_sync,
+    intent_class_label,
     is_twin_source_path,
+    operation_label,
     resolve_backend_command,
     twin_state_from_sync,
 )
@@ -379,16 +377,35 @@ class DraftRequestBuilderTests(unittest.TestCase):
         self.assertEqual(req["action"], contract.ACTION_GET_CODE_MAP)
         self.assertNotIn("path", req)
 
-    def test_save_draft_request_copies_edits(self):
-        source = [draft_edit("artifact:a", "purpose", "A service module")]
+    def test_save_draft_request_copies_operations(self):
+        source = [
+            {
+                "op": "replace_description",
+                "target_block_id": "codemap:app.service:purpose:1",
+                "proposed_text": "A service module",
+            }
+        ]
         req = build_save_draft_request("cid-1", source)
         self.assertEqual(req["action"], contract.ACTION_SAVE_DRAFT)
         self.assertEqual(
-            req["task"]["edits"],
-            [{"target_id": "artifact:a", "field": "purpose", "proposed": "A service module"}],
+            req["task"]["operations"],
+            [
+                {
+                    "op": "replace_description",
+                    "target_block_id": "codemap:app.service:purpose:1",
+                    "proposed_text": "A service module",
+                }
+            ],
         )
-        source.append(draft_edit("artifact:a", "invariants", ["idempotent"]))
-        self.assertEqual(len(req["task"]["edits"]), 1)
+        source.append(
+            {
+                "op": "insert_block",
+                "owning_entity_id": "app.service",
+                "block_type": "note",
+                "proposed_text": "a note",
+            }
+        )
+        self.assertEqual(len(req["task"]["operations"]), 1)
 
     def test_get_draft_request_shape(self):
         req = build_get_draft_request("cid-1")
@@ -412,82 +429,121 @@ class DraftRequestBuilderTests(unittest.TestCase):
         self.assertEqual(req["action"], contract.ACTION_GENERATE_INTENT_DELTA)
 
 
-class DraftVocabularyTests(unittest.TestCase):
-    def test_field_cardinality_matches_schema(self):
-        self.assertEqual(field_cardinality("purpose"), DRAFT_SINGLE)
-        self.assertEqual(field_cardinality("workflow_steps"), DRAFT_LIST)
-        self.assertIsNone(field_cardinality("not_a_field"))
+class CodeMapVocabularyTests(unittest.TestCase):
+    def test_block_type_label_falls_back_to_token(self):
+        self.assertEqual(block_type_label("entity"), "Entity")
+        self.assertEqual(block_type_label("limitation"), "Limitation")
+        self.assertEqual(block_type_label("unknown_type"), "unknown_type")
 
-    def test_field_label_falls_back_to_key(self):
-        self.assertEqual(field_label("purpose"), "Purpose")
-        self.assertEqual(field_label("unknown_field"), "unknown_field")
+    def test_operation_label_falls_back_to_token(self):
+        self.assertEqual(operation_label("replace_description"), "Replace description")
+        self.assertEqual(operation_label("insert_block"), "Insert block")
+        self.assertEqual(operation_label("not_an_op"), "not_an_op")
 
-    def test_artifact_and_behavior_fields_are_disjoint_scopes(self):
+    def test_intent_class_label_falls_back_to_token(self):
+        self.assertEqual(intent_class_label("documentation_intent"), "Documentation")
+        self.assertEqual(intent_class_label("behavior_change_intent"), "Behavior change")
+        self.assertEqual(intent_class_label("unknown"), "unknown")
+
+    def test_block_type_labels_cover_all_14_types(self):
         self.assertEqual(
-            set(ARTIFACT_FIELDS), {"purpose", "dependencies", "invariants", "limitations"}
+            set(BLOCK_TYPE_LABELS),
+            {
+                "entity",
+                "purpose",
+                "input",
+                "step",
+                "decision",
+                "loop",
+                "call",
+                "exception",
+                "return",
+                "side_effect",
+                "dependency",
+                "invariant",
+                "limitation",
+                "note",
+            },
         )
-        self.assertLess(set(ARTIFACT_FIELDS), set(BEHAVIOR_FIELDS))
-        self.assertIn("workflow_steps", BEHAVIOR_FIELDS)
-        self.assertNotIn("workflow_steps", ARTIFACT_FIELDS)
 
-    def test_field_labels_cover_editable_fields(self):
-        self.assertEqual(set(FIELD_LABELS), set(FIELD_CARDINALITY))
-
-    def test_draft_edit_shape(self):
+    def test_operation_labels_cover_all_typed_ops(self):
         self.assertEqual(
-            draft_edit("behavior:b1", "conditions", ["x > 0"]),
-            {"target_id": "behavior:b1", "field": "conditions", "proposed": ["x > 0"]},
+            set(OPERATION_LABELS),
+            {
+                "replace_description",
+                "insert_block",
+                "delete_draft_block",
+                "move_draft_block",
+                "replace_condition_intent",
+                "mark_unresolved",
+                "restore_block",
+            },
+        )
+
+    def test_intent_class_labels_cover_both_intents(self):
+        self.assertEqual(
+            set(INTENT_CLASS_LABELS),
+            {"documentation_intent", "behavior_change_intent"},
         )
 
 
 class DraftPresentationTests(unittest.TestCase):
-    def test_format_draft_facts_lists_read_only_facts(self):
-        projection = {
-            "path": "app/service.py",
-            "locator": "app.service.Service.handle",
-            "kind": "method",
-            "provenance": "verified",
-            "confidence": "high",
-            "sync_state": "synchronized",
-        }
-        text = format_draft_facts(projection)
-        self.assertIn("Path: app/service.py", text)
-        self.assertIn("Locator: app.service.Service.handle", text)
-        self.assertIn("Kind: method", text)
-        self.assertIn("Provenance: verified", text)
-        self.assertIn("Confidence: high", text)
-        self.assertIn("Sync state: synchronized", text)
+    def test_format_procedural_document_passes_through(self):
+        self.assertEqual(format_procedural_document("Module app.service"), "Module app.service")
+        self.assertEqual(format_procedural_document(None), "")
+        self.assertEqual(format_procedural_document(""), "")
 
-    def test_format_draft_changes_empty(self):
-        self.assertEqual(format_draft_changes([]), "No changes.")
+    def test_format_entity_list_empty(self):
+        self.assertEqual(format_entity_list([]), "No entities.")
 
-    def test_format_draft_changes_single_and_list(self):
-        changes = [
-            {"field": "purpose", "proposed": "A service module"},
-            {"field": "workflow_steps", "proposed": ["load", "parse", "emit"]},
-            {"field": "invariants", "proposed": []},
+    def test_format_entity_list_lists_entities(self):
+        entities = [
+            {"kind": "module", "locator": "app.service", "subject": "Module app.service"},
+            {"kind": "function", "locator": "app.service.handle"},
         ]
-        text = format_draft_changes(changes)
-        self.assertIn("Purpose: A service module", text)
-        self.assertIn("Workflow steps:", text)
-        self.assertIn("  - load", text)
-        self.assertIn("Explicit invariants:", text)
-        self.assertIn("  - (cleared)", text)
+        text = format_entity_list(entities)
+        self.assertIn("module: app.service — Module app.service", text)
+        self.assertIn("function: app.service.handle", text)
+
+    def test_format_draft_operations_empty(self):
+        self.assertEqual(format_draft_operations([]), "No operations.")
+
+    def test_format_draft_operations_typed(self):
+        operations = [
+            {
+                "op": "replace_description",
+                "target_block_id": "codemap:app.service:purpose:1",
+                "intent_class": "documentation_intent",
+                "proposed": {"display_text": "A service module"},
+            },
+            {
+                "op": "replace_condition_intent",
+                "target_block_id": "codemap:app.service:decision:4",
+                "intent_class": "behavior_change_intent",
+                "proposed": {"display_text": "If x > 0 is true, the following runs:"},
+            },
+        ]
+        text = format_draft_operations(operations)
+        self.assertIn("Replace description — codemap:app.service:purpose:1 (Documentation): A service module", text)
+        self.assertIn("Replace condition intent", text)
+        self.assertIn("(Behavior change)", text)
 
     def test_format_intent_delta_marks_non_executable(self):
         delta = {
             "intent": "user_authored",
-            "targets": [{"target_id": "artifact:a"}],
-            "affected_sources": ["artifact:a"],
-            "affected_behavior_nodes": [],
-            "acceptance_criteria": ["artifact:a: purpose authored"],
-            "constraints": [],
+            "entries": [
+                {
+                    "operation": "replace_description",
+                    "owning_entity_id": "app.service",
+                    "required_approval_level": "low",
+                }
+            ],
         }
         text = format_intent_delta(delta)
         self.assertIn("Intent Delta (not executable)", text)
         self.assertIn("Executable: false", text)
-        self.assertIn("Targets: 1", text)
-        self.assertIn("Affected sources: artifact:a", text)
+        self.assertIn("Entries: 1", text)
+        self.assertIn("Replace description on app.service (approval: low)", text)
 
 
 class ClientStateConstantsTests(unittest.TestCase):

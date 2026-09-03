@@ -152,6 +152,11 @@ TWIN_STRETCH = 2
 
 TWIN_CONTENT_MAX_WIDTH = 720
 
+# Compact entity list height in the Code Map read-only pane (P3.4). The list is
+# a bounded, scrollable strip above the procedural document, never an unbounded
+# column that would crowd out the document.
+CODEMAP_ENTITY_LIST_MAX_HEIGHT = 120
+
 # Initial vertical-splitter primary-workspace height (px) and the
 # workspace : bottom-panel stretch ratio (3 : 1).
 PRIMARY_WORKSPACE_INITIAL_HEIGHT = 560
@@ -867,6 +872,7 @@ __all__ = [
     "SOURCE_STRETCH",
     "TWIN_STRETCH",
     "TWIN_CONTENT_MAX_WIDTH",
+    "CODEMAP_ENTITY_LIST_MAX_HEIGHT",
     "PRIMARY_WORKSPACE_INITIAL_HEIGHT",
     "PRIMARY_WORKSPACE_STRETCH",
     "STATUS_ROOT_MAX_WIDTH",

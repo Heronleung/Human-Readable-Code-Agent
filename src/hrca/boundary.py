@@ -34,10 +34,10 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TextIO, Sequence
 
-from . import contract, twin, twin_draft, twin_store, workspace
+from . import codemap, codemap_draft, contract, twin, twin_store, workspace
 from .planning import TaskValidationError, build_plan, validate_task
 from .report import build_report
-from .scanner import scan_directory
+from .scanner import module_name_for, scan_directory
 
 # Fixed, read-only next action reported by this slice: the boundary never
 # performs a repository action.
@@ -412,19 +412,6 @@ def _workspace_id(session: WorkspaceSession) -> str:
     return twin.workspace_id_for(session.root)
 
 
-def _field_schema() -> Dict[str, Any]:
-    """Return the editable Code Map field schema (cardinality + scope + read-only)."""
-    return {
-        "editable_fields": {
-            field: twin_draft.FIELD_CARDINALITY[field]
-            for field in sorted(twin_draft.EDITABLE_FIELDS)
-        },
-        "artifact_fields": list(twin_draft.ARTIFACT_FIELDS),
-        "behavior_fields": list(twin_draft.BEHAVIOR_FIELDS),
-        "read_only_fields": sorted(twin_draft.READ_ONLY_FIELDS),
-    }
-
-
 def _load_draft_or_raise(session: WorkspaceSession) -> Dict[str, Any]:
     """Load the saved draft, raising a bounded ``draft_not_found`` when absent.
 
@@ -437,16 +424,79 @@ def _load_draft_or_raise(session: WorkspaceSession) -> Dict[str, Any]:
     return draft
 
 
+def _code_map_baseline(session: WorkspaceSession, store: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the full Code Map block list for the synchronized workspace.
+
+    Every modeled ``.py``/``.pyi`` file is read from disk below the accepted
+    root and parsed into procedural blocks (the source facts behind the Code
+    Map document). The result is the baseline envelope a draft validates
+    against, carrying the workspace's baseline revision.
+    """
+    revision = store.get("workspace_revision") or {}
+    baseline_revision = revision.get("baseline_fingerprint")
+    blocks: List[Dict[str, Any]] = []
+    for artifact in store.get("artifacts", []):
+        if not isinstance(artifact, dict):
+            continue
+        if artifact.get("kind") != twin.ARTIFACT_FILE:
+            continue
+        rel_path = artifact.get("path")
+        if not isinstance(rel_path, str) or not rel_path.endswith((".py", ".pyi")):
+            continue
+        try:
+            with open(os.path.join(session.root, rel_path), "r", encoding="utf-8") as fh:
+                source = fh.read()
+        except OSError:
+            continue
+        module = artifact.get("module") or module_name_for(rel_path)
+        # A file the scanner already recorded as a ``parse_error`` (e.g. invalid
+        # syntax) has no procedural model; skip it rather than fail the whole
+        # Code Map. Valid files are unaffected, mirroring the scanner's
+        # continue-on-error rule.
+        try:
+            blocks.extend(codemap.build_codemap(source, rel_path, module, baseline_revision))
+        except (SyntaxError, ValueError):
+            continue
+    return codemap_draft.baseline_document(blocks, baseline_revision)
+
+
+def _code_map_scope(
+    request: Dict[str, Any], baseline: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Return the Code Map blocks and document scoped to the request's selector.
+
+    When no ``selector`` is present the whole module-level document is returned;
+    otherwise the blocks are narrowed to the named entity and a missing entity
+    is a bounded ``twin_not_found``.
+    """
+    blocks = baseline.get("blocks") or []
+    task = request.get("task")
+    selector = task.get("selector") if isinstance(task, dict) else None
+    if isinstance(selector, str) and selector.strip():
+        scoped = codemap.blocks_for_entity(blocks, selector)
+        if not scoped:
+            raise contract.ContractError("twin_not_found")
+        return {"entity": selector, "blocks": scoped, "document": codemap.render_blocks(scoped)}
+    return {"entity": None, "blocks": blocks, "document": codemap.render_blocks(blocks)}
+
+
 def _get_code_map_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
-    """Return the editable Code Map baseline, field schema and saved draft state."""
+    """Return the procedural Code Map document, entity list and saved draft state."""
     if session.root is None:
         raise contract.ContractError("project_not_open")
     store = _twin_store(session)
     workspace_id = _workspace_id(session)
+    baseline = _code_map_baseline(session, store)
+    scope = _code_map_scope(request, baseline)
     draft, _ = twin_store.load_draft(session.store_base, workspace_id)
     revision = store.get("workspace_revision") or {}
     return {
-        "field_schema": _field_schema(),
+        "language_version": codemap.CODEMAP_LANGUAGE_VERSION,
+        "generator": codemap.GENERATOR,
+        "entity": scope["entity"],
+        "entities": codemap.entity_list(baseline.get("blocks") or []),
+        "blocks": scope["blocks"],
+        "document": scope["document"],
         "baseline": {
             "workspace_id": revision.get("workspace_id"),
             "baseline_revision": revision.get("baseline_fingerprint"),
@@ -455,18 +505,19 @@ def _get_code_map_result(request: Dict[str, Any], session: WorkspaceSession) -> 
         },
         "draft": draft,
         "conflict": (
-            twin_draft.conflict_for(draft, store)
-            if draft is not None else {"state": twin_draft.CONFLICT_NONE, "reason": None}
+            codemap_draft.conflict_for(draft, baseline)
+            if draft is not None
+            else {"state": codemap_draft.CONFLICT_NONE, "reason": None}
         ),
     }
 
 
 def _save_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
-    """Validate and atomically persist a Twin Draft against the current baseline.
+    """Validate and atomically persist a Code Map Draft against the baseline.
 
-    The draft is built from a list of ``{target_id, field, proposed}`` edits and
-    validated against the synchronized Twin. A read-only-field edit, an unknown
-    target, an unsupported field, or an oversized value is rejected with a
+    The draft is built from a list of typed ``operations`` (SCOPE G) validated
+    against the current Code Map baseline. A read-only-block edit, an unknown
+    target, an unsupported operation, or an oversized value is rejected with a
     bounded error — never persisted.
     """
     if session.root is None:
@@ -476,20 +527,21 @@ def _save_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Di
     task = request.get("task")
     if not isinstance(task, dict):
         raise contract.ContractError("invalid_request")
-    edits = task.get("edits")
-    if not isinstance(edits, list):
+    operations = task.get("operations")
+    if not isinstance(operations, list):
         raise contract.ContractError("invalid_request")
-    if len(contract.dumps(edits).encode("utf-8")) > contract.MAX_DRAFT_BYTES:
+    if len(contract.dumps(operations).encode("utf-8")) > contract.MAX_DRAFT_BYTES:
         raise contract.ContractError("draft_oversized")
 
     workspace_id = _workspace_id(session)
+    baseline = _code_map_baseline(session, store)
     now = _now_iso()
-    draft, err = twin_draft.build_draft(workspace_id, store, edits, now, now)
+    draft, err = codemap_draft.build_draft(workspace_id, baseline, operations, now, now)
     if err is not None:
         # Only the oversized reason maps to ``draft_oversized``; every other
         # domain rejection (read-only, unknown target, unsupported, duplicate)
         # maps to the fixed ``draft_invalid`` code. The reason never leaks.
-        if err == twin_draft.REASON_OVERSIZED:
+        if err == codemap_draft.REASON_OVERSIZED:
             raise contract.ContractError("draft_oversized")
         raise contract.ContractError("draft_invalid")
 
@@ -498,16 +550,17 @@ def _save_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Di
 
 
 def _get_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
-    """Return the saved Twin Draft plus its conflict state against the baseline."""
+    """Return the saved Code Map Draft plus its conflict state against the baseline."""
     if session.root is None:
         raise contract.ContractError("project_not_open")
     store = _twin_store(session)
+    baseline = _code_map_baseline(session, store)
     draft = _load_draft_or_raise(session)
-    return {"draft": draft, "conflict": twin_draft.conflict_for(draft, store)}
+    return {"draft": draft, "conflict": codemap_draft.conflict_for(draft, baseline)}
 
 
 def _discard_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
-    """Discard (delete) the saved Twin Draft. Idempotent; never touches source."""
+    """Discard (delete) the saved Code Map Draft. Idempotent; never touches source."""
     if session.root is None:
         raise contract.ContractError("project_not_open")
     twin_store.discard_draft(session.store_base, _workspace_id(session))
@@ -515,7 +568,7 @@ def _discard_draft_result(request: Dict[str, Any], session: WorkspaceSession) ->
 
 
 def _reset_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
-    """Reset the draft to the baseline by removing every saved edit."""
+    """Reset the draft to the baseline by removing every saved operation."""
     if session.root is None:
         raise contract.ContractError("project_not_open")
     twin_store.discard_draft(session.store_base, _workspace_id(session))
@@ -523,15 +576,16 @@ def _reset_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> D
 
 
 def _compare_draft_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
-    """Return the draft's field-level changes relative to the baseline."""
+    """Return the draft's typed operations relative to the baseline."""
     if session.root is None:
         raise contract.ContractError("project_not_open")
     store = _twin_store(session)
+    baseline = _code_map_baseline(session, store)
     draft = _load_draft_or_raise(session)
     return {
         "draft_id": draft.get("draft_id"),
-        "changes": draft.get("changes", []),
-        "conflict": twin_draft.conflict_for(draft, store),
+        "operations": draft.get("operations", []),
+        "conflict": codemap_draft.conflict_for(draft, baseline),
     }
 
 
@@ -547,12 +601,13 @@ def _generate_intent_delta_result(
     if session.root is None:
         raise contract.ContractError("project_not_open")
     store = _twin_store(session)
+    baseline = _code_map_baseline(session, store)
     draft = _load_draft_or_raise(session)
-    if twin_draft.is_noop(draft):
+    if codemap_draft.is_noop(draft):
         return {"intent_delta": None, "no_change": True}
-    if twin_draft.conflict_for(draft, store)["state"] != twin_draft.CONFLICT_NONE:
+    if codemap_draft.conflict_for(draft, baseline)["state"] != codemap_draft.CONFLICT_NONE:
         raise contract.ContractError("draft_stale")
-    delta, err = twin_draft.generate_intent_delta(draft, store)
+    delta, err = codemap_draft.generate_intent_delta(draft, baseline)
     if err is not None:  # pragma: no cover - guarded by the checks above
         raise contract.ContractError("draft_invalid")
     return {"intent_delta": delta, "no_change": False}

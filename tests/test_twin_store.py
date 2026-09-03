@@ -14,7 +14,7 @@ import os
 import tempfile
 import unittest
 
-from hrca import twin, twin_draft, twin_store
+from hrca import twin, codemap_draft, twin_store
 
 
 class _Base:
@@ -114,16 +114,15 @@ class FailClosedLoadTests(_Base, unittest.TestCase):
 class DraftPersistenceTests(_Base, unittest.TestCase):
     def _draft(self):
         return {
-            "schema_version": twin_draft.DRAFT_SCHEMA_VERSION,
-            "generator": twin_draft.DRAFT_GENERATOR,
+            "schema_version": codemap_draft.CODEMAP_DRAFT_SCHEMA_VERSION,
+            "generator": codemap_draft.DRAFT_GENERATOR,
             "draft_id": "draft:abc",
             "workspace_id": self.wsid,
             "origin": "user_authored",
-            "baseline": {"baseline_revision": "fp", "scan_generation": 1, "scan_timestamp": "T"},
+            "baseline": {"baseline_revision": "fp"},
             "created_at": "C",
             "updated_at": "U",
-            "targets": [],
-            "changes": [],
+            "operations": [],
             "validation": {"state": "valid", "reason": None},
             "conflict": {"state": "none", "reason": None},
         }

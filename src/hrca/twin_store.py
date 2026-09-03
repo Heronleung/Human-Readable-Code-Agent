@@ -25,7 +25,7 @@ import os
 import tempfile
 from typing import Optional, Tuple
 
-from . import twin, twin_draft
+from . import twin, codemap_draft
 
 # App-data directory name (per user), independent of any selected repository.
 _APP_DIR_NAME = "human-readable-code-agent"
@@ -166,7 +166,7 @@ def load_draft(base_dir: str, workspace_id: str) -> Tuple[Optional[dict], Option
     ``None`` (an absent draft yields ``(None, None)``). Any read, parse or
     migration failure returns ``(None, reason)`` and leaves the on-disk draft
     untouched. The same future/unknown-version fail-closed rule as the Twin
-    store applies via :func:`hrca.twin_draft.migrate_draft`.
+    store applies via :func:`hrca.codemap_draft.migrate_draft`.
     """
     path = workspace_draft_path(base_dir, workspace_id)
     try:
@@ -182,7 +182,7 @@ def load_draft(base_dir: str, workspace_id: str) -> Tuple[Optional[dict], Option
     except ValueError as exc:
         return None, f"Twin Draft is not valid JSON: {exc}"
 
-    draft, err = twin_draft.migrate_draft(raw)
+    draft, err = codemap_draft.migrate_draft(raw)
     if err is not None:
         return None, err
     return draft, None
@@ -199,7 +199,7 @@ def save_draft(base_dir: str, workspace_id: str, draft: dict) -> Optional[str]:
     err = _ensure_dir(dirpath)
     if err is not None:
         return err
-    return _atomic_write(dirpath, path, twin_draft.dumps(draft).encode("utf-8"), "Twin Draft")
+    return _atomic_write(dirpath, path, codemap_draft.dumps(draft).encode("utf-8"), "Twin Draft")
 
 
 def discard_draft(base_dir: str, workspace_id: str) -> Optional[str]:

@@ -92,6 +92,20 @@ class ClientArchitectureTests(unittest.TestCase):
                     f"{module} imports the boundary-side workspace policy",
                 )
 
+    def test_client_modules_do_not_import_codemap(self):
+        # The desktop shell renders the procedural Code Map through its own
+        # presentation vocabulary in ``client_core``; importing the Code Map or
+        # Code Map Draft domain would couple the client to the deterministic
+        # core (mirroring the existing workspace rule).
+        for module, path in _CLIENT_MODULES.items():
+            with self.subTest(module=module):
+                imported = _imported_top_level_names(path)
+                self.assertTrue(
+                    imported.isdisjoint({"codemap", "codemap_draft"}),
+                    f"{module} imports the Code Map domain: "
+                    f"{sorted(imported & {'codemap', 'codemap_draft'})}",
+                )
+
     def test_client_modules_exist(self):
         for path in _CLIENT_MODULES.values():
             self.assertTrue(os.path.isfile(path), path)

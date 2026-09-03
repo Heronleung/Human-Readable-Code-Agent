@@ -189,14 +189,14 @@ class MainWindowLayoutTests(unittest.TestCase):
     def test_twin_default_state_is_empty(self):
         window = MainWindow()
         self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertIn("No Code Map", window._twin_body.text())
+        self.assertIn("No Code Map", window._codemap_document.toPlainText())
         self.assertIn("empty", window._twin_label.text())
 
     def test_twin_state_transitions(self):
         window = MainWindow()
         window._set_twin_state(TWIN_STALE)
         self.assertEqual(window._twin_chip.text(), "Stale")
-        self.assertIn("stale", window._twin_body.text())
+        self.assertIn("stale", window._codemap_document.toPlainText())
         self.assertIn("stale", window._twin_label.text())
 
     def test_all_six_twin_states(self):
@@ -205,7 +205,7 @@ class MainWindowLayoutTests(unittest.TestCase):
             with self.subTest(state=state):
                 window._set_twin_state(state)
                 self.assertEqual(window._twin_chip.text(), word)
-                self.assertTrue(window._twin_body.text())
+                self.assertTrue(window._codemap_document.toPlainText())
                 self.assertIn(state, window._twin_label.text())
 
     def test_six_status_fields_populated(self):
@@ -531,38 +531,145 @@ def _source_doc(rel_path: str) -> dict:
             "kind": "source", "content": "print('hi')\n"}
 
 
-def _sample_twin_bundle() -> dict:
-    """A bounded Twin projection bundle for one method with two behavior nodes."""
-    return {
-        "projection": {
-            "kind": "method",
-            "path": "app/service.py",
-            "locator": "app.service.Service.handle",
-            "summary": "Method handle(request)",
-            "provenance": "verified",
-            "confidence": "high",
-            "sync_state": "synchronized",
-            "details": ["Parameters: request"],
-            "limitations": ["a dynamic dependency is marked low confidence"],
-        },
-        "behavior_nodes": [
-            {"id": "behavior:calls:1", "category": "calls",
-             "provenance": "verified", "confidence": "high",
-             "items": ["open", "<unresolved>"]},
-            {"id": "behavior:conditions:1", "category": "conditions",
-             "provenance": "unresolved", "confidence": "low", "items": []},
+def _block(block_id: str, block_type: str, **overrides) -> dict:
+    """A bounded procedural block with full source correspondence.
+
+    The default is a verified, current, high-confidence block anchored to
+    ``app/service.py``; tests override ``editability``, ``display_text`` and
+    ``payload`` to exercise the purpose/decision inline edit rows.
+    """
+    block = {
+        "block_id": block_id,
+        "block_type": block_type,
+        "parent_id": None,
+        "order": 0,
+        "subject": block_type,
+        "payload": {},
+        "display_text": block_type,
+        "source_anchors": [
+            {"file": "app/service.py", "lineno": 1, "col_offset": 0,
+             "end_lineno": 1, "end_col_offset": 0, "source_id": "app/service.py:1"}
         ],
+        "baseline_revision": "abc123",
+        "source_fingerprint": "fp-" + block_id,
+        "provenance": "verified",
+        "confidence": "high",
+        "confidence_reason": None,
+        "editability": None,
+        "state": "current",
+        "language_version": "0.1",
+    }
+    block.update(overrides)
+    return block
+
+
+def _code_map_result() -> dict:
+    """A bounded ``get_code_map`` result for ``app/service.py``.
+
+    Carries a module entity, a method entity, an editable purpose block and an
+    editable decision block, so the read-mode document and the edit surface both
+    render without touching the boundary, Twin store or filesystem.
+    """
+    module_id = "codemap:app.service:entity:0"
+    method_id = "codemap:app.service.Service.handle:entity:0"
+    purpose_id = "codemap:app.service.Service.handle:purpose:1"
+    decision_id = "codemap:app.service.Service.handle:decision:2"
+    return {
+        "language_version": "0.1",
+        "generator": "hrca-codemap",
+        "entity": "app.service.Service.handle",
+        "entities": [
+            {"block_id": module_id, "locator": "app.service", "kind": "module",
+             "name": "app.service", "subject": "Module app.service",
+             "parent_id": None, "order": 0},
+            {"block_id": method_id, "locator": "app.service.Service.handle",
+             "kind": "method", "name": "handle", "subject": "Method handle(request)",
+             "parent_id": module_id, "order": 1},
+        ],
+        "blocks": [
+            _block(module_id, "entity", parent_id=None, order=0,
+                   subject="Module app.service", display_text="Module app.service",
+                   payload={"name": "app.service", "kind": "module",
+                            "locator": "app.service"}),
+            _block(method_id, "entity", parent_id=module_id, order=1,
+                   subject="Method handle(request)",
+                   display_text="Method handle(request)",
+                   payload={"name": "handle", "kind": "method",
+                            "locator": "app.service.Service.handle"}),
+            _block(purpose_id, "purpose", parent_id=method_id, order=2,
+                   subject="Handles a request", display_text="Handles a request",
+                   editability="replace_description",
+                   payload={"text": "Handles a request"}),
+            _block(decision_id, "decision", parent_id=method_id, order=3,
+                   subject="If request is valid, the following runs:",
+                   display_text="If request is valid, the following runs:",
+                   editability="replace_condition_intent",
+                   payload={"condition": "request is valid"}),
+        ],
+        "document": "Module app.service\n\nMethod handle(request)\n\n"
+                    "Handles a request\n\nIf request is valid, the following runs:",
+        "baseline": {"workspace_id": "ws-1", "baseline_revision": "abc123",
+                     "scan_generation": 1, "sync_state": "synchronized"},
+        "draft": None,
+        "conflict": {"state": "none", "reason": None},
+    }
+
+
+def _function_code_map_result() -> dict:
+    """A bounded ``get_code_map`` result for ``calculator.py`` with two functions."""
+    module_id = "codemap:calculator:entity:0"
+    add_id = "codemap:calculator.add:entity:0"
+    divide_id = "codemap:calculator.divide:entity:0"
+    return {
+        "language_version": "0.1",
+        "generator": "hrca-codemap",
+        "entity": "calculator",
+        "entities": [
+            {"block_id": module_id, "locator": "calculator", "kind": "module",
+             "name": "calculator", "subject": "Module calculator",
+             "parent_id": None, "order": 0},
+            {"block_id": add_id, "locator": "calculator.add", "kind": "function",
+             "name": "add",
+             "subject": "Function add(left: float, right: float) -> float",
+             "parent_id": module_id, "order": 1},
+            {"block_id": divide_id, "locator": "calculator.divide", "kind": "function",
+             "name": "divide",
+             "subject": "Function divide(left: float, right: float) -> float",
+             "parent_id": module_id, "order": 2},
+        ],
+        "blocks": [
+            _block(module_id, "entity", parent_id=None, order=0,
+                   subject="Module calculator", display_text="Module calculator",
+                   payload={"name": "calculator", "kind": "module",
+                            "locator": "calculator"}),
+            _block(add_id, "entity", parent_id=module_id, order=1,
+                   subject="Function add(left: float, right: float) -> float",
+                   display_text="Function add(left: float, right: float) -> float",
+                   payload={"name": "add", "kind": "function", "locator": "calculator.add"}),
+            _block(divide_id, "entity", parent_id=module_id, order=2,
+                   subject="Function divide(left: float, right: float) -> float",
+                   display_text="Function divide(left: float, right: float) -> float",
+                   payload={"name": "divide", "kind": "function", "locator": "calculator.divide"}),
+        ],
+        "document": "Module calculator\n\n"
+                    "Function add(left: float, right: float) -> float\n\n"
+                    "Function divide(left: float, right: float) -> float",
+        "baseline": {"workspace_id": "ws-1", "baseline_revision": "abc123",
+                     "scan_generation": 1, "sync_state": "synchronized"},
+        "draft": None,
+        "conflict": {"state": "none", "reason": None},
     }
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class TwinPaneTests(unittest.TestCase):
-    """P3.3 read-only Twin pane: auto-sync, projection and anchor navigation.
+    """P3.4 read-only Code Map pane: auto-sync, procedural document and entity list.
 
-    These tests drive the *presentation* half only — they feed a bounded bundle
-    or a fake ``_send`` and assert the pane renders provenance / confidence /
-    sync state as text and issues the three Twin actions. No filesystem, Twin
-    store or backend is touched.
+    These tests drive the *presentation* half only — they feed a bounded
+    ``get_code_map`` result or a fake ``_send`` and assert the pane renders the
+    procedural document and the compact entity list as text and issues the
+    sync → get_code_map selection chain. No filesystem, Twin store or backend is
+    touched.
     """
 
     def setUp(self):
@@ -578,7 +685,7 @@ class TwinPaneTests(unittest.TestCase):
         window._send = fake_send
         return sent
 
-    def _chain_send(self, window, sync_result=None, bundle=None,
+    def _chain_send(self, window, sync_result=None, result=None,
                     sync_error=None, get_error=None):
         """A ``_send`` double that synchronously completes the sync→get chain."""
         sent = []
@@ -592,11 +699,11 @@ class TwinPaneTests(unittest.TestCase):
                 else:
                     on_success(sync_result or {"state": "synchronized",
                                                "persisted": True, "counts": {}})
-            elif action == contract.ACTION_GET_TWIN:
+            elif action == contract.ACTION_GET_CODE_MAP:
                 if get_error is not None:
                     on_error(get_error)
                 else:
-                    on_success(bundle or _sample_twin_bundle())
+                    on_success(result or _code_map_result())
             else:
                 on_success({})
             return True
@@ -620,36 +727,34 @@ class TwinPaneTests(unittest.TestCase):
         window._on_tree_loaded(_sample_tree())
         self.assertEqual(sent, [])
 
-    def test_twin_projection_renders_fields_as_text(self):
+    def test_code_map_loaded_renders_document_and_entity_list(self):
         window = MainWindow()
-        window._on_twin_projection_loaded(_sample_twin_bundle())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         self.assertEqual(window._twin_chip.text(), "Available")
-        body = window._twin_body.text()
-        self.assertIn("Method handle(request)", body)
-        self.assertIn("Kind: method", body)
-        self.assertIn("Provenance: verified", body)
-        self.assertIn("Confidence: high", body)
-        self.assertIn("Sync state: synchronized", body)
-        self.assertIn("Limitations:", body)
-        # Behavior nodes render as a visible, populated list.
-        self.assertTrue(window._twin_nodes.isVisibleTo(window._twin_panel))
-        self.assertEqual(window._twin_nodes.count(), 2)
+        doc = window._codemap_document.toPlainText()
+        self.assertIn("Module app.service", doc)
+        self.assertIn("Method handle(request)", doc)
+        # The compact ordered entity list renders module + method entries.
+        self.assertTrue(window._codemap_entity_list.isVisibleTo(window._twin_panel))
+        self.assertEqual(window._codemap_entity_list.count(), 2)
         self.assertEqual(
-            window._twin_nodes.item(0).text(), "calls: open, <unresolved>"
+            window._codemap_entity_list.item(0).text(),
+            "module: app.service — Module app.service",
         )
         self.assertEqual(
-            window._twin_nodes.item(1).text(), "conditions (unresolved)"
+            window._codemap_entity_list.item(1).text(),
+            "method: app.service.Service.handle — Method handle(request)",
         )
 
-    def test_projection_without_behavior_nodes_hides_list(self):
+    def test_code_map_without_entities_hides_list(self):
         window = MainWindow()
-        bundle = _sample_twin_bundle()
-        bundle["behavior_nodes"] = []
-        window._on_twin_projection_loaded(bundle)
-        self.assertEqual(window._twin_nodes.count(), 0)
-        self.assertFalse(window._twin_nodes.isVisibleTo(window._twin_panel))
+        result = _code_map_result()
+        result["entities"] = []
+        window._on_code_map_loaded(result, rel_path="app/service.py")
+        self.assertEqual(window._codemap_entity_list.count(), 0)
+        self.assertFalse(window._codemap_entity_list.isVisibleTo(window._twin_panel))
 
-    def test_sync_result_renders_state_and_counts_as_text(self):
+    def test_sync_result_sets_chip_and_status(self):
         window = MainWindow()
         window._on_twin_synced(
             {
@@ -660,60 +765,37 @@ class TwinPaneTests(unittest.TestCase):
             }
         )
         self.assertEqual(window._twin_chip.text(), "Available")
-        body = window._twin_body.text()
-        self.assertIn("Twin state: synchronized", body)
-        self.assertIn("artifacts: 3", body)
-        self.assertIn("behavior nodes: 2", body)
+        self.assertIn("twin synchronized", window.status_label.text())
 
     def test_sync_conflict_maps_to_conflict_chip(self):
         window = MainWindow()
         window._on_twin_synced({"state": "conflict", "counts": {}, "reason": "draft"})
         self.assertEqual(window._twin_chip.text(), "Conflict")
-        self.assertIn("Reason: draft", window._twin_body.text())
 
-    def test_behavior_node_click_requests_anchor(self):
+    def test_entity_selection_requests_scoped_code_map(self):
         window = MainWindow()
-        window._on_twin_projection_loaded(_sample_twin_bundle())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         sent = self._fake_send(window)
-        window._on_behavior_node_clicked(window._twin_nodes.item(0))
+        window._on_entity_selected(window._codemap_entity_list.item(0))
         self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["action"], contract.ACTION_GET_ANCHOR)
-        self.assertEqual(sent[0]["task"]["node_id"], "behavior:calls:1")
+        self.assertEqual(sent[0]["action"], contract.ACTION_GET_CODE_MAP)
+        self.assertEqual(sent[0]["task"]["selector"], "app.service")
 
-    def test_anchor_loaded_opens_document_and_sets_reveal_line(self):
-        window = MainWindow()
-        sent = self._fake_send(window)
-        window._on_anchor_loaded(
-            {"available": True, "file": "app/service.py",
-             "source_range": {"lineno": 7}}
-        )
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["action"], contract.ACTION_GET_DOCUMENT)
-        self.assertEqual(sent[0]["path"], "app/service.py")
-        self.assertEqual(window._pending_reveal_line, 7)
-
-    def test_anchor_unavailable_does_not_open_document(self):
-        window = MainWindow()
-        sent = self._fake_send(window)
-        window._on_anchor_loaded({"available": False, "reason": "no_anchor"})
-        self.assertEqual(sent, [])
-        self.assertIn("failed", window.status_label.text())
-
-    def test_document_open_loads_twin_projection_for_python(self):
+    def test_document_open_loads_code_map_for_python(self):
         window = MainWindow()
         window._root = "/some/root"
         sent = self._fake_send(window)
         window._on_document_opened("app/main.py", _source_doc("app/main.py"))
         # Selection immediately sets Loading and issues a scoped sync first; the
-        # projection is fetched only after that sync succeeds.
+        # Code Map is fetched only after that sync succeeds.
         self.assertEqual(window._twin_chip.text(), "Loading")
-        self.assertEqual(window._twin_body.text(),
+        self.assertEqual(window._codemap_document.toPlainText(),
                          "Code Map synchronization is in progress.")
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
         self.assertEqual(sent[0]["task"]["changed_paths"], ["app/main.py"])
 
-    def test_document_open_skips_twin_projection_for_non_python(self):
+    def test_document_open_skips_code_map_for_non_python(self):
         window = MainWindow()
         window._root = "/some/root"
         sent = self._fake_send(window)
@@ -724,34 +806,34 @@ class TwinPaneTests(unittest.TestCase):
         )
         self.assertEqual(sent, [])
         self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertEqual(window._twin_nodes.count(), 0)
+        self.assertEqual(window._codemap_entity_list.count(), 0)
 
-    def test_selection_syncs_then_renders_projection(self):
+    def test_selection_syncs_then_renders_code_map(self):
         window = MainWindow()
         window._root = "/some/root"
         sent = self._chain_send(window)
         window._on_document_opened("app/main.py", _source_doc("app/main.py"))
         self.assertEqual([r["action"] for r in sent],
-                         [contract.ACTION_SYNC_TWIN, contract.ACTION_GET_TWIN])
+                         [contract.ACTION_SYNC_TWIN, contract.ACTION_GET_CODE_MAP])
         self.assertEqual(sent[0]["task"]["changed_paths"], ["app/main.py"])
-        self.assertEqual(sent[1]["task"]["selector"], "app/main.py")
+        self.assertEqual(sent[1]["task"], {})  # whole-document (no selector)
         self.assertEqual(window._twin_chip.text(), "Available")
-        self.assertIn("Method handle(request)", window._twin_body.text())
-        self.assertEqual(window._twin_nodes.count(), 2)
+        self.assertIn("Method handle(request)", window._codemap_document.toPlainText())
+        self.assertEqual(window._codemap_entity_list.count(), 2)
 
-    def test_no_change_sync_still_renders_projection(self):
+    def test_no_change_sync_still_renders_code_map(self):
         window = MainWindow()
         window._root = "/some/root"
         sent = self._chain_send(
             window, sync_result={"state": "no_change", "persisted": True, "counts": {}}
         )
         window._on_document_opened("app/main.py", _source_doc("app/main.py"))
-        # ``no_change`` is a successful sync: the projection is still fetched.
-        self.assertEqual([r["action"] for r in sent][1], contract.ACTION_GET_TWIN)
+        # ``no_change`` is a successful sync: the Code Map is still fetched.
+        self.assertEqual([r["action"] for r in sent][1], contract.ACTION_GET_CODE_MAP)
         self.assertEqual(window._twin_chip.text(), "Available")
-        self.assertIn("Method handle(request)", window._twin_body.text())
+        self.assertIn("Method handle(request)", window._codemap_document.toPlainText())
 
-    def test_pyi_selection_triggers_same_twin_chain(self):
+    def test_pyi_selection_triggers_same_code_map_chain(self):
         window = MainWindow()
         window._root = "/some/root"
         sent = self._fake_send(window)
@@ -760,39 +842,39 @@ class TwinPaneTests(unittest.TestCase):
         self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
         self.assertEqual(sent[0]["task"]["changed_paths"], ["app/stubs.pyi"])
 
-    def test_late_projection_for_previous_selection_is_discarded(self):
+    def test_late_code_map_for_previous_selection_is_discarded(self):
         window = MainWindow()
         window._root = "/some/root"
         self._fake_send(window)
         window._on_document_opened("app/main.py", _source_doc("app/main.py"))  # gen 1
         window._on_document_opened("app/service.py", _source_doc("app/service.py"))  # gen 2
-        # A late projection for generation 1 must not overwrite generation 2.
-        window._on_twin_projection_loaded(_sample_twin_bundle(), generation=1)
+        # A late Code Map for generation 1 must not overwrite generation 2.
+        window._on_code_map_loaded(_code_map_result(), generation=1, rel_path="app/main.py")
         self.assertEqual(window._twin_chip.text(), "Loading")
-        self.assertNotIn("Method handle", window._twin_body.text())
-        # A current-generation projection (2) does render.
-        window._on_twin_projection_loaded(_sample_twin_bundle(), generation=2)
+        self.assertNotIn("Method handle", window._codemap_document.toPlainText())
+        # A current-generation Code Map (2) does render.
+        window._on_code_map_loaded(_code_map_result(), generation=2, rel_path="app/service.py")
         self.assertEqual(window._twin_chip.text(), "Available")
-        self.assertIn("Method handle(request)", window._twin_body.text())
+        self.assertIn("Method handle(request)", window._codemap_document.toPlainText())
 
-    def test_late_scoped_sync_does_not_trigger_get_twin(self):
+    def test_late_scoped_sync_does_not_trigger_get_code_map(self):
         window = MainWindow()
         window._root = "/some/root"
         sent = self._fake_send(window)
         window._on_document_opened("app/main.py", _source_doc("app/main.py"))  # gen 1
         window._on_document_opened("app/service.py", _source_doc("app/service.py"))  # gen 2
-        before = len(sent)  # two scoped syncs, no get_twin yet
+        before = len(sent)  # two scoped syncs, no get_code_map yet
         window._on_selection_synced("app/main.py", 1,
                                     {"state": "synchronized", "counts": {}})
-        self.assertEqual(len(sent), before)  # stale generation: no get_twin
+        self.assertEqual(len(sent), before)  # stale generation: no get_code_map
 
-    def test_get_twin_failure_shows_bounded_state(self):
+    def test_get_code_map_failure_shows_bounded_state(self):
         window = MainWindow()
         window._root = "/some/root"
         self._chain_send(window, get_error="twin_not_found")
         window._on_document_opened("app/main.py", _source_doc("app/main.py"))
         self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertIn("twin_not_found", window._twin_body.text())
+        self.assertIn("twin_not_found", window._codemap_document.toPlainText())
         self.assertIn("failed", window.status_label.text())
 
     def test_sync_failure_shows_bounded_state(self):
@@ -803,9 +885,9 @@ class TwinPaneTests(unittest.TestCase):
         # Only the scoped sync was issued; its failure surfaces a bounded state.
         self.assertEqual([r["action"] for r in sent], [contract.ACTION_SYNC_TWIN])
         self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertIn("blocked", window._twin_body.text())
+        self.assertIn("blocked", window._codemap_document.toPlainText())
 
-    def test_scan_completed_refreshes_selected_twin(self):
+    def test_scan_completed_refreshes_selected_code_map(self):
         window = MainWindow()
         window._root = "/some/root"
         window._current_document = "app/main.py"
@@ -825,12 +907,13 @@ class TwinPaneTests(unittest.TestCase):
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class CodeMapPinTests(unittest.TestCase):
-    """P3.3 Code Map pane follow/pin (lock) and interactive behavior nodes.
+    """P3.4 Code Map pane follow/pin (lock) and entity-list navigation.
 
     The pane is renamed "Code Map", starts unlocked and auto-follows the active
-    supported source tab; a single monochrome lock pins the displayed projection
-    to its source path until unpinned. Anchorable behavior nodes render as
-    accessible, focusable buttons that navigate by their stored backend id.
+    supported source tab; a single monochrome lock pins the displayed Code Map
+    to its source path until unpinned. The compact entity list is plain ordered
+    text: selecting an entry scopes the document to that entity's nested
+    procedure.
     """
 
     def setUp(self):
@@ -846,7 +929,7 @@ class CodeMapPinTests(unittest.TestCase):
         window._send = fake_send
         return sent
 
-    def _chain_send(self, window, bundle=None):
+    def _chain_send(self, window, result=None):
         sent = []
 
         def fake_send(request, on_success, on_error):
@@ -854,43 +937,12 @@ class CodeMapPinTests(unittest.TestCase):
             action = request["action"]
             if action == contract.ACTION_SYNC_TWIN:
                 on_success({"state": "synchronized", "persisted": True, "counts": {}})
-            elif action == contract.ACTION_GET_TWIN:
-                on_success(bundle or _sample_twin_bundle())
+            elif action == contract.ACTION_GET_CODE_MAP:
+                on_success(result or _code_map_result())
             return True
 
         window._send = fake_send
         return sent
-
-    def _function_bundle(self):
-        return {
-            "projection": {
-                "kind": "module",
-                "path": "calculator.py",
-                "locator": "calculator",
-                "summary": "Calculator module",
-                "provenance": "verified",
-                "confidence": "high",
-                "sync_state": "synchronized",
-                "details": ["Function add(left: float, right: float) -> float"],
-                "limitations": [],
-            },
-            "behavior_nodes": [
-                {
-                    "id": "behavior:calculator:add:0",
-                    "category": "Function",
-                    "provenance": "verified",
-                    "confidence": "high",
-                    "items": ["add(left: float, right: float) -> float"],
-                },
-                {
-                    "id": "behavior:calculator:divide:0",
-                    "category": "Function",
-                    "provenance": "verified",
-                    "confidence": "high",
-                    "items": ["divide(left: float, right: float) -> float"],
-                },
-            ],
-        }
 
     # -- rename + lock control ------------------------------------------
 
@@ -898,7 +950,7 @@ class CodeMapPinTests(unittest.TestCase):
         window = MainWindow()
         self.assertEqual(window._twin_header_label.text(), "CODE MAP")
         self.assertEqual(window._twin_header_label.accessibleName(), "Code Map")
-        self.assertEqual(window._twin_body.accessibleName(), "Code Map content")
+        self.assertEqual(window._codemap_document.accessibleName(), "Code Map content")
 
     def test_single_non_emoji_lock_control(self):
         window = MainWindow()
@@ -921,7 +973,7 @@ class CodeMapPinTests(unittest.TestCase):
         self.assertFalse(window._twin_lock_button.isEnabled())
         self.assertIn("No supported source file", window._twin_lock_button.toolTip())
         window._root = "/some/root"
-        window._on_twin_projection_loaded(_sample_twin_bundle())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         self.assertTrue(window._twin_lock_button.isEnabled())
 
     # -- follow / pin / unpin -------------------------------------------
@@ -933,10 +985,10 @@ class CodeMapPinTests(unittest.TestCase):
         window._on_document_opened("calculator.py", _source_doc("calculator.py"))
         self.assertEqual(
             [r["action"] for r in sent],
-            [contract.ACTION_SYNC_TWIN, contract.ACTION_GET_TWIN],
+            [contract.ACTION_SYNC_TWIN, contract.ACTION_GET_CODE_MAP],
         )
         self.assertEqual(window._twin_chip.text(), "Available")
-        self.assertIn("Method handle(request)", window._twin_body.text())
+        self.assertIn("Method handle(request)", window._codemap_document.toPlainText())
 
     def test_switch_follows_new_selection(self):
         window = MainWindow()
@@ -949,25 +1001,25 @@ class CodeMapPinTests(unittest.TestCase):
         self.assertEqual(syncs[0]["task"]["changed_paths"], ["calculator.py"])
         self.assertEqual(syncs[1]["task"]["changed_paths"], ["helpers.py"])
 
-    def test_pin_retains_projection_across_switch(self):
+    def test_pin_retains_code_map_across_switch(self):
         window = MainWindow()
         window._root = "/some/root"
-        window._on_twin_projection_loaded(_sample_twin_bundle())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         window._twin_lock_button.click()  # pin to app/service.py
         self.assertTrue(window._twin_pinned)
         self.assertTrue(window._twin_lock_button.isChecked())
         self.assertEqual(window._twin_lock_button.accessibleName(), "Unpin Code Map")
-        body_before = window._twin_body.text()
+        doc_before = window._codemap_document.toPlainText()
         sent = self._fake_send(window)
         window._on_document_opened("other.py", _source_doc("other.py"))
         self.assertEqual(sent, [])
-        self.assertEqual(window._twin_body.text(), body_before)
+        self.assertEqual(window._codemap_document.toPlainText(), doc_before)
         self.assertEqual(window._active_twin_path, "app/service.py")
 
     def test_unlock_immediately_follows_active_tab(self):
         window = MainWindow()
         window._root = "/some/root"
-        window._on_twin_projection_loaded(_sample_twin_bundle())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         window._twin_lock_button.click()  # pin
         self._fake_send(window)
         window._on_document_opened("helpers.py", _source_doc("helpers.py"))
@@ -985,16 +1037,16 @@ class CodeMapPinTests(unittest.TestCase):
         window._on_document_opened("app/service.py", _source_doc("app/service.py"))
         self.assertEqual(window._twin_chip.text(), "Available")
         window._twin_lock_button.click()  # pin advances the generation
-        body_before = window._twin_body.text()
-        window._on_twin_projection_loaded(_sample_twin_bundle(), generation=1)
-        self.assertEqual(window._twin_body.text(), body_before)
+        doc_before = window._codemap_document.toPlainText()
+        window._on_code_map_loaded(_code_map_result(), generation=1, rel_path="app/service.py")
+        self.assertEqual(window._codemap_document.toPlainText(), doc_before)
 
     def test_pinned_survives_unsupported_switch(self):
         window = MainWindow()
         window._root = "/some/root"
-        window._on_twin_projection_loaded(_sample_twin_bundle())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         window._twin_lock_button.click()
-        body_before = window._twin_body.text()
+        doc_before = window._codemap_document.toPlainText()
         sent = self._fake_send(window)
         window._on_document_opened(
             "notes.txt",
@@ -1007,149 +1059,75 @@ class CodeMapPinTests(unittest.TestCase):
             },
         )
         self.assertEqual(sent, [])
-        self.assertEqual(window._twin_body.text(), body_before)
+        self.assertEqual(window._codemap_document.toPlainText(), doc_before)
         self.assertTrue(window._twin_lock_button.isChecked())
 
-    # -- interactive behavior nodes -------------------------------------
+    # -- entity list navigation + evidence -------------------------------
 
-    def test_behavior_nodes_are_interactive_controls(self):
+    def test_entity_list_items_are_plain_ordered_items(self):
         window = MainWindow()
-        window._on_twin_projection_loaded(self._function_bundle())
-        self.assertEqual(window._twin_nodes.count(), 2)
-        for i in range(2):
-            item = window._twin_nodes.item(i)
-            button = window._twin_nodes.itemWidget(item)
-            self.assertIsInstance(button, QPushButton)
-            self.assertNotIsInstance(button, QLabel)
-            self.assertTrue(button.accessibleName().startswith("Navigate to Function"))
-            self.assertTrue(button.toolTip().startswith("Reveal source for Function"))
-            self.assertEqual(button.focusPolicy(), Qt.StrongFocus)
-
-    def test_divide_sends_get_anchor_with_stored_id(self):
-        window = MainWindow()
-        window._on_twin_projection_loaded(self._function_bundle())
-        divide_button = window._twin_nodes.itemWidget(window._twin_nodes.item(1))
-        self.assertEqual(divide_button._node_id, "behavior:calculator:divide:0")
-        sent = []
-
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            return True
-
-        window._send = fake_send
-        divide_button.click()
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["action"], contract.ACTION_GET_ANCHOR)
-        self.assertEqual(sent[0]["task"]["node_id"], "behavior:calculator:divide:0")
-
-    def test_valid_anchor_opens_document_and_sets_reveal_line(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        window._on_twin_projection_loaded(self._function_bundle())
-        divide_button = window._twin_nodes.itemWidget(window._twin_nodes.item(1))
-        sent = []
-
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            if request["action"] == contract.ACTION_GET_ANCHOR:
-                on_success(
-                    {
-                        "available": True,
-                        "file": "calculator.py",
-                        "source_range": {"lineno": 7},
-                    }
-                )
-            return True
-
-        window._send = fake_send
-        divide_button.click()
-        self.assertEqual(
-            [r["action"] for r in sent],
-            [contract.ACTION_GET_ANCHOR, contract.ACTION_GET_DOCUMENT],
+        window._on_code_map_loaded(_function_code_map_result(), rel_path="calculator.py")
+        self.assertEqual(window._codemap_entity_list.count(), 3)
+        expected = (
+            ("module: calculator — Module calculator", "calculator"),
+            ("function: calculator.add — Function add(left: float, right: float) -> float",
+             "calculator.add"),
+            ("function: calculator.divide — Function divide(left: float, right: float) -> float",
+             "calculator.divide"),
         )
-        self.assertEqual(sent[1]["path"], "calculator.py")
-        self.assertEqual(window._pending_reveal_line, 7)
+        for i, (label, locator) in enumerate(expected):
+            item = window._codemap_entity_list.item(i)
+            self.assertEqual(item.text(), label)
+            self.assertEqual(item.data(Qt.UserRole), locator)
+            # Plain ordered items, not interactive buttons.
+            self.assertIsNone(window._codemap_entity_list.itemWidget(item))
 
-    def test_behavior_node_mouse_and_keyboard_activation(self):
+    def test_divide_selection_sends_scoped_get_code_map(self):
         window = MainWindow()
-        window._on_twin_projection_loaded(self._function_bundle())
-        divide_button = window._twin_nodes.itemWidget(window._twin_nodes.item(1))
-        sent = []
+        window._on_code_map_loaded(_function_code_map_result(), rel_path="calculator.py")
+        sent = self._fake_send(window)
+        window._on_entity_selected(window._codemap_entity_list.item(2))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_GET_CODE_MAP)
+        self.assertEqual(sent[0]["task"]["selector"], "calculator.divide")
 
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            return True
-
-        window._send = fake_send
-
-        divide_button.click()
-        self.assertEqual(sent[-1]["task"]["node_id"], "behavior:calculator:divide:0")
-
-        QTest.keyClick(divide_button, Qt.Key_Space)
-        self.assertEqual(sent[-1]["task"]["node_id"], "behavior:calculator:divide:0")
-
-        QTest.keyClick(divide_button, Qt.Key_Enter)
-        self.assertEqual(sent[-1]["task"]["node_id"], "behavior:calculator:divide:0")
-
-        self.assertEqual(len(sent), 3)
-
-    def test_missing_anchor_does_not_move_and_preserves_projection(self):
+    def test_details_toggle_shows_and_hides_evidence(self):
         window = MainWindow()
-        window._on_twin_projection_loaded(self._function_bundle())
-        body_before = window._twin_body.text()
-        sent = []
+        window._on_code_map_loaded(_function_code_map_result(), rel_path="calculator.py")
+        self.assertTrue(window._codemap_details_button.isCheckable())
+        self.assertEqual(window._codemap_details_button.accessibleName(),
+                         "Show Code Map evidence")
+        self.assertFalse(window._codemap_details.isVisibleTo(window._twin_panel))
+        window._codemap_details_button.click()
+        self.assertTrue(window._codemap_details.isVisibleTo(window._twin_panel))
+        self.assertEqual(window._codemap_details_button.accessibleName(),
+                         "Hide Code Map evidence")
+        window._codemap_details_button.click()
+        self.assertFalse(window._codemap_details.isVisibleTo(window._twin_panel))
+        self.assertEqual(window._codemap_details_button.accessibleName(),
+                         "Show Code Map evidence")
 
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            return True
-
-        window._send = fake_send
-        window._on_anchor_loaded({"available": False, "reason": "no_anchor"})
-        self.assertEqual(sent, [])
-        self.assertEqual(window._twin_body.text(), body_before)
-        self.assertIn("failed", window.status_label.text())
-
-    def test_projection_details_are_non_clickable_text(self):
+    def test_evidence_renders_block_metadata(self):
         window = MainWindow()
-        window._on_twin_projection_loaded(self._function_bundle())
-        self.assertIsInstance(window._twin_body, QLabel)
-        self.assertIn("Details:", window._twin_body.text())
-        self.assertIn("Function add", window._twin_body.text())
-        self.assertEqual(window._twin_nodes.count(), 2)
-        for i in range(window._twin_nodes.count()):
-            self.assertIsInstance(
-                window._twin_nodes.itemWidget(window._twin_nodes.item(i)), QPushButton
-            )
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
+        window._codemap_details_button.click()
+        evidence = window._codemap_details.toPlainText()
+        self.assertIn("Entity — codemap:app.service:entity:0", evidence)
+        self.assertIn("source: app/service.py:1", evidence)
+        self.assertIn("provenance: verified", evidence)
+        self.assertIn("confidence: high", evidence)
+        self.assertIn("state: current", evidence)
+        self.assertIn("editability: replace_description", evidence)
 
-
-def _draft_bundle() -> dict:
-    """A Twin projection bundle carrying an ``artifact_id`` so the edit action
-    is enabled, plus one behavior node target."""
-    bundle = _sample_twin_bundle()
-    bundle["projection"]["artifact_id"] = "artifact:app.service.Service.handle"
-    return bundle
-
-
-def _code_map_result() -> dict:
-    """A bounded ``get_code_map`` result with a field schema and no saved draft."""
-    return {
-        "field_schema": {
-            "editable_fields": {"purpose": "single", "workflow_steps": "list"},
-            "artifact_fields": ["purpose", "dependencies", "invariants", "limitations"],
-            "behavior_fields": ["purpose", "workflow_steps", "conditions", "inputs_outputs",
-                                "exception_handling", "side_effects", "dependencies",
-                                "invariants", "limitations"],
-            "read_only_fields": ["id", "path", "locator", "provenance", "confidence"],
-        },
-        "baseline": {
-            "workspace_id": "ws-1",
-            "baseline_revision": "abc123",
-            "scan_generation": 1,
-            "sync_state": "synchronized",
-        },
-        "draft": None,
-        "conflict": {"state": "none", "reason": None},
-    }
+    def test_document_and_details_are_read_only_text(self):
+        window = MainWindow()
+        window._on_code_map_loaded(_function_code_map_result(), rel_path="calculator.py")
+        self.assertIsInstance(window._codemap_document, QPlainTextEdit)
+        self.assertTrue(window._codemap_document.isReadOnly())
+        self.assertIsInstance(window._codemap_details, QPlainTextEdit)
+        self.assertTrue(window._codemap_details.isReadOnly())
+        self.assertIn("Function add", window._codemap_document.toPlainText())
+        self.assertEqual(window._codemap_entity_list.count(), 3)
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
@@ -1158,10 +1136,15 @@ class CodeMapDraftTests(unittest.TestCase):
 
     These tests drive the presentation half only: they feed a bounded
     ``get_code_map`` result and a fake ``_send``, then assert the edit surface
-    renders read-only facts and structured controls and issues the seven draft
-    actions through the boundary. No Twin store, draft persistence, source
+    renders read-only facts, exposes only typed-editable blocks as one-line
+    editors (purpose text, decision condition), offers draft-only Add note /
+    Add step structure controls, and issues the seven draft actions through the
+    boundary as *typed operations*. No Twin store, draft persistence, source
     mutation or network is exercised.
     """
+
+    PURPOSE_ID = "codemap:app.service.Service.handle:purpose:1"
+    DECISION_ID = "codemap:app.service.Service.handle:decision:2"
 
     def setUp(self):
         _app()
@@ -1177,45 +1160,43 @@ class CodeMapDraftTests(unittest.TestCase):
         return sent
 
     def _loaded_edit_surface(self):
-        """A window with a projectable artifact loaded, edit mode entered, and a
+        """A window with a Code Map loaded, edit mode entered, and a scoped
         ``get_code_map`` result rendered. Returns ``(window, sent)``."""
         window = MainWindow()
         window._root = "/some/root"
-        window._on_twin_projection_loaded(_draft_bundle())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         sent = self._fake_send(window)
         window._edit_button.click()  # enter edit mode -> get_code_map
-        window._on_code_map_loaded(_code_map_result())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         return window, sent
 
     # -- edit action enablement + surface ----------------------------------
 
-    def test_edit_button_disabled_without_projectable_artifact(self):
+    def test_edit_button_disabled_without_active_code_map(self):
         window = MainWindow()
-        self.assertFalse(window._edit_button.isEnabled())
-        # A projection without an artifact_id leaves the action disabled.
-        window._on_twin_projection_loaded(_sample_twin_bundle())
         self.assertFalse(window._edit_button.isEnabled())
 
-    def test_edit_button_enabled_with_projectable_artifact(self):
+    def test_edit_button_enabled_with_code_map(self):
         window = MainWindow()
-        window._on_twin_projection_loaded(_draft_bundle())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         self.assertTrue(window._edit_button.isEnabled())
         self.assertEqual(window._edit_button.objectName(), "editCodeMapButton")
 
-    def test_enter_edit_mode_requests_code_map_and_switches_page(self):
+    def test_enter_edit_mode_requests_scoped_code_map_and_switches_page(self):
         window = MainWindow()
         window._root = "/some/root"
-        window._on_twin_projection_loaded(_draft_bundle())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         sent = self._fake_send(window)
         window._edit_button.click()
         self.assertEqual([r["action"] for r in sent], [contract.ACTION_GET_CODE_MAP])
+        self.assertEqual(sent[0]["task"]["selector"], "app.service.Service.handle")
         self.assertEqual(window._twin_stack.currentIndex(), 1)
         self.assertTrue(window._edit_mode)
 
     def test_exit_edit_mode_returns_to_readonly(self):
         window = MainWindow()
         window._root = "/some/root"
-        window._on_twin_projection_loaded(_draft_bundle())
+        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
         self._fake_send(window)
         window._edit_button.click()
         self.assertEqual(window._twin_stack.currentIndex(), 1)
@@ -1237,54 +1218,101 @@ class CodeMapDraftTests(unittest.TestCase):
     def test_read_only_facts_are_a_label_not_editable(self):
         window, _ = self._loaded_edit_surface()
         self.assertIsInstance(window._draft_facts, QLabel)
+        self.assertEqual(window._draft_facts.accessibleName(), "Read-only facts")
         text = window._draft_facts.text()
-        self.assertIn("Path: app/service.py", text)
-        self.assertIn("Locator: app.service.Service.handle", text)
-        self.assertIn("Provenance: verified", text)
+        self.assertIn("Scope: app.service.Service.handle", text)
+        self.assertIn("Baseline revision: abc123", text)
 
-    def test_controls_cover_artifact_and_behavior_targets(self):
+    def test_controls_cover_only_typed_editable_blocks(self):
         window, _ = self._loaded_edit_surface()
-        # One section per target: the artifact plus two behavior nodes.
-        self.assertEqual(len(window._draft_controls), 4 + 2 * 9)
+        # Verified facts are not editable: only purpose and decision rows exist.
+        self.assertEqual(len(window._draft_controls), 2)
+        self.assertIn(self.PURPOSE_ID, window._draft_controls)
+        self.assertIn(self.DECISION_ID, window._draft_controls)
 
-    def test_single_field_uses_line_edit_and_list_uses_multiline(self):
+    def test_purpose_and_condition_are_one_line_editors(self):
         window, _ = self._loaded_edit_surface()
-        artifact_purpose = window._draft_controls[("artifact:app.service.Service.handle", "purpose")]
-        artifact_invariants = window._draft_controls[("artifact:app.service.Service.handle", "invariants")]
-        self.assertIsInstance(artifact_purpose, QLineEdit)
-        self.assertIsInstance(artifact_invariants, QPlainTextEdit)
+        purpose = window._draft_controls[self.PURPOSE_ID]
+        condition = window._draft_controls[self.DECISION_ID]
+        self.assertIsInstance(purpose, QLineEdit)
+        self.assertIsInstance(condition, QLineEdit)
+        self.assertEqual(purpose.text(), "Handles a request")
+        self.assertEqual(condition.text(), "request is valid")
+        self.assertEqual(purpose.accessibleName(), "purpose editor")
+        self.assertEqual(condition.accessibleName(), "condition editor")
+        # Each row carries a checkable Mark unresolved toggle.
+        self.assertTrue(window._draft_unresolved[self.PURPOSE_ID].isCheckable())
+        self.assertTrue(window._draft_unresolved[self.DECISION_ID].isCheckable())
+
+    def test_add_note_and_step_inputs_are_present(self):
+        window, _ = self._loaded_edit_surface()
+        self.assertEqual(window._note_input.accessibleName(), "Add note text")
+        self.assertEqual(window._step_input.accessibleName(), "Add step text")
+        self.assertIsInstance(window._note_input, QLineEdit)
+        self.assertIsInstance(window._step_input, QLineEdit)
 
     # -- save / dirty lifecycle -------------------------------------------
 
-    def test_typing_marks_dirty_and_save_collects_edits(self):
+    def test_typing_marks_dirty_and_save_collects_operations(self):
         window, sent = self._loaded_edit_surface()
-        purpose = window._draft_controls[("artifact:app.service.Service.handle", "purpose")]
+        purpose = window._draft_controls[self.PURPOSE_ID]
         purpose.setText("  A service handler  ")
         self.assertTrue(window._draft_dirty)
         window.save_draft_button.click()
         self.assertEqual(sent[-1]["action"], contract.ACTION_SAVE_DRAFT)
-        edits = sent[-1]["task"]["edits"]
-        self.assertEqual(len(edits), 1)
-        self.assertEqual(edits[0]["target_id"], "artifact:app.service.Service.handle")
-        self.assertEqual(edits[0]["field"], "purpose")
-        self.assertEqual(edits[0]["proposed"], "A service handler")
+        operations = sent[-1]["task"]["operations"]
+        self.assertEqual(len(operations), 1)
+        self.assertEqual(operations[0]["op"], "replace_description")
+        self.assertEqual(operations[0]["target_block_id"], self.PURPOSE_ID)
+        self.assertEqual(operations[0]["proposed_text"], "A service handler")
 
-    def test_save_success_shows_changes_and_clears_dirty(self):
+    def test_add_note_step_and_mark_unresolved_collect_typed_operations(self):
+        window, sent = self._loaded_edit_surface()
+        window._note_input.setText("Review this handler")
+        window._step_input.setText("   result = total   ")
+        window._draft_unresolved[self.DECISION_ID].setChecked(True)
+        self.assertTrue(window._draft_dirty)
+        window.save_draft_button.click()
+        operations = sent[-1]["task"]["operations"]
+        self.assertEqual(len(operations), 3)
+        note_op = next(
+            o for o in operations
+            if o["op"] == "insert_block" and o["block_type"] == "note"
+        )
+        self.assertEqual(note_op["owning_entity_id"], "app.service.Service.handle")
+        self.assertEqual(note_op["proposed_text"], "Review this handler")
+        step_op = next(
+            o for o in operations
+            if o["op"] == "insert_block" and o["block_type"] == "step"
+        )
+        self.assertEqual(step_op["proposed_payload"], {"operation": "assign"})
+        self.assertEqual(step_op["proposed_text"], "result = total")
+        unresolved_op = next(o for o in operations if o["op"] == "mark_unresolved")
+        self.assertEqual(unresolved_op["target_block_id"], self.DECISION_ID)
+        self.assertEqual(unresolved_op["reason"], "review")
+
+    def test_save_success_shows_operations_and_clears_dirty(self):
         window, _ = self._loaded_edit_surface()
         window._draft_dirty = True
         window._on_draft_saved(
             {
                 "draft": {
-                    "changes": [
-                        {"target_id": "artifact:app.service.Service.handle",
-                         "field": "purpose", "proposed": "A service handler"},
+                    "operations": [
+                        {
+                            "op": "replace_description",
+                            "target_block_id": self.PURPOSE_ID,
+                            "intent_class": "documentation_intent",
+                            "proposed": {"display_text": "A service handler"},
+                        }
                     ]
                 },
                 "persisted": True,
             }
         )
         self.assertFalse(window._draft_dirty)
-        self.assertIn("Purpose: A service handler", window._draft_result.toPlainText())
+        text = window._draft_result.toPlainText()
+        self.assertIn("Replace description — ", text)
+        self.assertIn("A service handler", text)
 
     # -- lifecycle actions -------------------------------------------------
 
@@ -1313,28 +1341,41 @@ class CodeMapDraftTests(unittest.TestCase):
             {
                 "no_change": False,
                 "intent_delta": {
-                    "intent": "user_authored",
-                    "targets": [{"target_id": "artifact:app.service.Service.handle"}],
-                    "affected_sources": ["artifact:app.service.Service.handle"],
-                    "affected_behavior_nodes": [],
-                    "acceptance_criteria": [],
-                    "constraints": [],
+                    "intent": "documentation_intent",
+                    "entries": [
+                        {
+                            "operation": "replace_description",
+                            "owning_entity_id": "app.service.Service.handle",
+                            "required_approval_level": "human",
+                        }
+                    ],
                 },
             }
         )
         text = window._draft_result.toPlainText()
         self.assertIn("Executable: false", text)
+        self.assertIn("Intent: documentation_intent", text)
+        self.assertIn("Replace description on app.service.Service.handle", text)
 
     def test_compare_conflict_is_surfaced(self):
         window, _ = self._loaded_edit_surface()
         window._on_draft_compared(
             {
                 "draft_id": "draft:1",
-                "changes": [{"field": "purpose", "proposed": "Changed"}],
+                "operations": [
+                    {
+                        "op": "replace_description",
+                        "target_block_id": self.PURPOSE_ID,
+                        "intent_class": "documentation_intent",
+                        "proposed": {"display_text": "Changed"},
+                    }
+                ],
                 "conflict": {"state": "stale", "reason": "baseline moved"},
             }
         )
-        self.assertIn("Conflict", window._draft_result.toPlainText())
+        text = window._draft_result.toPlainText()
+        self.assertIn("Conflict", text)
+        self.assertIn("baseline moved", text)
 
     def test_draft_error_shows_bounded_reason(self):
         window, _ = self._loaded_edit_surface()
@@ -1346,7 +1387,7 @@ class CodeMapDraftTests(unittest.TestCase):
 
     def test_dirty_leave_save_routes_to_save_then_exit(self):
         window, sent = self._loaded_edit_surface()
-        purpose = window._draft_controls[("artifact:app.service.Service.handle", "purpose")]
+        purpose = window._draft_controls[self.PURPOSE_ID]
         purpose.setText("A service handler")
         self.assertTrue(window._draft_dirty)
         with mock.patch.object(window, "_prompt_dirty_leave", return_value="save"):
@@ -1354,7 +1395,7 @@ class CodeMapDraftTests(unittest.TestCase):
         self.assertEqual(sent[-1]["action"], contract.ACTION_SAVE_DRAFT)
         # Leaving is deferred until the save completes.
         self.assertTrue(window._edit_mode)
-        window._on_draft_saved({"draft": {"changes": []}, "persisted": True})
+        window._on_draft_saved({"draft": {"operations": []}, "persisted": True})
         self.assertFalse(window._edit_mode)
         self.assertEqual(window._twin_stack.currentIndex(), 0)
 

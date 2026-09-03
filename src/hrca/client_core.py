@@ -441,108 +441,95 @@ def format_twin_sync(result: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# -- Editable Code Map / Twin Draft client vocabulary (P3.4) -------------
+# -- Code Map Procedural Language client vocabulary (P3.4) ---------------
 #
-# The editable interpretation fields and their cardinality are held here as
-# literals so the client never imports the Twin Draft domain (which it must not
-# import). Cardinality is one of ``single`` (one line of prose) or ``list`` (an
-# ordered list of items rendered one per line).
+# The procedural block types, typed draft operations and intent classes are
+# held here as literals so the client never imports the Code Map or Code Map
+# Draft domain (which it must not import). Each label is a bounded, fixed
+# presentation string; unknown values fall back to their raw token.
 
-DRAFT_SINGLE = "single"
-DRAFT_LIST = "list"
-
-FIELD_PURPOSE = "purpose"
-FIELD_WORKFLOW_STEPS = "workflow_steps"
-FIELD_CONDITIONS = "conditions"
-FIELD_INPUTS_OUTPUTS = "inputs_outputs"
-FIELD_EXCEPTION_HANDLING = "exception_handling"
-FIELD_SIDE_EFFECTS = "side_effects"
-FIELD_DEPENDENCIES = "dependencies"
-FIELD_INVARIANTS = "invariants"
-FIELD_LIMITATIONS = "limitations"
-
-FIELD_LABELS = {
-    FIELD_PURPOSE: "Purpose",
-    FIELD_WORKFLOW_STEPS: "Workflow steps",
-    FIELD_CONDITIONS: "Conditions",
-    FIELD_INPUTS_OUTPUTS: "Inputs and outputs",
-    FIELD_EXCEPTION_HANDLING: "Exception handling",
-    FIELD_SIDE_EFFECTS: "Known side effects",
-    FIELD_DEPENDENCIES: "Dependencies",
-    FIELD_INVARIANTS: "Explicit invariants",
-    FIELD_LIMITATIONS: "Limitations",
+BLOCK_TYPE_LABELS = {
+    "entity": "Entity",
+    "purpose": "Purpose",
+    "input": "Inputs",
+    "step": "Step",
+    "decision": "Decision",
+    "loop": "Loop",
+    "call": "Call",
+    "exception": "Exception",
+    "return": "Return",
+    "side_effect": "Side effect",
+    "dependency": "Dependency",
+    "invariant": "Invariant",
+    "limitation": "Limitation",
+    "note": "Note",
 }
 
-FIELD_CARDINALITY = {
-    FIELD_PURPOSE: DRAFT_SINGLE,
-    FIELD_WORKFLOW_STEPS: DRAFT_LIST,
-    FIELD_CONDITIONS: DRAFT_LIST,
-    FIELD_INPUTS_OUTPUTS: DRAFT_LIST,
-    FIELD_EXCEPTION_HANDLING: DRAFT_LIST,
-    FIELD_SIDE_EFFECTS: DRAFT_LIST,
-    FIELD_DEPENDENCIES: DRAFT_LIST,
-    FIELD_INVARIANTS: DRAFT_LIST,
-    FIELD_LIMITATIONS: DRAFT_LIST,
+OPERATION_LABELS = {
+    "replace_description": "Replace description",
+    "insert_block": "Insert block",
+    "delete_draft_block": "Delete draft block",
+    "move_draft_block": "Move draft block",
+    "replace_condition_intent": "Replace condition intent",
+    "mark_unresolved": "Mark unresolved",
+    "restore_block": "Restore block",
 }
 
-# Field order for the structured edit controls: artifact targets own the
-# file/module and symbol-level interpretation; behavior targets own the
-# workflow-level interpretation.
-ARTIFACT_FIELDS = (
-    FIELD_PURPOSE,
-    FIELD_DEPENDENCIES,
-    FIELD_INVARIANTS,
-    FIELD_LIMITATIONS,
-)
-BEHAVIOR_FIELDS = (
-    FIELD_PURPOSE,
-    FIELD_WORKFLOW_STEPS,
-    FIELD_CONDITIONS,
-    FIELD_INPUTS_OUTPUTS,
-    FIELD_EXCEPTION_HANDLING,
-    FIELD_SIDE_EFFECTS,
-    FIELD_DEPENDENCIES,
-    FIELD_INVARIANTS,
-    FIELD_LIMITATIONS,
-)
+INTENT_CLASS_LABELS = {
+    "documentation_intent": "Documentation",
+    "behavior_change_intent": "Behavior change",
+}
 
 
-def field_label(field: str) -> str:
-    """Return the human label for an editable interpretation ``field``."""
-    return FIELD_LABELS.get(field, field)
+def block_type_label(block_type: str) -> str:
+    """Return the human label for a Code Map ``block_type``."""
+    return BLOCK_TYPE_LABELS.get(block_type, block_type)
 
 
-def field_cardinality(field: str) -> Optional[str]:
-    """Return ``single`` / ``list`` for ``field``, or ``None`` when unknown."""
-    return FIELD_CARDINALITY.get(field)
+def operation_label(op: str) -> str:
+    """Return the human label for a typed draft ``op``."""
+    return OPERATION_LABELS.get(op, op)
 
 
-def draft_edit(target_id: str, field: str, proposed: Any) -> Dict[str, Any]:
-    """Return one canonical ``{target_id, field, proposed}`` edit mapping."""
-    return {"target_id": target_id, "field": field, "proposed": proposed}
+def intent_class_label(intent_class: str) -> str:
+    """Return the human label for a draft ``intent_class``."""
+    return INTENT_CLASS_LABELS.get(intent_class, intent_class)
 
 
-def build_get_code_map_request(correlation_id: str) -> Dict[str, Any]:
-    """Build a ``get_code_map`` request for the editable Code Map baseline."""
+def build_get_code_map_request(
+    correlation_id: str, selector: Optional[str] = None
+) -> Dict[str, Any]:
+    """Build a ``get_code_map`` request for the procedural Code Map.
+
+    ``selector`` optionally scopes the document to one entity locator
+    (``module.path.Class.method``); when omitted the whole module-level
+    document is returned.
+    """
+    task: Dict[str, Any] = {}
+    if selector is not None:
+        task["selector"] = selector
     return {
         "contract_version": contract.CONTRACT_VERSION,
         "correlation_id": correlation_id,
         "action": contract.ACTION_GET_CODE_MAP,
+        "task": task,
     }
 
 
-def build_save_draft_request(correlation_id: str, edits: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build a ``save_draft`` request carrying the ordered ``edits`` list."""
+def build_save_draft_request(
+    correlation_id: str, operations: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Build a ``save_draft`` request carrying the ordered typed ``operations``."""
     return {
         "contract_version": contract.CONTRACT_VERSION,
         "correlation_id": correlation_id,
         "action": contract.ACTION_SAVE_DRAFT,
-        "task": {"edits": list(edits)},
+        "task": {"operations": list(operations)},
     }
 
 
 def build_get_draft_request(correlation_id: str) -> Dict[str, Any]:
-    """Build a ``get_draft`` request for the saved Twin Draft."""
+    """Build a ``get_draft`` request for the saved Code Map Draft."""
     return {
         "contract_version": contract.CONTRACT_VERSION,
         "correlation_id": correlation_id,
@@ -569,7 +556,7 @@ def build_reset_draft_request(correlation_id: str) -> Dict[str, Any]:
 
 
 def build_compare_draft_request(correlation_id: str) -> Dict[str, Any]:
-    """Build a ``compare_draft`` request (draft field changes vs baseline)."""
+    """Build a ``compare_draft`` request (draft operations vs baseline)."""
     return {
         "contract_version": contract.CONTRACT_VERSION,
         "correlation_id": correlation_id,
@@ -586,76 +573,69 @@ def build_generate_intent_delta_request(correlation_id: str) -> Dict[str, Any]:
     }
 
 
-def format_draft_facts(projection: Dict[str, Any]) -> str:
-    """Render the read-only facts of a projection as deterministic plain text.
+def format_procedural_document(document: Any) -> str:
+    """Return the procedural Code Map document text (rendered by the boundary).
 
-    These facts are never editable; the edit surface shows them so the user can
-    see which source artifact a draft targets without the draft ever carrying
-    them as editable fields.
+    The boundary already renders the ordered procedural document as plain text;
+    this returns it verbatim (empty when absent) so the client never reformats
+    source-grounded wording.
     """
+    if not document:
+        return ""
+    return str(document)
+
+
+def format_entity_list(entities: List[Dict[str, Any]]) -> str:
+    """Render the compact ordered entity list as deterministic plain text."""
+    if not entities:
+        return "No entities."
     lines: List[str] = []
-    if projection.get("path"):
-        lines.append(f"Path: {projection['path']}")
-    if projection.get("locator"):
-        lines.append(f"Locator: {projection['locator']}")
-    lines.append(f"Kind: {projection.get('kind', 'unknown')}")
-    lines.append(f"Provenance: {projection.get('provenance', 'unknown')}")
-    lines.append(f"Confidence: {projection.get('confidence', 'unknown')}")
-    lines.append(f"Sync state: {projection.get('sync_state', 'unknown')}")
+    for entity in entities:
+        kind = str(entity.get("kind", "unknown"))
+        locator = str(entity.get("locator", "?"))
+        subject = entity.get("subject")
+        if subject:
+            lines.append(f"{kind}: {locator} — {subject}")
+        else:
+            lines.append(f"{kind}: {locator}")
     return "\n".join(lines)
 
 
-def format_draft_changes(changes: List[Dict[str, Any]]) -> str:
-    """Render a draft's field-level ``changes`` as deterministic plain text."""
-    if not changes:
-        return "No changes."
+def format_draft_operations(operations: List[Dict[str, Any]]) -> str:
+    """Render a draft's typed ``operations`` as deterministic plain text."""
+    if not operations:
+        return "No operations."
     lines: List[str] = []
-    for change in changes:
-        label = field_label(change.get("field"))
-        proposed = change.get("proposed")
-        if isinstance(proposed, list):
-            lines.append(f"{label}:")
-            if proposed:
-                for item in proposed:
-                    lines.append(f"  - {item}")
-            else:
-                lines.append("  - (cleared)")
-        elif proposed:
-            lines.append(f"{label}: {proposed}")
-        else:
-            lines.append(f"{label}: (cleared)")
+    for op in operations:
+        label = operation_label(str(op.get("op", "unknown")))
+        target = str(op.get("target_block_id", "?"))
+        intent = intent_class_label(str(op.get("intent_class", "unknown")))
+        proposed = op.get("proposed") or {}
+        text = proposed.get("display_text") or proposed.get("payload")
+        entry = f"{label} — {target} ({intent})"
+        if text:
+            entry += f": {text}"
+        lines.append(entry)
     return "\n".join(lines)
 
 
 def format_intent_delta(intent_delta: Dict[str, Any]) -> str:
-    """Render a non-executable Intent Delta as deterministic plain text."""
+    """Render a non-executable Intent Delta as deterministic plain text.
+
+    Each normalized entry is one line; only explicitly proposed outcomes are
+    shown — no fabricated implementation requirements.
+    """
     lines: List[str] = [
         "Intent Delta (not executable)",
         f"Intent: {intent_delta.get('intent', 'unknown')}",
         "Executable: false",
-        f"Targets: {len(intent_delta.get('targets', []))}",
+        f"Entries: {len(intent_delta.get('entries', []))}",
     ]
-    affected_sources = intent_delta.get("affected_sources") or []
-    if affected_sources:
-        lines.append(f"Affected sources: {', '.join(affected_sources)}")
-    affected_nodes = intent_delta.get("affected_behavior_nodes") or []
-    if affected_nodes:
-        lines.append(f"Affected behavior nodes: {', '.join(affected_nodes)}")
-    criteria = intent_delta.get("acceptance_criteria") or []
-    if criteria:
-        lines.append("Acceptance criteria:")
-        for criterion in criteria:
-            lines.append(f"  - {criterion}")
-    constraints = intent_delta.get("constraints") or []
-    if constraints:
-        lines.append("Constraints:")
-        for constraint in constraints:
-            lines.append(f"  - {constraint}")
-    unresolved = intent_delta.get("unresolved") or []
-    if unresolved:
-        lines.append("Unresolved:")
-        for item in unresolved:
-            lines.append(f"  - {item}")
+    for entry in intent_delta.get("entries") or []:
+        op = operation_label(str(entry.get("operation", "unknown")))
+        entity = str(entry.get("owning_entity_id", "?"))
+        approval = str(entry.get("required_approval_level", "unknown"))
+        lines.append(f"  - {op} on {entity} (approval: {approval})")
     return "\n".join(lines)
 
 
@@ -697,24 +677,12 @@ __all__ = [
     "behavior_node_label",
     "format_twin_projection",
     "format_twin_sync",
-    "DRAFT_SINGLE",
-    "DRAFT_LIST",
-    "FIELD_PURPOSE",
-    "FIELD_WORKFLOW_STEPS",
-    "FIELD_CONDITIONS",
-    "FIELD_INPUTS_OUTPUTS",
-    "FIELD_EXCEPTION_HANDLING",
-    "FIELD_SIDE_EFFECTS",
-    "FIELD_DEPENDENCIES",
-    "FIELD_INVARIANTS",
-    "FIELD_LIMITATIONS",
-    "FIELD_LABELS",
-    "FIELD_CARDINALITY",
-    "ARTIFACT_FIELDS",
-    "BEHAVIOR_FIELDS",
-    "field_label",
-    "field_cardinality",
-    "draft_edit",
+    "BLOCK_TYPE_LABELS",
+    "OPERATION_LABELS",
+    "INTENT_CLASS_LABELS",
+    "block_type_label",
+    "operation_label",
+    "intent_class_label",
     "build_get_code_map_request",
     "build_save_draft_request",
     "build_get_draft_request",
@@ -722,8 +690,9 @@ __all__ = [
     "build_reset_draft_request",
     "build_compare_draft_request",
     "build_generate_intent_delta_request",
-    "format_draft_facts",
-    "format_draft_changes",
+    "format_procedural_document",
+    "format_entity_list",
+    "format_draft_operations",
     "format_intent_delta",
     "default_fixture_root",
     "resolve_backend_command",

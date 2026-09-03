@@ -98,12 +98,6 @@ from PySide6.QtWidgets import (
 
 from . import contract, style
 from .client_core import (
-    ARTIFACT_FIELDS,
-    BEHAVIOR_FIELDS,
-    DRAFT_LIST,
-    DRAFT_SINGLE,
-    FIELD_CARDINALITY,
-    FIELD_LABELS,
     PROVIDER_UNAVAILABLE,
     REPOSITORY_UNVERIFIED,
     STATE_BLOCKED,
@@ -121,16 +115,14 @@ from .client_core import (
     VALIDATION_RUNNING,
     LineBuffer,
     ResponseRouter,
-    behavior_node_label,
+    block_type_label,
     build_compare_draft_request,
     build_discard_draft_request,
     build_generate_intent_delta_request,
-    build_get_anchor_request,
     build_get_code_map_request,
     build_get_document_request,
     build_get_draft_request,
     build_get_tree_request,
-    build_get_twin_request,
     build_open_project_request,
     build_request,
     build_reset_draft_request,
@@ -138,15 +130,13 @@ from .client_core import (
     build_scan_request,
     build_sync_twin_request,
     default_fixture_root,
-    draft_edit,
-    field_cardinality,
-    field_label,
-    format_draft_changes,
-    format_draft_facts,
+    format_draft_operations,
+    format_entity_list,
     format_intent_delta,
-    format_twin_projection,
-    format_twin_sync,
+    format_procedural_document,
+    intent_class_label,
     is_twin_source_path,
+    operation_label,
     resolve_backend_command,
     twin_state_from_sync,
 )
@@ -535,35 +525,6 @@ class _ProjectTreeView(QTreeView):
         return True
 
 
-class _BehaviorNodeButton(QPushButton):
-    """A flat, text-like, focusable control for one anchorable behavior node.
-
-    It renders a node's deterministic label as a clean, left-aligned list row
-    (never a raised button) but is a real button: mouse click, Enter and Space
-    all activate it, it is keyboard-focusable, and it retains the node's
-    backend identifier so activation always navigates the stored identity,
-    never a guess from the displayed text.
-    """
-
-    def __init__(self, label: str, node_id: str, parent=None) -> None:
-        super().__init__(label, parent)
-        self._node_id = node_id
-        self.setObjectName("behaviorNodeButton")
-        self.setAccessibleName(f"Navigate to {label}")
-        self.setToolTip(f"Reveal source for {label}")
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
-    def keyPressEvent(self, event) -> None:
-        # Enter/Return activate like a click; Space is handled by QAbstractButton.
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            self.click()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-
 class MainWindow(QMainWindow):
     """Render the IDE workspace shell (P3.2 presentation-only surface)."""
 
@@ -592,18 +553,23 @@ class MainWindow(QMainWindow):
         # selected file is discarded instead of overwriting the current one.
         self._twin_generation: int = 0
         # Follow/pin state for the Code Map pane: unlocked (follow) by default,
-        # pinned (lock) to the currently displayed projection's source path.
+        # pinned (lock) to the currently displayed Code Map's source path.
         self._twin_pinned: bool = False
         self._active_twin_path: Optional[str] = None
-        # Editable Code Map (P3.4) state: the currently shown artifact id and
-        # projection bundle, plus edit-mode / dirty / schema / control bookkeeping.
-        self._active_twin_artifact_id: Optional[str] = None
-        self._active_twin_bundle: Dict[str, Any] = {}
+        # Procedural Code Map (P3.4) state: the current blocks, document, entity
+        # list and active entity locator, plus edit-mode / dirty / block bookkeeping.
+        self._codemap_blocks: List[Dict[str, Any]] = []
+        self._codemap_text: str = ""
+        self._codemap_entities: List[Dict[str, Any]] = []
+        self._active_entity_locator: Optional[str] = None
+        self._codemap_details_visible: bool = False
         self._edit_mode: bool = False
         self._draft_dirty: bool = False
-        self._draft_schema: Dict[str, Any] = {}
-        self._draft_controls: Dict[tuple, QWidget] = {}
-        self._draft_cardinality: Dict[tuple, str] = {}
+        self._draft_operations: List[Dict[str, Any]] = []
+        self._draft_controls: Dict[str, QWidget] = {}
+        self._draft_op_kinds: Dict[str, str] = {}
+        self._draft_originals: Dict[str, str] = {}
+        self._draft_unresolved: Dict[str, QPushButton] = {}
         # Deferred exit intents resolved after a save completes: "edit" returns
         # to the read-only projection; "close" closes the window.
         self._leave_after_save: bool = False
@@ -799,13 +765,13 @@ class MainWindow(QMainWindow):
         header_layout.addStretch(1)
 
         # Editable Code Map action (P3.4): a checkable control that switches the
-        # pane between the read-only projection and the draft editing surface.
+        # pane between the read-only procedural document and the draft surface.
         self._edit_button = QPushButton("Edit Code Map")
         self._edit_button.setObjectName("editCodeMapButton")
         self._edit_button.setCheckable(True)
         self._edit_button.setAccessibleName("Edit Code Map")
         self._edit_button.setToolTip(
-            "Edit the Code Map interpretation fields; edits become a draft only."
+            "Edit the Code Map procedural blocks; edits become a draft only."
         )
         self._edit_button.toggled.connect(self._on_edit_toggled)
         header_layout.addWidget(self._edit_button)
@@ -825,9 +791,9 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self._twin_lock_button)
         layout.addWidget(header)
 
-        # The pane body is a two-page stack: page 0 is the read-only projection
-        # (facts + anchorable behavior nodes); page 1 is the editable draft
-        # surface. Editing never removes the read-only projection.
+        # The pane body is a two-page stack: page 0 is the read-only procedural
+        # document (entity list + document + evidence); page 1 is the editable
+        # draft surface. Editing never removes the read-only document.
         self._twin_stack = QStackedWidget()
         self._twin_stack.setObjectName("twinStack")
         self._twin_stack.addWidget(self._build_twin_readonly_body())
@@ -844,21 +810,49 @@ class MainWindow(QMainWindow):
         body_layout.setContentsMargins(
             style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
         )
-        self._twin_body = QLabel()
-        self._twin_body.setObjectName("twinBody")
-        self._twin_body.setWordWrap(True)
-        self._twin_body.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self._twin_body.setTextFormat(Qt.PlainText)
-        self._twin_body.setMaximumWidth(style.TWIN_CONTENT_MAX_WIDTH)
-        self._twin_body.setAccessibleName("Code Map content")
-        body_layout.addWidget(self._twin_body)
+        body_layout.setSpacing(style.GAP_TIGHT)
 
-        self._twin_nodes = QListWidget()
-        self._twin_nodes.setObjectName("twinNodes")
-        self._twin_nodes.setAccessibleName("Behavior nodes")
-        self._twin_nodes.setVisible(False)
-        body_layout.addWidget(self._twin_nodes)
-        body_layout.addStretch(1)
+        # Compact ordered entity list (file view): module / class / function
+        # entries. Selecting one reveals that entity's nested procedure.
+        entity_header = QWidget()
+        entity_header_layout = QHBoxLayout(entity_header)
+        entity_header_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        entity_label = QLabel("Entities")
+        entity_label.setObjectName("codemapEntitiesLabel")
+        entity_label.setStyleSheet(style.secondary_text_style(self._palette))
+        entity_header_layout.addWidget(entity_label)
+        entity_header_layout.addStretch(1)
+
+        self._codemap_details_button = QPushButton("Details")
+        self._codemap_details_button.setObjectName("codemapDetailsButton")
+        self._codemap_details_button.setCheckable(True)
+        self._codemap_details_button.setAccessibleName("Show Code Map evidence")
+        self._codemap_details_button.toggled.connect(self._on_details_toggled)
+        entity_header_layout.addWidget(self._codemap_details_button)
+        body_layout.addWidget(entity_header)
+
+        self._codemap_entity_list = QListWidget()
+        self._codemap_entity_list.setObjectName("codemapEntityList")
+        self._codemap_entity_list.setAccessibleName("Code Map entities")
+        self._codemap_entity_list.setMaximumHeight(style.CODEMAP_ENTITY_LIST_MAX_HEIGHT)
+        self._codemap_entity_list.setVisible(False)
+        self._codemap_entity_list.itemClicked.connect(self._on_entity_selected)
+        body_layout.addWidget(self._codemap_entity_list)
+
+        self._codemap_document = QPlainTextEdit()
+        self._codemap_document.setObjectName("codemapDocument")
+        self._codemap_document.setReadOnly(True)
+        self._codemap_document.setAccessibleName("Code Map content")
+        body_layout.addWidget(self._codemap_document, stretch=1)
+
+        self._codemap_details = QPlainTextEdit()
+        self._codemap_details.setObjectName("codemapDetails")
+        self._codemap_details.setReadOnly(True)
+        self._codemap_details.setAccessibleName("Code Map evidence")
+        self._codemap_details.setVisible(False)
+        body_layout.addWidget(self._codemap_details)
         return body
 
     def _build_edit_surface(self) -> QWidget:
@@ -884,8 +878,53 @@ class MainWindow(QMainWindow):
         self._draft_facts.setAccessibleName("Read-only facts")
         layout.addWidget(self._draft_facts)
 
-        # Scrollable structured controls: one labelled section per editable
-        # target (the active artifact plus its anchorable behavior nodes).
+        # Structure controls: draft-only note/step inputs. A non-empty value is
+        # collected on save as an ``insert_block`` operation (a draft-scoped
+        # block, never a verified source fact).
+        structure = QWidget()
+        structure_layout = QVBoxLayout(structure)
+        structure_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        structure_layout.setSpacing(style.GAP_TIGHT)
+        note_row = QWidget()
+        note_layout = QHBoxLayout(note_row)
+        note_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        note_layout.setSpacing(style.GAP_TIGHT)
+        note_label = QLabel("Add note")
+        note_label.setObjectName("draftFieldLabel")
+        note_label.setStyleSheet(style.draft_field_label_style(self._palette))
+        self._note_input = QLineEdit()
+        self._note_input.setObjectName("draftNoteInput")
+        self._note_input.setAccessibleName("Add note text")
+        self._note_input.textChanged.connect(self._mark_draft_dirty)
+        note_layout.addWidget(note_label)
+        note_layout.addWidget(self._note_input, stretch=1)
+        structure_layout.addWidget(note_row)
+
+        step_row = QWidget()
+        step_layout = QHBoxLayout(step_row)
+        step_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        step_layout.setSpacing(style.GAP_TIGHT)
+        step_label = QLabel("Add step")
+        step_label.setObjectName("draftFieldLabel")
+        step_label.setStyleSheet(style.draft_field_label_style(self._palette))
+        self._step_input = QLineEdit()
+        self._step_input.setObjectName("draftStepInput")
+        self._step_input.setAccessibleName("Add step text")
+        self._step_input.textChanged.connect(self._mark_draft_dirty)
+        step_layout.addWidget(step_label)
+        step_layout.addWidget(self._step_input, stretch=1)
+        structure_layout.addWidget(step_row)
+        layout.addWidget(structure)
+
+        # Scrollable inline edits: one row per editable block (purpose text and
+        # decision condition) plus a mark-unresolved toggle. Verified facts are
+        # never exposed as editable.
         self._draft_fields = QWidget()
         self._draft_fields_layout = QVBoxLayout(self._draft_fields)
         self._draft_fields_layout.setContentsMargins(
@@ -1180,7 +1219,10 @@ class MainWindow(QMainWindow):
 
     def _set_twin_state(self, state: str) -> None:
         self._set_twin_chip(state)
-        self._twin_body.setText(_TWIN_LABELS.get(state, ""))
+        self._codemap_text = _TWIN_LABELS.get(state, "")
+        self._codemap_blocks = []
+        self._codemap_entities = []
+        self._render_code_map()
 
     def _set_validation_state(self, state: str) -> None:
         self._validation_state = state
@@ -1292,23 +1334,22 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_SUCCESS, f"opened {rel_path}")
         self._update_status()
 
-        # Reveal a pending source-anchor line (from a behavior-node navigation),
-        # then load the file's Twin projection for Python source.
+        # Reveal a pending source-anchor line, then load the file's Code Map.
         if self._pending_reveal_line is not None and kind == "source":
             view.reveal_line(self._pending_reveal_line)
             self._pending_reveal_line = None
-        self._load_twin_projection(rel_path)
+        self._load_codemap(rel_path)
 
     def _on_scan_completed(self, result: Dict[str, Any]) -> None:
         self._render_scan(result)
         self._set_status(STATE_SUCCESS, "scan complete")
         self._set_validation_state(VALIDATION_OK)
-        # Refresh the selected file's Twin after a successful scan (P3.3): a
-        # supported file re-syncs and re-projects; no supported file is a no-op.
+        # Refresh the selected file's Code Map after a successful scan: a
+        # supported file re-syncs and reloads; no supported file is a no-op.
         if self._current_document and is_twin_source_path(self._current_document):
-            self._load_twin_projection(self._current_document)
+            self._load_codemap(self._current_document)
 
-    # -- Twin synchronization, projection and navigation (P3.3) ----------
+    # -- Code Map synchronization, load and render (P3.4) ----------------
 
     def _next_twin_generation(self) -> int:
         """Advance the selection generation and return its new value.
@@ -1321,15 +1362,14 @@ class MainWindow(QMainWindow):
         return self._twin_generation
 
     def _set_active_twin_path(self, path: Optional[str]) -> None:
-        """Record the source path backing the displayed projection and refresh
-        the pin control. ``None`` means no valid projection is shown, so the pin
+        """Record the source path backing the displayed Code Map and refresh the
+        pin control. ``None`` means no valid Code Map is shown, so the pin
         control is disabled (unless the pane is already pinned). Clearing the
-        path also clears the editable Code Map target, which disables the edit
+        path also clears the active entity locator, which disables the edit
         action."""
         self._active_twin_path = path
         if path is None:
-            self._active_twin_artifact_id = None
-            self._active_twin_bundle = {}
+            self._active_entity_locator = None
         self._update_lock_control()
         self._update_edit_control()
 
@@ -1355,10 +1395,10 @@ class MainWindow(QMainWindow):
     def _on_twin_lock_toggled(self, checked: bool) -> None:
         """Pin or unpin the Code Map pane (P3.3).
 
-        Pinning freezes the displayed projection to its current source path and
+        Pinning freezes the displayed Code Map to its current source path and
         invalidates any in-flight chain so no late response relabels it.
         Unpinning immediately follows the active supported source tab (a scoped
-        sync plus projection), or shows a bounded empty state when there is none.
+        sync plus Code Map), or shows a bounded empty state when there is none.
         """
         self._twin_pinned = checked
         if checked:
@@ -1367,10 +1407,9 @@ class MainWindow(QMainWindow):
             return
         self._update_lock_control()
         if self._current_document and is_twin_source_path(self._current_document):
-            self._load_twin_projection(self._current_document)
+            self._load_codemap(self._current_document)
         else:
             self._set_twin_state(TWIN_EMPTY)
-            self._render_behavior_nodes([])
             self._set_active_twin_path(None)
 
     def _sync_twin(self, changed_paths: Optional[List[str]] = None) -> None:
@@ -1387,14 +1426,15 @@ class MainWindow(QMainWindow):
         if not self._send(request, self._on_twin_synced, self._on_twin_failed):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
-    def _load_twin_projection(self, rel_path: str) -> None:
-        """Drive the selection -> sync -> get -> render Twin lifecycle (P3.3).
+    def _load_codemap(self, rel_path: str) -> None:
+        """Drive the selection -> sync -> get -> render Code Map lifecycle (P3.4).
 
         A supported Python source (``.py`` / ``.pyi``) sets the pane Loading,
-        synchronizes that file's scope, then loads and renders its projection.
-        Any other file shows a bounded state and never triggers a source sync.
-        When the pane is pinned, the current projection is frozen and the pin
-        guard returns without following, clearing, reloading or relabelling it.
+        synchronizes that file's scope, then loads and renders its procedural
+        document. Any other file shows a bounded state and never triggers a
+        source sync. When the pane is pinned, the current Code Map is frozen and
+        the pin guard returns without following, clearing, reloading or
+        relabelling it.
         """
         if not self._root:
             return
@@ -1403,12 +1443,13 @@ class MainWindow(QMainWindow):
         generation = self._next_twin_generation()
         if not is_twin_source_path(rel_path):
             self._set_twin_state(TWIN_EMPTY)
-            self._render_behavior_nodes([])
             self._set_active_twin_path(None)
             return
         self._set_twin_chip(TWIN_LOADING)
-        self._twin_body.setText(_TWIN_LABELS[TWIN_LOADING])
-        self._render_behavior_nodes([])
+        self._codemap_text = _TWIN_LABELS[TWIN_LOADING]
+        self._codemap_blocks = []
+        self._codemap_entities = []
+        self._render_code_map()
         self._set_active_twin_path(None)
         self._sync_twin_scoped(rel_path, generation)
 
@@ -1424,13 +1465,13 @@ class MainWindow(QMainWindow):
     def _on_selection_synced(
         self, rel_path: str, generation: int, result: Dict[str, Any]
     ) -> None:
-        """After a successful scoped sync, load and render the projection."""
+        """After a successful scoped sync, load and render the Code Map."""
         if generation != self._twin_generation:
             return
         cid = contract.new_correlation_id()
-        request = build_get_twin_request(cid, rel_path)
-        on_success = partial(self._on_twin_projection_loaded, generation=generation)
-        on_error = partial(self._on_twin_projection_failed, generation)
+        request = build_get_code_map_request(cid)
+        on_success = partial(self._on_code_map_loaded, generation=generation, rel_path=rel_path)
+        on_error = partial(self._on_code_map_failed, generation)
         if not self._send(request, on_success, on_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
@@ -1439,112 +1480,156 @@ class MainWindow(QMainWindow):
         if generation != self._twin_generation:
             return
         self._set_status(STATE_FAILED, reason)
-        self._set_twin_failure(reason)
+        self._set_code_map_failure(reason)
 
     def _on_twin_synced(self, result: Dict[str, Any]) -> None:
+        # A workspace-level sync updates only the chip and status; the rich Code
+        # Map body is populated by the follow-up ``get_code_map`` in the
+        # selection chain, not here.
         state = result.get("state", "synchronized")
         self._set_twin_chip(twin_state_from_sync(state))
-        self._twin_body.setText(format_twin_sync(result))
         self._set_status(STATE_SUCCESS, f"twin {state}")
 
-    def _on_twin_projection_loaded(
-        self, bundle: Dict[str, Any], generation: Optional[int] = None
+    def _on_code_map_loaded(
+        self,
+        result: Dict[str, Any],
+        generation: Optional[int] = None,
+        rel_path: Optional[str] = None,
     ) -> None:
+        """Render a loaded Code Map: document, entity list, evidence and state.
+
+        Shared by the selection chain (which passes ``generation``/``rel_path``)
+        and the edit surface (which re-requests the scoped blocks with no
+        generation). A late response whose generation no longer matches is
+        discarded; in edit mode the edit surface is (re)populated afterwards.
+        """
         if generation is not None and generation != self._twin_generation:
             return  # a late response for a previously selected file
-        projection = bundle.get("projection") or {}
-        sync_state = projection.get("sync_state", "synchronized")
+        baseline = result.get("baseline") or {}
+        sync_state = baseline.get("sync_state", "synchronized")
         self._set_twin_chip(twin_state_from_sync(sync_state))
-        self._twin_body.setText(format_twin_projection(bundle))
-        self._render_behavior_nodes(bundle.get("behavior_nodes") or [])
-        self._active_twin_bundle = bundle
-        self._active_twin_artifact_id = projection.get("artifact_id")
-        self._set_active_twin_path(projection.get("path"))
-        self._update_edit_control()
+        self._codemap_blocks = result.get("blocks") or []
+        self._codemap_entities = result.get("entities") or []
+        self._codemap_text = format_procedural_document(result.get("document"))
+        self._active_entity_locator = result.get("entity") or None
+        self._render_code_map()
+        self._render_evidence(result)
+        self._set_active_twin_path(rel_path or self._current_document)
         self._set_status(STATE_SUCCESS, f"twin {sync_state}")
+        if self._edit_mode:
+            self._render_edit_surface(result)
 
     def _on_twin_failed(self, reason: str) -> None:
-        # A workspace-level sync failure leaves no synchronized Twin.
+        # A workspace-level sync failure leaves no synchronized Code Map.
         self._set_status(STATE_FAILED, reason)
         self._set_twin_state(TWIN_EMPTY)
         self._set_active_twin_path(None)
 
-    def _on_twin_projection_failed(self, generation: int, reason: str) -> None:
-        """A selector-level miss shows a bounded failure state, never stale Empty."""
+    def _on_code_map_failed(self, generation: int, reason: str) -> None:
+        """A failed Code Map load shows a bounded failure state, never stale Empty."""
         if generation != self._twin_generation:
             return
         self._set_status(STATE_FAILED, reason)
-        self._set_twin_failure(reason)
+        self._set_code_map_failure(reason)
 
-    def _set_twin_failure(self, reason: str) -> None:
+    def _set_code_map_failure(self, reason: str) -> None:
         """Show an explicit bounded failure state with its reason (Code Map pane only)."""
         self._set_twin_chip(TWIN_EMPTY)
-        self._twin_body.setText(f"Code Map projection unavailable.\n\nReason: {reason}")
-        self._render_behavior_nodes([])
+        self._codemap_text = f"Code Map unavailable.\n\nReason: {reason}"
+        self._codemap_blocks = []
+        self._codemap_entities = []
+        self._render_code_map()
         self._set_active_twin_path(None)
 
-    def _render_behavior_nodes(self, nodes: List[Dict[str, Any]]) -> None:
-        """Populate the behavior-node list as accessible interactive controls.
+    def _render_code_map(self) -> None:
+        """Render the read-only procedural document and the compact entity list."""
+        self._codemap_document.setPlainText(self._codemap_text)
+        self._populate_entity_list()
 
-        Each node becomes a flat, text-like, focusable button (not a plain label
-        or list text) that retains the node's backend identifier; activation
-        navigates that stored identity via ``get_anchor``.
+    def _populate_entity_list(self) -> None:
+        """Populate the compact ordered entity list (module/class/function).
+
+        Each entry stores its entity locator as user data; selecting one scopes
+        the document to that entity's nested procedure. Verified entities only —
+        draft blocks never appear here.
         """
-        self._twin_nodes.clear()
-        for node in nodes:
-            node_id = node.get("id")
-            label = behavior_node_label(node)
+        self._codemap_entity_list.clear()
+        for entity in self._codemap_entities:
+            locator = entity.get("locator") or "?"
+            kind = entity.get("kind") or "unknown"
+            subject = entity.get("subject") or entity.get("name") or locator
+            label = f"{kind}: {locator} — {subject}"
             item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, node_id)
-            self._twin_nodes.addItem(item)
-            button = _BehaviorNodeButton(label, node_id)
-            button.clicked.connect(partial(self._navigate_to_behavior_node, node_id))
-            self._twin_nodes.setItemWidget(item, button)
-            item.setSizeHint(button.sizeHint())
-        self._twin_nodes.setVisible(bool(nodes))
+            item.setData(Qt.UserRole, locator)
+            self._codemap_entity_list.addItem(item)
+        self._codemap_entity_list.setVisible(bool(self._codemap_entities))
 
-    def _navigate_to_behavior_node(self, node_id: str) -> None:
-        """Request the source anchor for a stored behavior-node id (P3.3)."""
-        if not node_id:
+    def _on_entity_selected(self, item) -> None:
+        """Scope the Code Map to the selected entity's nested procedure (P3.4)."""
+        locator = item.data(Qt.UserRole)
+        if not locator:
             return
+        generation = self._next_twin_generation()
         cid = contract.new_correlation_id()
-        request = build_get_anchor_request(cid, node_id)
-        self._set_status(STATE_RUNNING, "navigating to source anchor")
-        if not self._send(request, self._on_anchor_loaded, self._on_anchor_failed):
+        request = build_get_code_map_request(cid, selector=locator)
+        self._set_status(STATE_RUNNING, f"loading Code Map for {locator}")
+        on_success = partial(
+            self._on_code_map_loaded, generation=generation, rel_path=self._current_document
+        )
+        on_error = partial(self._on_code_map_failed, generation)
+        if not self._send(request, on_success, on_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
-    def _on_behavior_node_clicked(self, item) -> None:
-        """Navigate a clicked behavior node to its source anchor (P3.3).
+    def _on_details_toggled(self, checked: bool) -> None:
+        """Toggle the source-correspondence evidence view."""
+        self._codemap_details_visible = checked
+        self._codemap_details.setVisible(checked)
+        if checked:
+            self._codemap_details_button.setAccessibleName("Hide Code Map evidence")
+        else:
+            self._codemap_details_button.setAccessibleName("Show Code Map evidence")
 
-        Reads the stored backend node id from the item's user data (never the
-        display text); button activation routes through the same stored id.
-        """
-        self._navigate_to_behavior_node(item.data(Qt.UserRole))
-
-    def _on_anchor_loaded(self, anchor: Dict[str, Any]) -> None:
-        """Open the anchored source file and reveal its line, or report why not."""
-        if not anchor.get("available"):
-            reason = anchor.get("reason") or "no_anchor"
-            self._set_status(STATE_FAILED, f"anchor unavailable: {reason}")
+    def _render_evidence(self, result: Dict[str, Any]) -> None:
+        """Render the source-correspondence evidence for the displayed blocks."""
+        if not self._codemap_blocks:
+            self._codemap_details.setPlainText("")
             return
-        rel_path = anchor.get("file")
-        source_range = anchor.get("source_range") or {}
-        lineno = source_range.get("lineno")
-        if not rel_path:
-            self._set_status(STATE_FAILED, "anchor has no file")
-            return
-        self._pending_reveal_line = lineno if isinstance(lineno, int) else None
-        self._open_document(rel_path)
+        self._codemap_details.setPlainText(
+            "\n\n".join(self._format_block_evidence(b) for b in self._codemap_blocks)
+        )
 
-    def _on_anchor_failed(self, reason: str) -> None:
-        self._set_status(STATE_FAILED, reason)
+    def _format_block_evidence(self, block: Dict[str, Any]) -> str:
+        """Return one bounded evidence paragraph for a block: its typed identity,
+        provenance, confidence, state, editability and source anchor."""
+        label = block_type_label(str(block.get("block_type", "unknown")))
+        anchors = block.get("source_anchors") or []
+        if anchors:
+            first = anchors[0]
+            location = f"{first.get('file', '?')}:{first.get('lineno', '?')}"
+        else:
+            location = "no source anchor"
+        lines = [
+            f"{label} — {block.get('block_id', '?')}",
+            f"  source: {location}",
+            f"  provenance: {block.get('provenance', 'unknown')}",
+            f"  confidence: {block.get('confidence', 'unknown')}",
+            f"  state: {block.get('state', 'unknown')}",
+            f"  editability: {block.get('editability', 'unknown')}",
+        ]
+        reason = block.get("confidence_reason")
+        if reason:
+            lines.append(f"  reason: {reason}")
+        fingerprint = block.get("source_fingerprint")
+        if fingerprint:
+            lines.append(f"  fingerprint: {fingerprint}")
+        return "\n".join(lines)
 
     # -- Editable Code Map draft (P3.4) ----------------------------------
 
     def _update_edit_control(self) -> None:
-        """Enable the ``Edit Code Map`` action only when a projectable artifact
-        is displayed, and leave edit mode when the target disappears."""
-        enabled = self._active_twin_artifact_id is not None
+        """Enable the ``Edit Code Map`` action only when a Code Map is displayed,
+        and leave edit mode when the target disappears."""
+        enabled = self._active_twin_path is not None
         self._edit_button.setEnabled(enabled)
         if not enabled and self._edit_mode:
             self._exit_edit_mode()
@@ -1557,15 +1642,15 @@ class MainWindow(QMainWindow):
             self._attempt_leave_edit_mode()
 
     def _enter_edit_mode(self) -> None:
-        """Show the edit surface and load the editable Code Map baseline."""
-        if not self._active_twin_artifact_id:
+        """Show the edit surface and load the editable Code Map blocks."""
+        if self._active_twin_path is None:
             self._edit_button.setChecked(False)
             return
         self._edit_mode = True
         self._draft_dirty = False
         self._twin_stack.setCurrentIndex(1)
         cid = contract.new_correlation_id()
-        request = build_get_code_map_request(cid)
+        request = build_get_code_map_request(cid, selector=self._active_entity_locator)
         self._set_status(STATE_RUNNING, "loading editable Code Map")
         if not self._send(request, self._on_code_map_loaded, self._on_draft_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
@@ -1616,22 +1701,73 @@ class MainWindow(QMainWindow):
             return "discard"
         return "remain"
 
-    def _collect_edits(self) -> List[Dict[str, Any]]:
-        """Read the current controls into ordered draft edits.
+    def _owning_entity_locator(self) -> Optional[str]:
+        """Return the owning entity locator for draft insert operations.
 
-        Only fields with authored content are included; an empty control is
-        skipped so clearing a field never fabricates a spurious "clear" edit."""
-        edits: List[Dict[str, Any]] = []
-        for (target_id, field), control in self._draft_controls.items():
-            cardinality = self._draft_cardinality.get((target_id, field), DRAFT_SINGLE)
-            if cardinality == DRAFT_LIST:
-                proposed = self._read_list_value(control)
-            else:
-                proposed = self._read_single_value(control)
-            if not proposed:
+        Prefers the active (scoped) entity locator; falls back to the module
+        entity so whole-document edits still name a valid owning entity."""
+        if self._active_entity_locator:
+            return self._active_entity_locator
+        for entity in self._codemap_entities:
+            if entity.get("kind") == "module":
+                return entity.get("locator")
+        return None
+
+    def _collect_operations(self) -> List[Dict[str, Any]]:
+        """Read the current controls into ordered typed draft operations.
+
+        Only authored values are included; an empty or unchanged control is
+        skipped so a no-op never fabricates a spurious operation."""
+        operations: List[Dict[str, Any]] = []
+        owning = self._owning_entity_locator()
+        if owning:
+            note = (self._note_input.text() or "").strip()
+            if note:
+                operations.append(
+                    {
+                        "op": "insert_block",
+                        "owning_entity_id": owning,
+                        "block_type": "note",
+                        "proposed_text": note,
+                    }
+                )
+            step = (self._step_input.text() or "").strip()
+            if step:
+                operations.append(
+                    {
+                        "op": "insert_block",
+                        "owning_entity_id": owning,
+                        "block_type": "step",
+                        "proposed_payload": {"operation": "assign"},
+                        "proposed_text": step,
+                    }
+                )
+
+        for key, control in self._draft_controls.items():
+            op_kind = self._draft_op_kinds.get(key)
+            value = self._read_single_value(control)
+            if value is None or value == self._draft_originals.get(key, ""):
                 continue
-            edits.append(draft_edit(target_id, field, proposed))
-        return edits
+            if op_kind == "purpose":
+                operations.append(
+                    {"op": "replace_description", "target_block_id": key, "proposed_text": value}
+                )
+            elif op_kind == "condition":
+                operations.append(
+                    {
+                        "op": "replace_condition_intent",
+                        "target_block_id": key,
+                        "proposed_condition": value,
+                    }
+                )
+
+        for block_id, button in self._draft_unresolved.items():
+            if button.isChecked():
+                operations.append(
+                    {"op": "mark_unresolved", "target_block_id": block_id, "reason": "review"}
+                )
+
+        return operations
 
     def _read_single_value(self, control: QWidget) -> Optional[str]:
         if isinstance(control, QLineEdit):
@@ -1640,19 +1776,11 @@ class MainWindow(QMainWindow):
             return control.toPlainText().strip() or None
         return None
 
-    def _read_list_value(self, control: QWidget) -> List[str]:
-        text = ""
-        if isinstance(control, QPlainTextEdit):
-            text = control.toPlainText()
-        elif isinstance(control, QLineEdit):
-            text = control.text()
-        return [line.strip() for line in text.splitlines() if line.strip()]
-
     def _save_draft(self) -> None:
-        """Collect the current controls into ordered edits and save the draft."""
-        edits = self._collect_edits()
+        """Collect the current controls into typed operations and save the draft."""
+        operations = self._collect_operations()
         cid = contract.new_correlation_id()
-        request = build_save_draft_request(cid, edits)
+        request = build_save_draft_request(cid, operations)
         self._set_status(STATE_RUNNING, "saving Code Map draft")
         if not self._send(request, self._on_draft_saved, self._on_draft_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
@@ -1697,33 +1825,33 @@ class MainWindow(QMainWindow):
         self._draft_result.setVisible(bool(text))
 
     def _render_edit_surface(self, result: Dict[str, Any]) -> None:
-        """Populate the edit surface's read-only facts and structured controls."""
-        bundle = self._active_twin_bundle or {}
-        projection = bundle.get("projection") or {}
-        self._draft_facts.setText(format_draft_facts(projection))
+        """Populate the edit surface's read-only facts and inline editable rows.
+
+        Verified facts stay read-only; only blocks whose ``editability`` names a
+        typed operation get an inline one-line editor (purpose text, decision
+        condition). Structure controls (Add note / Add step) are always present.
+        """
         self._clear_draft_controls()
+        baseline = result.get("baseline") or {}
+        entity = self._active_entity_locator
+        facts = f"Scope: {entity}" if entity else "Scope: whole document"
+        facts += f"\nBaseline revision: {baseline.get('baseline_revision') or 'none'}"
+        self._draft_facts.setText(facts)
 
-        draft = result.get("draft") or {}
-        proposed = {
-            (change.get("target_id"), change.get("field")): change.get("proposed")
-            for change in draft.get("changes", [])
-        }
-
-        artifact_id = self._active_twin_artifact_id
-        if artifact_id:
-            title = projection.get("locator") or projection.get("name") or "Artifact"
-            self._add_draft_section(artifact_id, title, list(ARTIFACT_FIELDS), proposed)
-
-        for node in bundle.get("behavior_nodes") or []:
-            node_id = node.get("id")
-            if not node_id:
-                continue
-            self._add_draft_section(
-                node_id, behavior_node_label(node), list(BEHAVIOR_FIELDS), proposed
-            )
+        for block in self._codemap_blocks:
+            editability = block.get("editability")
+            if editability == "replace_description":
+                self._add_edit_row(block, "purpose", block.get("display_text", ""))
+            elif editability == "replace_condition_intent":
+                self._add_edit_row(block, "condition", self._condition_text(block))
 
         self._draft_fields_layout.addStretch(1)
         self._show_draft_result("")
+
+    def _condition_text(self, block: Dict[str, Any]) -> str:
+        """Return the current condition text for a decision block."""
+        payload = block.get("payload") or {}
+        return payload.get("condition") or ""
 
     def _clear_draft_controls(self) -> None:
         """Remove every previously built control and its bookkeeping."""
@@ -1733,69 +1861,52 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.deleteLater()
         self._draft_controls.clear()
-        self._draft_cardinality.clear()
+        self._draft_op_kinds.clear()
+        self._draft_originals.clear()
+        self._draft_unresolved.clear()
 
-    def _add_draft_section(
-        self,
-        target_id: str,
-        title: str,
-        fields: Sequence[str],
-        proposed: Dict[tuple, Any],
-    ) -> None:
-        """Add one labelled, structured control section for an editable target.
+    def _add_edit_row(self, block: Dict[str, Any], op_kind: str, original_text: str) -> None:
+        """Add one labelled inline edit row for an editable block.
 
-        Each single field is a one-line edit; each list field is a multiline
-        edit (one item per line). Controls are pre-filled from a saved draft
-        *before* their change signals are connected, so loading never marks the
-        surface dirty."""
-        heading = QLabel(title)
-        heading.setObjectName("draftSectionHeading")
-        heading.setWordWrap(True)
-        heading.setStyleSheet(style.draft_field_label_style(self._palette))
-        heading.setAccessibleName("Code Map draft section")
-        self._draft_fields_layout.addWidget(heading)
+        The row is a block label plus a one-line editor pre-filled with the
+        block's current text and a checkable Mark Unresolved toggle. The editor
+        is connected to mark the surface dirty *after* it is pre-filled, so
+        loading never marks the surface dirty."""
+        block_id = block.get("block_id", "?")
+        block_label = block_type_label(str(block.get("block_type", "unknown")))
+        label = QLabel(f"{block_label} — {block_id}")
+        label.setObjectName("draftFieldLabel")
+        label.setWordWrap(True)
+        label.setStyleSheet(style.draft_field_label_style(self._palette))
+        label.setAccessibleName("Code Map editable block")
+        self._draft_fields_layout.addWidget(label)
 
-        for field in fields:
-            label = QLabel(field_label(field))
-            label.setObjectName("draftFieldLabel")
-            label.setWordWrap(True)
-            label.setStyleSheet(style.draft_field_label_style(self._palette))
-            label.setAccessibleName(field_label(field))
-            self._draft_fields_layout.addWidget(label)
+        control = QLineEdit()
+        control.setObjectName("draftSingleEdit")
+        control.setAccessibleName(f"{op_kind} editor")
+        control.setText(original_text or "")
+        self._draft_fields_layout.addWidget(control)
 
-            key = (target_id, field)
-            cardinality = field_cardinality(field) or DRAFT_SINGLE
-            value = proposed.get(key)
-            if cardinality == DRAFT_LIST:
-                control = QPlainTextEdit()
-                control.setObjectName("draftListEdit")
-                control.setFixedHeight(style.EDIT_FIELD_LIST_HEIGHT)
-                control.setAccessibleName(f"{field_label(field)} editor")
-                if isinstance(value, list):
-                    control.setPlainText("\n".join(str(v) for v in value))
-            else:
-                control = QLineEdit()
-                control.setObjectName("draftSingleEdit")
-                control.setAccessibleName(f"{field_label(field)} editor")
-                if isinstance(value, str):
-                    control.setText(value)
-            self._draft_fields_layout.addWidget(control)
-            self._draft_controls[key] = control
-            self._draft_cardinality[key] = cardinality
-            control.textChanged.connect(self._mark_draft_dirty)
+        unresolved = QPushButton("Mark unresolved")
+        unresolved.setObjectName("draftMarkUnresolvedButton")
+        unresolved.setCheckable(True)
+        unresolved.setAccessibleName(f"Mark unresolved {block_id}")
+        unresolved.toggled.connect(self._mark_draft_dirty)
+        self._draft_fields_layout.addWidget(unresolved)
+
+        self._draft_controls[block_id] = control
+        self._draft_op_kinds[block_id] = op_kind
+        self._draft_originals[block_id] = original_text or ""
+        self._draft_unresolved[block_id] = unresolved
+        control.textChanged.connect(self._mark_draft_dirty)
 
     # -- Editable Code Map draft result handlers -------------------------
 
-    def _on_code_map_loaded(self, result: Dict[str, Any]) -> None:
-        self._draft_schema = result.get("field_schema") or {}
-        self._render_edit_surface(result)
-        self._set_status(STATE_SUCCESS, "editable Code Map ready")
-
     def _on_draft_saved(self, result: Dict[str, Any]) -> None:
         draft = result.get("draft") or {}
-        changes = draft.get("changes", [])
+        operations = draft.get("operations", [])
         self._draft_dirty = False
-        self._show_draft_result(format_draft_changes(changes))
+        self._show_draft_result(format_draft_operations(operations))
         self._set_status(STATE_SUCCESS, "draft saved")
         if self._close_after_save:
             self._close_after_save = False
@@ -1817,8 +1928,8 @@ class MainWindow(QMainWindow):
 
     def _on_draft_compared(self, result: Dict[str, Any]) -> None:
         conflict = result.get("conflict") or {}
-        changes = result.get("changes", [])
-        text = format_draft_changes(changes)
+        operations = result.get("operations", [])
+        text = format_draft_operations(operations)
         if conflict.get("state") not in (None, "none"):
             text = f"Conflict: {conflict.get('reason', conflict.get('state'))}\n\n{text}"
         self._show_draft_result(text)
@@ -1958,9 +2069,9 @@ class MainWindow(QMainWindow):
     def _on_blocked(self, correlation_id: str) -> None:
         self._pending.pop(correlation_id, None)
         self._set_status(STATE_BLOCKED, correlation_id)
-        # A Twin chain interrupted by a timeout/restart must not stay Loading.
+        # A Code Map chain interrupted by a timeout/restart must not stay Loading.
         if self._twin_state == TWIN_LOADING:
-            self._set_twin_failure("blocked")
+            self._set_code_map_failure("blocked")
 
     def _on_unavailable(self, message: str) -> None:
         self._set_status(STATE_UNAVAILABLE, message)
