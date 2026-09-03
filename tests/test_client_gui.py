@@ -661,6 +661,39 @@ def _function_code_map_result() -> dict:
     }
 
 
+def _helpers_code_map_result() -> dict:
+    """A bounded ``get_code_map`` result for ``helpers.py`` (one function)."""
+    module_id = "codemap:helpers:entity:0"
+    func_id = "codemap:helpers.fmt:entity:0"
+    return {
+        "language_version": "0.1",
+        "generator": "hrca-codemap",
+        "entity": "helpers",
+        "entities": [
+            {"block_id": module_id, "locator": "helpers", "kind": "module",
+             "name": "helpers", "subject": "Module helpers",
+             "parent_id": None, "order": 0},
+            {"block_id": func_id, "locator": "helpers.fmt", "kind": "function",
+             "name": "fmt", "subject": "Function fmt(value) -> str",
+             "parent_id": module_id, "order": 1},
+        ],
+        "blocks": [
+            _block(module_id, "entity", parent_id=None, order=0,
+                   subject="Module helpers", display_text="Module helpers",
+                   payload={"name": "helpers", "kind": "module", "locator": "helpers"}),
+            _block(func_id, "entity", parent_id=module_id, order=1,
+                   subject="Function fmt(value) -> str",
+                   display_text="Function fmt(value) -> str",
+                   payload={"name": "fmt", "kind": "function", "locator": "helpers.fmt"}),
+        ],
+        "document": "Module helpers\n\nFunction fmt(value) -> str",
+        "baseline": {"workspace_id": "ws-1", "baseline_revision": "abc123",
+                     "scan_generation": 1, "sync_state": "synchronized"},
+        "draft": None,
+        "conflict": {"state": "none", "reason": None},
+    }
+
+
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class TwinPaneTests(unittest.TestCase):
     """P3.4 read-only Code Map pane: auto-sync, procedural document and entity list.
@@ -787,10 +820,14 @@ class TwinPaneTests(unittest.TestCase):
         sent = self._fake_send(window)
         window._on_document_opened("app/main.py", _source_doc("app/main.py"))
         # Selection immediately sets Loading and issues a scoped sync first; the
-        # Code Map is fetched only after that sync succeeds.
+        # previous projection (here, the empty state) stays mounted under an
+        # in-place "Updating…" status line — it is not cleared or replaced.
         self.assertEqual(window._twin_chip.text(), "Loading")
         self.assertEqual(window._codemap_document.toPlainText(),
-                         "Code Map synchronization is in progress.")
+                         "No Code Map has been generated for this project.")
+        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
+        self.assertIn("Updating Code Map for app/main.py",
+                      window._codemap_status.text())
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
         self.assertEqual(sent[0]["task"]["changed_paths"], ["app/main.py"])
@@ -873,8 +910,13 @@ class TwinPaneTests(unittest.TestCase):
         window._root = "/some/root"
         self._chain_send(window, get_error="twin_not_found")
         window._on_document_opened("app/main.py", _source_doc("app/main.py"))
+        # A failed load retains the previous projection (the empty state) and
+        # surfaces the reason in the in-place status line, not by flashing Empty.
         self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertIn("twin_not_found", window._codemap_document.toPlainText())
+        self.assertEqual(window._codemap_document.toPlainText(),
+                         "No Code Map has been generated for this project.")
+        self.assertIn("twin_not_found", window._codemap_status.text())
+        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
         self.assertIn("failed", window.status_label.text())
 
     def test_sync_failure_shows_bounded_state(self):
@@ -882,10 +924,86 @@ class TwinPaneTests(unittest.TestCase):
         window._root = "/some/root"
         sent = self._chain_send(window, sync_error="blocked")
         window._on_document_opened("app/main.py", _source_doc("app/main.py"))
-        # Only the scoped sync was issued; its failure surfaces a bounded state.
+        # Only the scoped sync was issued; its failure surfaces a bounded status
+        # line while the previous projection stays mounted.
         self.assertEqual([r["action"] for r in sent], [contract.ACTION_SYNC_TWIN])
         self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertIn("blocked", window._codemap_document.toPlainText())
+        self.assertIn("blocked", window._codemap_status.text())
+        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
+
+    def test_active_file_scope_switches_and_pin_prevents_replacement(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        self._chain_send(window, result=_function_code_map_result())
+        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
+        self.assertIn("Function add", window._codemap_document.toPlainText())
+        self.assertNotIn("fmt", window._codemap_document.toPlainText())
+
+        self._chain_send(window, result=_helpers_code_map_result())
+        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
+        doc = window._codemap_document.toPlainText()
+        self.assertIn("Function fmt(value) -> str", doc)
+        self.assertNotIn("calculator", doc)  # old content is not mislabelled as helpers
+
+        # Pinning the helpers projection freezes it against a later switch back.
+        window._twin_lock_button.click()
+        doc_before = window._codemap_document.toPlainText()
+        sent = self._fake_send(window)
+        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
+        self.assertEqual(sent, [])
+        self.assertEqual(window._codemap_document.toPlainText(), doc_before)
+
+    def test_file_switch_retains_projection_until_atomic_replace(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        self._chain_send(window, result=_function_code_map_result())
+        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
+        calc_doc = window._codemap_document.toPlainText()
+        self.assertIn("Function add", calc_doc)
+
+        # Switch to helpers with a deferred response: the calculator projection
+        # stays mounted and a small in-place indicator appears.
+        sent = self._fake_send(window)
+        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
+        self.assertEqual(window._codemap_document.toPlainText(), calc_doc)
+        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
+        self.assertIn("Updating Code Map for helpers.py", window._codemap_status.text())
+        self.assertEqual(window._twin_chip.text(), "Loading")
+
+        # A single atomic replacement once the helpers response arrives.
+        window._on_code_map_loaded(
+            _helpers_code_map_result(),
+            generation=window._twin_generation,
+            rel_path="helpers.py",
+        )
+        helpers_doc = window._codemap_document.toPlainText()
+        self.assertIn("Function fmt(value) -> str", helpers_doc)
+        self.assertNotIn("calculator", helpers_doc)
+        self.assertFalse(window._codemap_status.isVisibleTo(window._twin_panel))
+
+        # A late calculator response (older generation) is discarded.
+        window._on_code_map_loaded(
+            _function_code_map_result(),
+            generation=window._twin_generation - 1,
+            rel_path="calculator.py",
+        )
+        self.assertEqual(window._codemap_document.toPlainText(), helpers_doc)
+
+    def test_file_switch_failure_retains_projection(self):
+        window = MainWindow()
+        window._root = "/some/root"
+        self._chain_send(window, result=_function_code_map_result())
+        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
+        calc_doc = window._codemap_document.toPlainText()
+
+        # Switch to helpers whose Code Map load fails: the calculator projection
+        # is retained and a bounded failure status is shown (no flash to Empty).
+        self._chain_send(window, get_error="twin_not_found")
+        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
+        self.assertEqual(window._codemap_document.toPlainText(), calc_doc)
+        self.assertIn("twin_not_found", window._codemap_status.text())
+        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
+        self.assertEqual(window._twin_chip.text(), "Available")
 
     def test_scan_completed_refreshes_selected_code_map(self):
         window = MainWindow()
@@ -1414,6 +1532,20 @@ class CodeMapDraftTests(unittest.TestCase):
             window._attempt_leave_edit_mode()
         self.assertTrue(window._edit_mode)
         self.assertTrue(window._edit_button.isChecked())
+
+    def test_file_switch_does_not_discard_or_retarget_dirty_draft(self):
+        window, sent = self._loaded_edit_surface()
+        purpose = window._draft_controls[self.PURPOSE_ID]
+        purpose.setText("A service handler")  # marks the draft dirty
+        self.assertTrue(window._draft_dirty)
+
+        # Switching files while a dirty draft is open must not silently discard
+        # or retarget the draft: edit mode, the dirty flag and the target scope
+        # all survive the switch.
+        window._on_document_opened("other.py", _source_doc("other.py"))
+        self.assertTrue(window._edit_mode)
+        self.assertTrue(window._draft_dirty)
+        self.assertIn("Scope: app.service.Service.handle", window._draft_facts.text())
 
     # -- stale guard --------------------------------------------------------
 

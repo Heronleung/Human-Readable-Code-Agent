@@ -97,9 +97,21 @@ EDITABILITY_REPLACE_CONDITION_INTENT = "replace_condition_intent"
 EDITABILITY_DRAFT_ONLY = "draft_only"
 
 # Block types that appear in the "Procedure" flow (not deferred to a later
-# section). ``note`` is draft-only but renders here too.
+# section). ``return`` and ``side_effect`` are procedure steps too, so a
+# function's full ordered workflow (guards, steps, mutations and returns)
+# renders in one continuous, source-ordered flow. ``note`` is draft-only but
+# renders here too.
 _PROCEDURE_TYPES = frozenset(
-    {BT_STEP, BT_DECISION, BT_LOOP, BT_CALL, BT_EXCEPTION, BT_NOTE}
+    {
+        BT_STEP,
+        BT_DECISION,
+        BT_LOOP,
+        BT_CALL,
+        BT_EXCEPTION,
+        BT_RETURN,
+        BT_SIDE_EFFECT,
+        BT_NOTE,
+    }
 )
 
 # Fixed reasons attached to limitation blocks, keyed by unsupported kind.
@@ -727,6 +739,11 @@ class _Builder:
                 branches.append({"label": "else", "condition": None, "block_ids": else_ids})
                 else_part = []
         payload["branches"] = branches
+        # An ``if`` with no explicit ``else`` leaves an unmodeled fall-through
+        # path; record it so the renderer can state "Otherwise, continue to the
+        # next step." instead of silently dropping the implicit branch.
+        if not branches or branches[-1]["label"] != "else":
+            payload["implicit_else"] = True
         return decision_id
 
     def _loop(self, node: ast.AST, container_id: str) -> str:
@@ -1064,6 +1081,8 @@ def _render_block(
                 child = by_id.get(bid)
                 if child is not None and child.get("block_type") in _PROCEDURE_TYPES:
                     lines.extend(_render_block(child, blocks, deeper))
+        if payload.get("implicit_else"):
+            lines.append(indent + "Otherwise, continue to the next step.")
     elif block_type == BT_LOOP:
         for bid in payload.get("body_block_ids", []):
             child = by_id.get(bid)
@@ -1168,13 +1187,6 @@ def _render_entity(root: Dict[str, Any], blocks: List[Dict[str, Any]]) -> str:
         for item in nested_entities:
             lines.append(f"  declares {item.get('display_text', '')}")
 
-    section("Return:", [b for b in descendants if b.get("block_type") == BT_RETURN])
-    side = [b for b in descendants if b.get("block_type") == BT_SIDE_EFFECT]
-    if side:
-        lines.append("")
-        lines.append("Side effects:")
-        for item in side:
-            lines.extend(_render_block(item, blocks, "  "))
     section("Dependencies:", [b for b in descendants if b.get("block_type") == BT_DEPENDENCY])
     section("Invariants:", [b for b in descendants if b.get("block_type") == BT_INVARIANT])
     section("Limitations:", [b for b in descendants if b.get("block_type") == BT_LIMITATION])
@@ -1184,8 +1196,10 @@ def _render_entity(root: Dict[str, Any], blocks: List[Dict[str, Any]]) -> str:
 def render_blocks(blocks: List[Dict[str, Any]]) -> str:
     """Render ``blocks`` as the deterministic procedural document.
 
-    Section order (SCOPE E): Entity -> Inputs -> Purpose -> Procedure -> Return
-    -> Side Effects -> Dependencies -> Invariants -> Limitations.
+    Section order (SCOPE E): Entity -> Inputs -> Purpose -> Procedure ->
+    Dependencies -> Invariants -> Limitations. ``return`` and ``side_effect``
+    blocks are procedure steps and render inside Procedure, in source order,
+    rather than as trailing sections.
     """
     if not blocks:
         return ""

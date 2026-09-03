@@ -198,6 +198,33 @@ class MappingCorpusTests(unittest.TestCase):
         self.assertIn("For each item in self._items()", text)
         self.assertIn("(asynchronous)", text)
 
+    def test_side_effect_mutation_renders_as_a_procedure_step(self):
+        sub = _blocks_for("procedural.py", "procedural.Service._cleanup")
+        text = codemap.render_blocks(sub)
+        self.assertIn("Mutates self.max_items.", text)
+        self.assertIn("Returns None.", text)
+
+    def test_if_elif_else_renders_every_branch(self):
+        source = (
+            "def classify(n):\n"
+            "    if n < 0:\n"
+            "        return 'negative'\n"
+            "    elif n == 0:\n"
+            "        return 'zero'\n"
+            "    else:\n"
+            "        return 'positive'\n"
+        )
+        blocks = codemap.build_codemap(source, "classify.py", "classify", "rev-1")
+        text = codemap.render_blocks(codemap.blocks_for_entity(blocks, "classify.classify"))
+        self.assertIn("If n < 0 is true, the following runs:", text)
+        self.assertIn("Otherwise, if n == 0:", text)
+        self.assertIn("Otherwise:", text)
+        self.assertIn("Returns 'negative'.", text)
+        self.assertIn("Returns 'zero'.", text)
+        self.assertIn("Returns 'positive'.", text)
+        # An explicit ``else`` means there is no implicit fall-through step.
+        self.assertNotIn("Otherwise, continue to the next step.", text)
+
 
 # ---------------------------------------------------------------------------
 # Group 3 — calculator regression
@@ -216,6 +243,7 @@ class CalculatorRegressionTests(unittest.TestCase):
         self.assertIn("Function divide(left: float, right: float) -> float", text)
         self.assertIn("If right == 0 is true, the following runs:", text)
         self.assertIn("Raises ValueError('division by zero') when right == 0.", text)
+        self.assertIn("Otherwise, continue to the next step.", text)
         self.assertIn("result is assigned left / right", text)
         self.assertIn("Returns result.", text)
 

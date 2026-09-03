@@ -562,6 +562,16 @@ class MainWindow(QMainWindow):
         self._codemap_text: str = ""
         self._codemap_entities: List[Dict[str, Any]] = []
         self._active_entity_locator: Optional[str] = None
+        # In-place Code Map status line: shows "Updating Code Map for <path>…"
+        # during a file switch and a bounded failure message on request failure,
+        # while the previous valid projection stays mounted underneath.
+        self._codemap_status: Optional[QLabel] = None
+        # Chip state captured before a Code Map load begins, so a failed load
+        # can restore the retained projection's state instead of flashing Empty.
+        self._codemap_prior_state: str = TWIN_EMPTY
+        # True while a file-switch Code Map load is in flight (a scoped sync or
+        # get is pending); cleared on load or failure.
+        self._codemap_load_pending: bool = False
         self._codemap_details_visible: bool = False
         self._edit_mode: bool = False
         self._draft_dirty: bool = False
@@ -741,6 +751,7 @@ class MainWindow(QMainWindow):
         self._source_tabs.setUsesScrollButtons(True)
         self._source_tabs.setElideMode(Qt.ElideNone)
         self._source_tabs.tabCloseRequested.connect(self._close_tab)
+        self._source_tabs.currentChanged.connect(self._on_source_tab_changed)
         self._source_stack.addWidget(self._source_tabs)
 
         layout.addWidget(self._source_stack, stretch=1)
@@ -832,6 +843,18 @@ class MainWindow(QMainWindow):
         self._codemap_details_button.toggled.connect(self._on_details_toggled)
         entity_header_layout.addWidget(self._codemap_details_button)
         body_layout.addWidget(entity_header)
+
+        # Small in-place status line (hidden by default). It carries the
+        # "Updating Code Map for …" indicator and bounded failure messages
+        # without ever replacing the mounted procedural document.
+        self._codemap_status = QLabel("")
+        self._codemap_status.setObjectName("codemapStatus")
+        self._codemap_status.setAccessibleName("Code Map status")
+        self._codemap_status.setWordWrap(True)
+        self._codemap_status.setTextFormat(Qt.PlainText)
+        self._codemap_status.setStyleSheet(style.secondary_text_style(self._palette))
+        self._codemap_status.setVisible(False)
+        body_layout.addWidget(self._codemap_status)
 
         self._codemap_entity_list = QListWidget()
         self._codemap_entity_list.setObjectName("codemapEntityList")
@@ -1222,6 +1245,7 @@ class MainWindow(QMainWindow):
         self._codemap_text = _TWIN_LABELS.get(state, "")
         self._codemap_blocks = []
         self._codemap_entities = []
+        self._hide_codemap_status()
         self._render_code_map()
 
     def _set_validation_state(self, state: str) -> None:
@@ -1316,6 +1340,9 @@ class MainWindow(QMainWindow):
         name = doc.get("name", rel_path)
         kind = doc.get("kind", "source")
         view = self._open_tabs.get(rel_path)
+        # Set the current document before the tab switches so the currentChanged
+        # handler treats this as already-followed and never double-loads.
+        self._current_document = rel_path
         if view is None:
             view = DocumentView(self._source_tabs, palette=self._palette)
             index = self._source_tabs.addTab(view, name)
@@ -1330,7 +1357,6 @@ class MainWindow(QMainWindow):
         else:
             view.show_source(doc.get("content", ""))
         self._source_stack.setCurrentIndex(1)
-        self._current_document = rel_path
         self._set_status(STATE_SUCCESS, f"opened {rel_path}")
         self._update_status()
 
@@ -1338,6 +1364,30 @@ class MainWindow(QMainWindow):
         if self._pending_reveal_line is not None and kind == "source":
             view.reveal_line(self._pending_reveal_line)
             self._pending_reveal_line = None
+        self._load_codemap(rel_path)
+
+    def _on_source_tab_changed(self, index: int) -> None:
+        """Follow the newly active source tab (P3.4 active-file scope).
+
+        Activating an already-open tab switches the Code Map to that file's
+        scoped procedure. ``_on_document_opened`` sets ``_current_document``
+        before the tab switches, so this handler no-ops during the open itself
+        and only fires on a genuine tab change.
+        """
+        if index < 0:
+            return
+        widget = self._source_tabs.widget(index)
+        if widget is None:
+            return
+        rel_path = None
+        for path, view in self._open_tabs.items():
+            if view is widget:
+                rel_path = path
+                break
+        if rel_path is None or rel_path == self._current_document:
+            return
+        self._current_document = rel_path
+        self._update_status()
         self._load_codemap(rel_path)
 
     def _on_scan_completed(self, result: Dict[str, Any]) -> None:
@@ -1426,31 +1476,52 @@ class MainWindow(QMainWindow):
         if not self._send(request, self._on_twin_synced, self._on_twin_failed):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
+    def _show_codemap_status(self, text: str) -> None:
+        """Show the in-place Code Map status line without touching the projection."""
+        if self._codemap_status is None:
+            return
+        self._codemap_status.setText(text)
+        self._codemap_status.setVisible(True)
+
+    def _hide_codemap_status(self) -> None:
+        """Hide the in-place Code Map status line."""
+        if self._codemap_status is None:
+            return
+        self._codemap_status.setText("")
+        self._codemap_status.setVisible(False)
+
     def _load_codemap(self, rel_path: str) -> None:
         """Drive the selection -> sync -> get -> render Code Map lifecycle (P3.4).
 
-        A supported Python source (``.py`` / ``.pyi``) sets the pane Loading,
-        synchronizes that file's scope, then loads and renders its procedural
-        document. Any other file shows a bounded state and never triggers a
-        source sync. When the pane is pinned, the current Code Map is frozen and
-        the pin guard returns without following, clearing, reloading or
-        relabelling it.
+        A supported Python source (``.py`` / ``.pyi``) shows a small in-place
+        "Updating…" status line, synchronizes that file's scope, then loads and
+        renders its procedural document — all while the previous valid projection
+        stays mounted and is replaced atomically once the correlated response
+        arrives. Any other file shows a bounded state and never triggers a source
+        sync. When the pane is pinned, or an editable draft is open, the current
+        Code Map is frozen and the guard returns without following, clearing,
+        reloading or relabelling it.
         """
         if not self._root:
             return
         if self._twin_pinned:
             return  # pinned: never follow, clear, reload or relabel the pinned Code Map
+        if self._edit_mode:
+            return  # an open (possibly dirty) draft is never silently retargeted
         generation = self._next_twin_generation()
         if not is_twin_source_path(rel_path):
+            self._hide_codemap_status()
             self._set_twin_state(TWIN_EMPTY)
             self._set_active_twin_path(None)
             return
+        # Keep the previous projection mounted; only switch the chip to Loading
+        # and show the in-place status. The document, entity list and active path
+        # are replaced once (in ``_on_code_map_loaded``), never cleared here.
+        if self._twin_state != TWIN_LOADING:
+            self._codemap_prior_state = self._twin_state
+        self._codemap_load_pending = True
         self._set_twin_chip(TWIN_LOADING)
-        self._codemap_text = _TWIN_LABELS[TWIN_LOADING]
-        self._codemap_blocks = []
-        self._codemap_entities = []
-        self._render_code_map()
-        self._set_active_twin_path(None)
+        self._show_codemap_status(f"Updating Code Map for {rel_path}…")
         self._sync_twin_scoped(rel_path, generation)
 
     def _sync_twin_scoped(self, rel_path: str, generation: int) -> None:
@@ -1505,6 +1576,8 @@ class MainWindow(QMainWindow):
         """
         if generation is not None and generation != self._twin_generation:
             return  # a late response for a previously selected file
+        self._codemap_load_pending = False
+        self._hide_codemap_status()
         baseline = result.get("baseline") or {}
         sync_state = baseline.get("sync_state", "synchronized")
         self._set_twin_chip(twin_state_from_sync(sync_state))
@@ -1533,13 +1606,19 @@ class MainWindow(QMainWindow):
         self._set_code_map_failure(reason)
 
     def _set_code_map_failure(self, reason: str) -> None:
-        """Show an explicit bounded failure state with its reason (Code Map pane only)."""
-        self._set_twin_chip(TWIN_EMPTY)
-        self._codemap_text = f"Code Map unavailable.\n\nReason: {reason}"
-        self._codemap_blocks = []
-        self._codemap_entities = []
-        self._render_code_map()
-        self._set_active_twin_path(None)
+        """Show a bounded failure status while retaining the previous projection.
+
+        The document, entity list and active path stay mounted; the failure is
+        surfaced in the in-place status line. The chip returns to its pre-load
+        state (or Empty when a non-Code-Map sync was interrupted) instead of
+        flashing Empty.
+        """
+        if self._codemap_load_pending:
+            self._set_twin_chip(self._codemap_prior_state)
+            self._codemap_load_pending = False
+        elif self._twin_state == TWIN_LOADING:
+            self._set_twin_chip(TWIN_EMPTY)
+        self._show_codemap_status(f"Code Map unavailable — {reason}.")
 
     def _render_code_map(self) -> None:
         """Render the read-only procedural document and the compact entity list."""
