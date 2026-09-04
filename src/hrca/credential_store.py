@@ -40,6 +40,7 @@ _SAFE_MESSAGES = {
     "invalid_secret": "the credential secret is invalid",
     "store_failed": "the credential store operation failed",
     "unavailable": "credential storage is unavailable on this platform",
+    "prompt_failed": "the secure credential prompt failed",
 }
 
 
@@ -169,6 +170,50 @@ def make_credential_store() -> CredentialStore:
     return UnavailableCredentialStore()
 
 
+# Bounded result states for the backend-owned credential manage/remove actions
+# (P4.2a). A result carries only a state token and credential *presence* — never
+# the secret, its length, a prefix, a suffix or any representation of it.
+CREDENTIAL_STATE_STORED = "stored"
+CREDENTIAL_STATE_CANCELLED = "cancelled"
+CREDENTIAL_STATE_REMOVED = "removed"
+CREDENTIAL_STATE_UNAVAILABLE = "unavailable"
+CREDENTIAL_STATE_FAILED = "failed"
+CREDENTIAL_RESULT_STATES = frozenset(
+    {
+        CREDENTIAL_STATE_STORED,
+        CREDENTIAL_STATE_CANCELLED,
+        CREDENTIAL_STATE_REMOVED,
+        CREDENTIAL_STATE_UNAVAILABLE,
+        CREDENTIAL_STATE_FAILED,
+    }
+)
+
+
+def redacted_credential_result(state: str, credential_present: bool) -> dict:
+    """Return a bounded, secret-free credential action result (P4.2a).
+
+    ``state`` is one of :data:`CREDENTIAL_RESULT_STATES`; ``credential_present``
+    is the redacted presence fact. No secret, error text or representation ever
+    appears in the returned mapping.
+    """
+    return {"state": state, "credential_present": bool(credential_present)}
+
+
+def native_credential_prompt():
+    """Return the platform secure credential prompt, or ``None`` when absent.
+
+    On Windows this is :func:`hrca.credential_store_win.prompt_secret`, the
+    operating system's own credential dialog; every other platform has no
+    coherent secure prompt and returns ``None`` so the boundary reports the
+    action unavailable rather than falling back to insecure input.
+    """
+    if os.name == "nt":
+        from .credential_store_win import prompt_secret
+
+        return prompt_secret
+    return None
+
+
 __all__ = [
     "TARGET_NAME",
     "CredentialStoreError",
@@ -176,4 +221,12 @@ __all__ = [
     "FakeCredentialStore",
     "UnavailableCredentialStore",
     "make_credential_store",
+    "CREDENTIAL_STATE_STORED",
+    "CREDENTIAL_STATE_CANCELLED",
+    "CREDENTIAL_STATE_REMOVED",
+    "CREDENTIAL_STATE_UNAVAILABLE",
+    "CREDENTIAL_STATE_FAILED",
+    "CREDENTIAL_RESULT_STATES",
+    "redacted_credential_result",
+    "native_credential_prompt",
 ]

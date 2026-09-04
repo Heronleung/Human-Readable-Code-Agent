@@ -17,8 +17,10 @@ from hrca.contract import (
     ACTION_GET_READINESS,
     ACTION_GET_TREE,
     ACTION_GET_TWIN,
+    ACTION_MANAGE_CREDENTIAL,
     ACTION_OPEN_PROJECT,
     ACTION_PLAN_PROPOSAL,
+    ACTION_REMOVE_CREDENTIAL,
     ACTION_RESET_DRAFT,
     ACTION_SAVE_DRAFT,
     ACTION_SCAN,
@@ -26,6 +28,7 @@ from hrca.contract import (
     ALLOWED_ACTIONS,
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
+    CREDENTIAL_ACTIONS,
     DRAFT_ACTIONS,
     MAX_DOCUMENT_BYTES,
     MAX_DRAFT_BYTES,
@@ -85,7 +88,8 @@ class AllowedActionTests(unittest.TestCase):
             | TWIN_ACTIONS
             | DRAFT_ACTIONS
             | PROPOSAL_ACTIONS
-            | READINESS_ACTIONS,
+            | READINESS_ACTIONS
+            | CREDENTIAL_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -152,6 +156,24 @@ class AllowedActionTests(unittest.TestCase):
             self.assertNotIn(action, TWIN_ACTIONS)
             self.assertNotIn(action, DRAFT_ACTIONS)
             self.assertNotIn(action, PROPOSAL_ACTIONS)
+
+    def test_credential_actions_are_allowlisted(self):
+        self.assertEqual(
+            CREDENTIAL_ACTIONS,
+            frozenset({ACTION_MANAGE_CREDENTIAL, ACTION_REMOVE_CREDENTIAL}),
+        )
+
+    def test_credential_actions_are_read_only(self):
+        # Credential management touches only the platform credential store —
+        # never source, Git state, a command, or the network.
+        for action in CREDENTIAL_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, WORKSPACE_ACTIONS)
+            self.assertNotIn(action, TWIN_ACTIONS)
+            self.assertNotIn(action, DRAFT_ACTIONS)
+            self.assertNotIn(action, PROPOSAL_ACTIONS)
+            self.assertNotIn(action, READINESS_ACTIONS)
 
     def test_no_forbidden_action_is_allowed(self):
         for action in _FORBIDDEN_ACTIONS:

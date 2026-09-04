@@ -71,8 +71,10 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QDialog,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -98,6 +100,11 @@ from PySide6.QtWidgets import (
 
 from . import contract, style
 from .client_core import (
+    PROVIDER_STATUS_CONFIGURED,
+    PROVIDER_STATUS_FAILED,
+    PROVIDER_STATUS_MISSING_CREDENTIAL,
+    PROVIDER_STATUS_PENDING,
+    PROVIDER_STATUS_UNAVAILABLE,
     PROVIDER_UNAVAILABLE,
     REPOSITORY_UNVERIFIED,
     STATE_BLOCKED,
@@ -116,6 +123,7 @@ from .client_core import (
     LineBuffer,
     ResponseRouter,
     block_type_label,
+    credential_action_message,
     build_compare_draft_request,
     build_discard_draft_request,
     build_generate_intent_delta_request,
@@ -124,8 +132,10 @@ from .client_core import (
     build_get_draft_request,
     build_get_readiness_request,
     build_get_tree_request,
+    build_manage_credential_request,
     build_open_project_request,
     build_plan_proposal_request,
+    build_remove_credential_request,
     build_request,
     build_reset_draft_request,
     build_save_draft_request,
@@ -142,6 +152,7 @@ from .client_core import (
     operation_label,
     proposal_state_label,
     provider_readiness_state_label,
+    provider_status_message,
     resolve_backend_command,
     twin_state_from_sync,
 )
@@ -192,6 +203,21 @@ _UNAVAILABLE_TEXT = {
     "path_not_readable": "File is not readable.",
 }
 _UNAVAILABLE_FALLBACK = "This file cannot be previewed."
+
+# Fixed, redacted API-key state vocabulary for the Settings surface (P4.2a).
+# Only credential *presence* is reported, in fixed words; the key value is never
+# held, logged, rendered or serialized by the desktop client.
+_SETTINGS_KEY_PRESENT = "Stored (the key is never displayed)"
+_SETTINGS_KEY_ABSENT = "Not configured"
+
+# Plain-language privacy note on the Settings surface. It states the local-only
+# nature of the screen in fixed prose; the explicit line break keeps the dialog
+# compact without any hard-coded geometry value.
+_SETTINGS_PRIVACY_NOTE = (
+    "Your DeepSeek API key is stored in this computer's secure credential "
+    "store and is never displayed here.\n"
+    "This screen makes no connection to DeepSeek and never sends project data."
+)
 
 # The six bottom-panel tabs, in the fixed order the tab bar presents them. The
 # first key ("chat") maps to the Agent Chat surface; the remaining five map to
@@ -547,6 +573,13 @@ class MainWindow(QMainWindow):
         self._repository_state: str = REPOSITORY_UNVERIFIED
         self._twin_state: str = TWIN_EMPTY
         self._provider_state: str = PROVIDER_UNAVAILABLE
+        # P4.2a provider presentation state: the allowlisted model and redacted
+        # credential presence reported by the boundary, plus the fixed-height
+        # provider status region and the lazily-built Settings dialog.
+        self._provider_model: Optional[str] = None
+        self._provider_credential_present: bool = False
+        self._provider_status_label: Optional[QLabel] = None
+        self._settings_dialog: Optional[QDialog] = None
         self._validation_state: str = VALIDATION_IDLE
         self._current_document: Optional[str] = None
         self._tree: Optional[Dict[str, Any]] = None
@@ -620,6 +653,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(style.SPACE_0)
 
         root.addWidget(self._build_command_bar())
+        root.addWidget(self._build_provider_status_region())
 
         self._vertical_splitter = HairlineSplitter(Qt.Vertical, self._palette)
         self._vertical_splitter.setObjectName("verticalSplitter")
@@ -675,6 +709,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
         layout.setSpacing(style.GAP_TIGHT)
 
+        self.settings_button = QPushButton("Settings")
+        self.settings_button.setIcon(style.settings_icon(self._palette, True))
+        self.settings_button.setAccessibleName("Settings")
+        self.settings_button.setToolTip("Settings")
+        self.settings_button.clicked.connect(self._open_settings)
+
         self.open_project_button = QPushButton("Open Project")
         self.open_project_button.setObjectName("primaryButton")
         self.open_project_button.setAccessibleName("Open Project")
@@ -686,18 +726,40 @@ class MainWindow(QMainWindow):
         self.scan_button.setToolTip("Open a project before running a read-only scan.")
         self.scan_button.clicked.connect(self._on_run_scan)
 
-        self.provider_button = QPushButton("Check provider")
-        self.provider_button.setAccessibleName("Check provider readiness")
+        self.provider_button = QPushButton("Provider status")
+        self.provider_button.setAccessibleName("Provider status")
         self.provider_button.setToolTip(
-            "Check local DeepSeek configuration and credential readiness (no network)."
+            "Check local DeepSeek configuration only — this never contacts DeepSeek."
         )
         self.provider_button.clicked.connect(self._check_provider_readiness)
 
+        layout.addWidget(self.settings_button)
         layout.addWidget(self.open_project_button)
         layout.addWidget(self.scan_button)
         layout.addWidget(self.provider_button)
         layout.addStretch(1)
         return bar
+
+    def _build_provider_status_region(self) -> QWidget:
+        """Build the permanently-reserved provider status strip (P4.2a).
+
+        The region is a fixed-height, single-line label mounted below the top
+        toolbar. It is always present so that writing the local provider state
+        ("Checking…" / "configured" / "not configured" / …) never reflows the
+        splitter, panels or scroll position, and never depends on the truncated
+        footer field.
+        """
+        region = QWidget()
+        region.setObjectName("providerStatus")
+        region.setFixedHeight(style.PROVIDER_STATUS_HEIGHT)
+        layout = QHBoxLayout(region)
+        layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
+        layout.setSpacing(style.SPACE_0)
+        self._provider_status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
+        self._provider_status_label.setStyleSheet(style.status_label_style(self._palette))
+        self._provider_status_label.setAccessibleName("Provider status")
+        layout.addWidget(self._provider_status_label, stretch=1)
+        return region
 
     def _build_explorer(self) -> QWidget:
         panel = QWidget()
@@ -1329,17 +1391,191 @@ class MainWindow(QMainWindow):
         cid = contract.new_correlation_id()
         request = build_get_readiness_request(cid)
         self._set_status(STATE_RUNNING, "checking provider readiness")
+        self._set_provider_status(PROVIDER_STATUS_PENDING)
         if not self._send(request, self._on_readiness_ready, self._on_readiness_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
     def _on_readiness_ready(self, result: Dict[str, Any]) -> None:
         state = str(result.get("state", PROVIDER_UNAVAILABLE))
         self._provider_state = state
+        self._provider_model = result.get("model")
+        self._provider_credential_present = bool(result.get("credential_present", False))
         self._update_status()
         self._set_status(STATE_SUCCESS, provider_readiness_state_label(state))
+        self._set_provider_status(state)
+        self._refresh_settings_dialog()
 
     def _on_readiness_error(self, reason: str) -> None:
         self._set_status(STATE_FAILED, reason)
+        self._set_provider_status(PROVIDER_STATUS_FAILED)
+
+    def _set_provider_status(self, status: str) -> None:
+        """Write the fixed-height provider status region from a bounded state.
+
+        Only the preallocated region's text changes; it never toggles
+        visibility, moves the splitter or reflows the body, and it never
+        depends on the truncated footer field.
+        """
+        if self._provider_status_label is not None:
+            self._provider_status_label.setText(provider_status_message(status))
+
+    # -- Settings surface (P4.2a) ----------------------------------------
+
+    def _open_settings(self) -> None:
+        self._build_settings_dialog()
+        self._refresh_settings_dialog()
+        self._settings_dialog.show()
+        # Refresh the fixed provider identity and redacted credential presence
+        # through the local boundary so the surface is never stale.
+        self._check_provider_readiness()
+
+    def _build_settings_dialog(self) -> None:
+        if self._settings_dialog is not None:
+            return
+        dialog = QDialog(self)
+        dialog.setObjectName("settingsDialog")
+        dialog.setWindowTitle("Settings")
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(
+            style.SPACE_16, style.SPACE_16, style.SPACE_16, style.SPACE_16
+        )
+        layout.setSpacing(style.GAP_GROUP)
+
+        header = QLabel("Provider")
+        header.setFont(style.panel_header_font())
+        layout.addWidget(header)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        grid.setSpacing(style.GAP_TIGHT)
+
+        def field_label(text: str) -> QLabel:
+            label = QLabel(text)
+            label.setStyleSheet(style.secondary_text_style(self._palette))
+            return label
+
+        self._settings_provider_value = QLabel("DeepSeek")
+        self._settings_provider_value.setStyleSheet(style.status_label_style(self._palette))
+        self._settings_model_value = QLabel("—")
+        self._settings_model_value.setStyleSheet(style.status_label_style(self._palette))
+        self._settings_key_value = QLabel(_SETTINGS_KEY_ABSENT)
+        self._settings_key_value.setStyleSheet(style.status_label_style(self._palette))
+
+        grid.addWidget(field_label("Provider"), 0, 0)
+        grid.addWidget(self._settings_provider_value, 0, 1)
+        grid.addWidget(field_label("Model"), 1, 0)
+        grid.addWidget(self._settings_model_value, 1, 1)
+        grid.addWidget(field_label("API key"), 2, 0)
+        grid.addWidget(self._settings_key_value, 2, 1)
+        layout.addLayout(grid)
+
+        self._manage_key_button = QPushButton("Manage API key…")
+        self._manage_key_button.setAccessibleName("Manage API key")
+        self._manage_key_button.clicked.connect(self._on_manage_credential)
+
+        self._remove_key_button = QPushButton("Remove API key")
+        self._remove_key_button.setAccessibleName("Remove API key")
+        self._remove_key_button.clicked.connect(self._on_remove_credential)
+
+        actions = QHBoxLayout()
+        actions.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        actions.setSpacing(style.GAP_TIGHT)
+        actions.addWidget(self._manage_key_button)
+        actions.addWidget(self._remove_key_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+
+        note = QLabel(_SETTINGS_PRIVACY_NOTE)
+        note.setStyleSheet(style.secondary_text_style(self._palette))
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._settings_dialog = dialog
+
+    def _refresh_settings_dialog(self) -> None:
+        if self._settings_dialog is None:
+            return
+        self._settings_model_value.setText(self._provider_model or "—")
+        self._settings_key_value.setText(
+            _SETTINGS_KEY_PRESENT
+            if self._provider_credential_present
+            else _SETTINGS_KEY_ABSENT
+        )
+        self._remove_key_button.setEnabled(self._provider_credential_present)
+
+    def _on_manage_credential(self) -> None:
+        cid = contract.new_correlation_id()
+        request = build_manage_credential_request(cid)
+        self._set_status(STATE_RUNNING, "managing API key")
+        if not self._send(
+            request, self._on_manage_credential_ready, self._on_credential_action_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_remove_credential(self) -> None:
+        if not self._confirm_remove_credential():
+            return
+        cid = contract.new_correlation_id()
+        request = build_remove_credential_request(cid)
+        self._set_status(STATE_RUNNING, "removing API key")
+        if not self._send(
+            request, self._on_remove_credential_ready, self._on_credential_action_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _confirm_remove_credential(self) -> bool:
+        box = QMessageBox(self)
+        box.setWindowTitle("Remove API key")
+        box.setText(
+            "Remove the stored DeepSeek API key from this computer's secure "
+            "credential store?"
+        )
+        box.setInformativeText("The key is deleted locally and never displayed.")
+        remove_button = box.addButton("Remove", QMessageBox.DestructiveRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        return box.clickedButton() is remove_button
+
+    def _on_manage_credential_ready(self, result: Dict[str, Any]) -> None:
+        self._apply_credential_result(result)
+
+    def _on_remove_credential_ready(self, result: Dict[str, Any]) -> None:
+        self._apply_credential_result(result)
+
+    def _apply_credential_result(self, result: Dict[str, Any]) -> None:
+        state = str(result.get("state", "failed"))
+        self._provider_credential_present = bool(result.get("credential_present", False))
+        if state in ("stored", "removed"):
+            self._set_status(STATE_SUCCESS, credential_action_message(state))
+        elif state == "cancelled":
+            self._set_status(STATE_IDLE, credential_action_message(state))
+        elif state == "unavailable":
+            self._set_status(STATE_UNAVAILABLE, credential_action_message(state))
+        else:  # failed
+            self._set_status(STATE_FAILED, credential_action_message(state))
+        if state == "stored":
+            self._provider_state = "configured"
+            self._set_provider_status(PROVIDER_STATUS_CONFIGURED)
+        elif state == "removed":
+            self._provider_state = "missing_credential"
+            self._set_provider_status(PROVIDER_STATUS_MISSING_CREDENTIAL)
+        elif state == "unavailable":
+            self._provider_state = "unavailable"
+            self._set_provider_status(PROVIDER_STATUS_UNAVAILABLE)
+        elif state == "failed":
+            self._set_provider_status(PROVIDER_STATUS_FAILED)
+        # "cancelled" leaves the provider state and status region unchanged.
+        self._update_status()
+        self._refresh_settings_dialog()
+
+    def _on_credential_action_error(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+        self._set_provider_status(PROVIDER_STATUS_FAILED)
 
     def _open_document(self, rel_path: str) -> None:
         cid = contract.new_correlation_id()

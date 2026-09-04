@@ -11,10 +11,12 @@ from unittest import mock
 from hrca import contract
 from hrca.client_core import (
     BLOCK_TYPE_LABELS,
+    CREDENTIAL_ACTION_MESSAGES,
     INTENT_CLASS_LABELS,
     OPERATION_LABELS,
     PROPOSAL_STATE_LABELS,
     PROVIDER_READINESS_STATE_LABELS,
+    PROVIDER_STATUS_MESSAGES,
     PROVIDER_UNAVAILABLE,
     REPOSITORY_UNVERIFIED,
     TWIN_AVAILABLE,
@@ -32,6 +34,7 @@ from hrca.client_core import (
     ResponseRouter,
     behavior_node_label,
     block_type_label,
+    credential_action_message,
     build_compare_draft_request,
     build_discard_draft_request,
     build_fixture_task,
@@ -43,8 +46,10 @@ from hrca.client_core import (
     build_get_readiness_request,
     build_get_tree_request,
     build_get_twin_request,
+    build_manage_credential_request,
     build_open_project_request,
     build_plan_proposal_request,
+    build_remove_credential_request,
     build_request,
     build_reset_draft_request,
     build_save_draft_request,
@@ -65,6 +70,7 @@ from hrca.client_core import (
     operation_label,
     proposal_state_label,
     provider_readiness_state_label,
+    provider_status_message,
     resolve_backend_command,
     twin_state_from_sync,
 )
@@ -697,6 +703,85 @@ class ProviderReadinessTests(unittest.TestCase):
         # readiness check never asserts the provider is reachable.
         self.assertNotIn("Authenticated: true", text)
         self.assertNotIn("Online: true", text)
+
+
+class ProviderStatusMessageTests(unittest.TestCase):
+    def test_provider_status_messages_are_exact(self):
+        self.assertEqual(
+            provider_status_message("pending"), "Checking local provider configuration…"
+        )
+        self.assertEqual(
+            provider_status_message("configured"), "DeepSeek is configured locally"
+        )
+        self.assertEqual(
+            provider_status_message("missing_credential"),
+            "DeepSeek API key not configured",
+        )
+        self.assertEqual(
+            provider_status_message("unavailable"),
+            "Provider setup is unavailable on this platform",
+        )
+        self.assertEqual(
+            provider_status_message("invalid_config"),
+            "Provider configuration needs repair",
+        )
+        self.assertEqual(
+            provider_status_message("failed"), "Provider check failed; try again."
+        )
+        self.assertEqual(provider_status_message("unknown"), "unknown")
+
+    def test_provider_status_messages_cover_all_states(self):
+        self.assertEqual(
+            set(PROVIDER_STATUS_MESSAGES),
+            {
+                "pending",
+                "configured",
+                "missing_credential",
+                "unavailable",
+                "invalid_config",
+                "failed",
+            },
+        )
+
+    def test_credential_action_messages_are_exact(self):
+        self.assertEqual(credential_action_message("stored"), "API key stored securely.")
+        self.assertEqual(
+            credential_action_message("cancelled"),
+            "No change — the secure prompt was cancelled.",
+        )
+        self.assertEqual(credential_action_message("removed"), "API key removed.")
+        self.assertEqual(
+            credential_action_message("unavailable"),
+            "Secure key management is unavailable on this platform.",
+        )
+        self.assertEqual(
+            credential_action_message("failed"),
+            "The operation could not be completed.",
+        )
+
+    def test_credential_action_messages_cover_all_states(self):
+        self.assertEqual(
+            set(CREDENTIAL_ACTION_MESSAGES),
+            {"stored", "cancelled", "removed", "unavailable", "failed"},
+        )
+
+    def test_manage_credential_request_shape(self):
+        req = build_manage_credential_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_MANAGE_CREDENTIAL)
+        self.assertNotIn("path", req)
+        self.assertNotIn("task", req)
+        self.assertNotIn("secret", req)
+        self.assertNotIn("credential", req)
+
+    def test_remove_credential_request_shape(self):
+        req = build_remove_credential_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_REMOVE_CREDENTIAL)
+        self.assertNotIn("path", req)
+        self.assertNotIn("task", req)
 
 
 class ClientStateConstantsTests(unittest.TestCase):

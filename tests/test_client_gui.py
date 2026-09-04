@@ -39,6 +39,8 @@ try:
         DocumentView,
         MainWindow,
         PythonHighlighter,
+        _SETTINGS_KEY_ABSENT,
+        _SETTINGS_KEY_PRESENT,
     )
     from hrca.client_core import (
         TWIN_AVAILABLE,
@@ -2358,10 +2360,22 @@ class ProviderReadinessGuiTests(unittest.TestCase):
 
     def test_provider_button_is_present(self):
         window = MainWindow()
-        self.assertEqual(window.provider_button.text(), "Check provider")
-        self.assertEqual(
-            window.provider_button.accessibleName(), "Check provider readiness"
-        )
+        self.assertEqual(window.provider_button.text(), "Provider status")
+        self.assertEqual(window.provider_button.accessibleName(), "Provider status")
+
+    def test_settings_button_is_present_before_open_project(self):
+        window = MainWindow()
+        self.assertEqual(window.settings_button.text(), "Settings")
+        self.assertEqual(window.settings_button.accessibleName(), "Settings")
+        # The Settings gear sits directly left of Open Project in the toolbar.
+        bar = window.settings_button.parentWidget().layout()
+        self.assertLess(bar.indexOf(window.settings_button), bar.indexOf(window.open_project_button))
+
+    def test_provider_status_region_is_reserved(self):
+        window = MainWindow()
+        self.assertIsNotNone(window._provider_status_label)
+        # Blank until a check runs; the region itself is permanently mounted.
+        self.assertEqual(window._provider_status_label.text(), "")
 
     def test_provider_button_sends_get_readiness(self):
         window = MainWindow()
@@ -2411,6 +2425,76 @@ class ProviderReadinessGuiTests(unittest.TestCase):
         window._on_readiness_error("invalid_config")
         self.assertIn("failed", window.status_label.text())
         self.assertIn("invalid_config", window.status_label.text())
+
+    def test_readiness_ready_updates_provider_status_region(self):
+        window = MainWindow()
+        window._on_readiness_ready(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-v4-flash",
+                "credential_present": True,
+                "authenticated": False,
+                "online": False,
+                "executable": False,
+            }
+        )
+        self.assertIn("DeepSeek is configured locally", window._provider_status_label.text())
+        self.assertEqual(window._provider_model, "deepseek-v4-flash")
+        self.assertTrue(window._provider_credential_present)
+
+    def test_readiness_error_sets_provider_status_failed(self):
+        window = MainWindow()
+        window._on_readiness_error("invalid_config")
+        self.assertIn("Provider check failed", window._provider_status_label.text())
+
+    def test_credential_result_stored_updates_status_region(self):
+        window = MainWindow()
+        window._apply_credential_result({"state": "stored", "credential_present": True})
+        self.assertEqual(window._provider_state, "configured")
+        self.assertTrue(window._provider_credential_present)
+        self.assertIn("DeepSeek is configured locally", window._provider_status_label.text())
+
+    def test_credential_result_removed_updates_status_region(self):
+        window = MainWindow()
+        window._provider_credential_present = True
+        window._apply_credential_result({"state": "removed", "credential_present": False})
+        self.assertEqual(window._provider_state, "missing_credential")
+        self.assertFalse(window._provider_credential_present)
+        self.assertIn("DeepSeek API key not configured", window._provider_status_label.text())
+
+    def test_manage_credential_button_sends_manage_credential(self):
+        window = MainWindow()
+        sent = self._fake_send(window)
+        window._build_settings_dialog()
+        window._manage_key_button.click()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_MANAGE_CREDENTIAL)
+        self.assertNotIn("path", sent[0])
+        self.assertNotIn("task", sent[0])
+        # The key can never enter a Qt request; the request is identity + action only.
+        self.assertNotIn("secret", contract.dumps(sent[0]))
+
+    def test_remove_button_disabled_without_key(self):
+        window = MainWindow()
+        window._build_settings_dialog()
+        window._provider_credential_present = False
+        window._refresh_settings_dialog()
+        self.assertFalse(window._remove_key_button.isEnabled())
+
+    def test_remove_button_enabled_with_key(self):
+        window = MainWindow()
+        window._build_settings_dialog()
+        window._provider_credential_present = True
+        window._refresh_settings_dialog()
+        self.assertTrue(window._remove_key_button.isEnabled())
+
+    def test_settings_dialog_never_shows_the_key(self):
+        window = MainWindow()
+        window._build_settings_dialog()
+        window._provider_credential_present = True
+        window._refresh_settings_dialog()
+        self.assertEqual(window._settings_key_value.text(), _SETTINGS_KEY_PRESENT)
 
 
 if __name__ == "__main__":

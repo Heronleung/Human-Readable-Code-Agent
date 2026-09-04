@@ -72,6 +72,48 @@ def provider_readiness_state_label(state: str) -> str:
     """Return the human label for a provider readiness ``state``."""
     return PROVIDER_READINESS_STATE_LABELS.get(state, state)
 
+
+# The six presentation states for the fixed-height provider status region
+# (P4.2a). ``pending`` and ``failed`` are client-side transient states; the
+# other four are the boundary's bounded readiness states mapped verbatim. The
+# message for each state is the exact user-facing sentence the desktop renders;
+# no technical or Win32 diagnostic text ever reaches the user.
+PROVIDER_STATUS_PENDING = "pending"
+PROVIDER_STATUS_CONFIGURED = "configured"
+PROVIDER_STATUS_MISSING_CREDENTIAL = "missing_credential"
+PROVIDER_STATUS_UNAVAILABLE = "unavailable"
+PROVIDER_STATUS_INVALID_CONFIG = "invalid_config"
+PROVIDER_STATUS_FAILED = "failed"
+
+PROVIDER_STATUS_MESSAGES = {
+    PROVIDER_STATUS_PENDING: "Checking local provider configuration…",
+    PROVIDER_STATUS_CONFIGURED: "DeepSeek is configured locally",
+    PROVIDER_STATUS_MISSING_CREDENTIAL: "DeepSeek API key not configured",
+    PROVIDER_STATUS_UNAVAILABLE: "Provider setup is unavailable on this platform",
+    PROVIDER_STATUS_INVALID_CONFIG: "Provider configuration needs repair",
+    PROVIDER_STATUS_FAILED: "Provider check failed; try again.",
+}
+
+# Bounded messages for the backend-owned credential manage/remove actions.
+# Each maps a redacted action state to a safe, action-oriented sentence.
+CREDENTIAL_ACTION_MESSAGES = {
+    "stored": "API key stored securely.",
+    "cancelled": "No change — the secure prompt was cancelled.",
+    "removed": "API key removed.",
+    "unavailable": "Secure key management is unavailable on this platform.",
+    "failed": "The operation could not be completed.",
+}
+
+
+def provider_status_message(status: str) -> str:
+    """Return the user-facing message for a provider status ``status``."""
+    return PROVIDER_STATUS_MESSAGES.get(status, status)
+
+
+def credential_action_message(state: str) -> str:
+    """Return the user-facing message for a credential action ``state``."""
+    return CREDENTIAL_ACTION_MESSAGES.get(state, state)
+
 # Repository state the client reports; always ``Unverified`` until a later
 # approved boundary capability supplies real repository state.
 REPOSITORY_UNVERIFIED = "Unverified"
@@ -633,6 +675,33 @@ def build_get_readiness_request(correlation_id: str) -> Dict[str, Any]:
     }
 
 
+def build_manage_credential_request(correlation_id: str) -> Dict[str, Any]:
+    """Build a ``manage_credential`` request (backend-owned secure enrollment).
+
+    The request carries only the correlation id and action name — never a key,
+    a path or a task. The boundary owns the native secure prompt and writes the
+    credential straight to the platform store; the desktop never sees the key.
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_MANAGE_CREDENTIAL,
+    }
+
+
+def build_remove_credential_request(correlation_id: str) -> Dict[str, Any]:
+    """Build a ``remove_credential`` request (backend-owned delete).
+
+    Carries only the correlation id and action name; the boundary deletes the
+    stored credential and returns a redacted result. No key is ever surfaced.
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_REMOVE_CREDENTIAL,
+    }
+
+
 def format_procedural_document(document: Any) -> str:
     """Return the procedural Code Map document text (rendered by the boundary).
 
@@ -824,6 +893,16 @@ __all__ = [
     "PROVIDER_UNAVAILABLE",
     "PROVIDER_READINESS_STATE_LABELS",
     "provider_readiness_state_label",
+    "PROVIDER_STATUS_PENDING",
+    "PROVIDER_STATUS_CONFIGURED",
+    "PROVIDER_STATUS_MISSING_CREDENTIAL",
+    "PROVIDER_STATUS_UNAVAILABLE",
+    "PROVIDER_STATUS_INVALID_CONFIG",
+    "PROVIDER_STATUS_FAILED",
+    "PROVIDER_STATUS_MESSAGES",
+    "provider_status_message",
+    "CREDENTIAL_ACTION_MESSAGES",
+    "credential_action_message",
     "REPOSITORY_UNVERIFIED",
     "VALIDATION_IDLE",
     "VALIDATION_RUNNING",
@@ -864,6 +943,8 @@ __all__ = [
     "build_generate_intent_delta_request",
     "build_plan_proposal_request",
     "build_get_readiness_request",
+    "build_manage_credential_request",
+    "build_remove_credential_request",
     "format_procedural_document",
     "format_entity_list",
     "format_draft_operations",

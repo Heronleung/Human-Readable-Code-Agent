@@ -63,6 +63,8 @@ ACTION_COMPARE_DRAFT = "compare_draft"
 ACTION_GENERATE_INTENT_DELTA = "generate_intent_delta"
 ACTION_PLAN_PROPOSAL = "plan_proposal"
 ACTION_GET_READINESS = "get_readiness"
+ACTION_MANAGE_CREDENTIAL = "manage_credential"
+ACTION_REMOVE_CREDENTIAL = "remove_credential"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -98,6 +100,13 @@ PROPOSAL_ACTIONS = frozenset({ACTION_PLAN_PROPOSAL})
 # network access, no inference and never surfaces a credential, an endpoint, a
 # header or a config error reason.
 READINESS_ACTIONS = frozenset({ACTION_GET_READINESS})
+# The P4.2a backend-owned credential management protocol: enroll/replace or
+# remove the DeepSeek API key through the platform credential store. These
+# actions are dispatched only through the local boundary to backend-owned
+# secure enrollment (a native prompt) — the desktop renderer never receives,
+# holds, logs or serializes the key, and no source, Git state, command or
+# network is ever touched.
+CREDENTIAL_ACTIONS = frozenset({ACTION_MANAGE_CREDENTIAL, ACTION_REMOVE_CREDENTIAL})
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -105,6 +114,7 @@ ALLOWED_ACTIONS = (
     | DRAFT_ACTIONS
     | PROPOSAL_ACTIONS
     | READINESS_ACTIONS
+    | CREDENTIAL_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -285,12 +295,15 @@ __all__ = [
     "ACTION_GENERATE_INTENT_DELTA",
     "ACTION_PLAN_PROPOSAL",
     "ACTION_GET_READINESS",
+    "ACTION_MANAGE_CREDENTIAL",
+    "ACTION_REMOVE_CREDENTIAL",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
     "DRAFT_ACTIONS",
     "PROPOSAL_ACTIONS",
     "READINESS_ACTIONS",
+    "CREDENTIAL_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",

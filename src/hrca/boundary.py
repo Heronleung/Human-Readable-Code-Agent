@@ -70,6 +70,7 @@ class WorkspaceSession:
         self,
         store_base: Optional[str] = None,
         credential_store: Any = None,
+        credential_prompt: Any = None,
     ) -> None:
         self.root: Optional[str] = None
         self.store_base: str = store_base or twin_store.app_data_dir()
@@ -78,6 +79,9 @@ class WorkspaceSession:
         # never queries readiness never constructs (or touches) a credential
         # store.
         self.credential_store = credential_store
+        # Backend-owned secure credential prompt, injected for tests; resolved
+        # lazily to the platform native prompt by the manage-credential handler.
+        self.credential_prompt = credential_prompt
 
     def open(self, root: str) -> None:
         self.root = root
@@ -236,6 +240,10 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _plan_proposal_result(request, session)
     elif action == contract.ACTION_GET_READINESS:
         result = _get_readiness_result(request, session)
+    elif action == contract.ACTION_MANAGE_CREDENTIAL:
+        result = _manage_credential_result(request, session)
+    elif action == contract.ACTION_REMOVE_CREDENTIAL:
+        result = _remove_credential_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -688,6 +696,101 @@ def _get_readiness_result(
         config_error=config_error,
         credential_present=credential_present,
         store_available=store_available,
+    )
+
+
+# -- Credential management handlers (P4.2a) -------------------------------
+
+
+def _credential_store(session: WorkspaceSession):
+    """Resolve the backend-owned credential store, or ``None`` when unavailable.
+
+    The store is constructed lazily so a boundary loop that never touches a
+    credential never constructs one. A store that reports itself unavailable is
+    returned as ``None`` so the handlers report ``unavailable`` rather than
+    attempting a mutating call.
+    """
+    store = session.credential_store
+    if store is None:
+        store = credential_store.make_credential_store()
+    return store if store.available() else None
+
+
+def _credential_prompt(session: WorkspaceSession):
+    """Resolve the backend-owned secure prompt, or ``None`` when unavailable."""
+    prompt = session.credential_prompt
+    if prompt is None:
+        prompt = credential_store.native_credential_prompt()
+    return prompt
+
+
+def _manage_credential_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Enroll or replace the DeepSeek API key through the secure local prompt.
+
+    The key is collected by the operating system's own credential dialog and
+    written straight to the backend-owned platform credential store; the secret
+    never passes through, and is never held/logged/serialized by, the boundary
+    result. The returned mapping carries only a bounded state token plus the
+    redacted presence fact.
+    """
+    store = _credential_store(session)
+    prompt = _credential_prompt(session)
+    if store is None or prompt is None:
+        return credential_store.redacted_credential_result(
+            credential_store.CREDENTIAL_STATE_UNAVAILABLE, store is not None and store.has(credential_store.TARGET_NAME)
+        )
+    try:
+        secret = prompt("Enter the DeepSeek API key")
+    except (EOFError, KeyboardInterrupt):
+        secret = None
+    except credential_store.CredentialStoreError:
+        return credential_store.redacted_credential_result(
+            credential_store.CREDENTIAL_STATE_FAILED, store.has(credential_store.TARGET_NAME)
+        )
+    if secret is None:
+        # User cancelled the native prompt; the store is left untouched.
+        return credential_store.redacted_credential_result(
+            credential_store.CREDENTIAL_STATE_CANCELLED, store.has(credential_store.TARGET_NAME)
+        )
+    try:
+        store.store(credential_store.TARGET_NAME, secret)
+    except credential_store.CredentialStoreError:
+        return credential_store.redacted_credential_result(
+            credential_store.CREDENTIAL_STATE_FAILED, store.has(credential_store.TARGET_NAME)
+        )
+    finally:
+        # The secret is dropped from the local frame as soon as the store call
+        # returns, success or failure.
+        secret = None
+    return credential_store.redacted_credential_result(
+        credential_store.CREDENTIAL_STATE_STORED, store.has(credential_store.TARGET_NAME)
+    )
+
+
+def _remove_credential_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Delete the DeepSeek API key from the platform credential store.
+
+    Only the backend delete is performed; the key is never read or surfaced. The
+    result carries a bounded state token and the redacted presence fact after
+    deletion (always ``False`` on success).
+    """
+    store = _credential_store(session)
+    if store is None:
+        return credential_store.redacted_credential_result(
+            credential_store.CREDENTIAL_STATE_UNAVAILABLE, False
+        )
+    try:
+        store.delete(credential_store.TARGET_NAME)
+    except credential_store.CredentialStoreError:
+        return credential_store.redacted_credential_result(
+            credential_store.CREDENTIAL_STATE_FAILED, store.has(credential_store.TARGET_NAME)
+        )
+    return credential_store.redacted_credential_result(
+        credential_store.CREDENTIAL_STATE_REMOVED, False
     )
 
 
