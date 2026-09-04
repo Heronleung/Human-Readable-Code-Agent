@@ -124,6 +124,7 @@ from .client_core import (
     build_get_draft_request,
     build_get_tree_request,
     build_open_project_request,
+    build_plan_proposal_request,
     build_request,
     build_reset_draft_request,
     build_save_draft_request,
@@ -134,9 +135,11 @@ from .client_core import (
     format_entity_list,
     format_intent_delta,
     format_procedural_document,
+    format_proposal,
     intent_class_label,
     is_twin_source_path,
     operation_label,
+    proposal_state_label,
     resolve_backend_command,
     twin_state_from_sync,
 )
@@ -983,22 +986,26 @@ class MainWindow(QMainWindow):
         self.reset_draft_button = QPushButton("Reset")
         self.compare_draft_button = QPushButton("Compare")
         self.generate_draft_button = QPushButton("Generate")
+        self.plan_proposal_button = QPushButton("Plan proposal")
         self.save_draft_button.setAccessibleName("Save Code Map draft")
         self.discard_draft_button.setAccessibleName("Discard Code Map draft")
         self.reset_draft_button.setAccessibleName("Reset Code Map draft")
         self.compare_draft_button.setAccessibleName("Compare Code Map draft")
         self.generate_draft_button.setAccessibleName("Generate Intent Delta")
+        self.plan_proposal_button.setAccessibleName("Plan proposal")
         self.save_draft_button.clicked.connect(self._save_draft)
         self.discard_draft_button.clicked.connect(self._discard_draft)
         self.reset_draft_button.clicked.connect(self._reset_draft)
         self.compare_draft_button.clicked.connect(self._compare_draft)
         self.generate_draft_button.clicked.connect(self._generate_intent_delta)
+        self.plan_proposal_button.clicked.connect(self._plan_proposal)
         for button in (
             self.save_draft_button,
             self.discard_draft_button,
             self.reset_draft_button,
             self.compare_draft_button,
             self.generate_draft_button,
+            self.plan_proposal_button,
         ):
             actions_layout.addWidget(button)
         layout.addWidget(actions)
@@ -1900,6 +1907,14 @@ class MainWindow(QMainWindow):
         if not self._send(request, self._on_intent_delta_ready, self._on_draft_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
+    def _plan_proposal(self) -> None:
+        """Request a deterministic, non-applied Proposal Package from the Intent Delta."""
+        cid = contract.new_correlation_id()
+        request = build_plan_proposal_request(cid)
+        self._set_status(STATE_RUNNING, "planning proposal")
+        if not self._send(request, self._on_proposal_ready, self._on_draft_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
     def _mark_draft_dirty(self, *_args: Any) -> None:
         self._draft_dirty = True
 
@@ -2025,6 +2040,16 @@ class MainWindow(QMainWindow):
             return
         self._show_draft_result(format_intent_delta(result.get("intent_delta") or {}))
         self._set_status(STATE_SUCCESS, "Intent Delta generated")
+
+    def _on_proposal_ready(self, result: Dict[str, Any]) -> None:
+        if result.get("no_change"):
+            self._show_draft_result("No changes. Nothing to plan.")
+            self._set_status(STATE_SUCCESS, "no changes")
+            return
+        proposal = result.get("proposal") or {}
+        state = proposal.get("state", "unknown")
+        self._show_draft_result(format_proposal(proposal))
+        self._set_status(STATE_SUCCESS, f"proposal {proposal_state_label(state)}")
 
     def _on_draft_error(self, reason: str) -> None:
         self._set_status(STATE_FAILED, reason)

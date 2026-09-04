@@ -106,6 +106,20 @@ class ClientArchitectureTests(unittest.TestCase):
                     f"{sorted(imported & {'codemap', 'codemap_draft'})}",
                 )
 
+    def test_client_modules_do_not_import_proposal(self):
+        # The proposal domain derives a plan from the deterministic core; a
+        # client importing it would bypass the boundary. The desktop shell
+        # renders the package through ``client_core``'s presentation vocabulary
+        # only.
+        for module, path in _CLIENT_MODULES.items():
+            with self.subTest(module=module):
+                imported = _imported_top_level_names(path)
+                self.assertNotIn(
+                    "proposal",
+                    imported,
+                    f"{module} imports the proposal domain",
+                )
+
     def test_client_modules_exist(self):
         for path in _CLIENT_MODULES.values():
             self.assertTrue(os.path.isfile(path), path)

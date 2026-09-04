@@ -1539,6 +1539,42 @@ class CodeMapDraftTests(unittest.TestCase):
             getattr(window, button).click()
             self.assertEqual(sent[-1]["action"], action)
 
+    def test_plan_proposal_sends_plan_proposal_action(self):
+        window, sent = self._loaded_edit_surface()
+        window.plan_proposal_button.click()
+        self.assertEqual(sent[-1]["action"], contract.ACTION_PLAN_PROPOSAL)
+
+    def test_plan_proposal_no_change_is_honest(self):
+        window, _ = self._loaded_edit_surface()
+        window._on_proposal_ready({"no_change": True})
+        self.assertIn("No changes", window._draft_result.toPlainText())
+
+    def test_proposal_ready_renders_non_applied_package(self):
+        window, _ = self._loaded_edit_surface()
+        window._on_proposal_ready(
+            {
+                "no_change": False,
+                "state": "ready",
+                "proposal": {
+                    "state": "ready",
+                    "proposal_id": "proposal:abc",
+                    "target_scope": {"entities": ["app.service"], "artifacts": []},
+                    "affected_artifacts": [],
+                    "preserved_constraints": [],
+                    "assumptions": [],
+                    "clarifications": [],
+                    "plan_steps": [],
+                    "risks": [],
+                    "validation_plan": [],
+                    "reason": None,
+                },
+            }
+        )
+        text = window._draft_result.toPlainText()
+        self.assertIn("Proposal Package (not applied)", text)
+        self.assertIn("Applied: false", text)
+        self.assertIn("proposal Ready", window.status_label.text())
+
     # -- result rendering --------------------------------------------------
 
     def test_no_change_intent_delta_is_honest(self):

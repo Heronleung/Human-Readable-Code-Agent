@@ -690,5 +690,124 @@ class BoundaryDraftTests(unittest.TestCase):
         self.assertFalse(draft_path.startswith(FIXTURES))
 
 
+class BoundaryProposalTests(unittest.TestCase):
+    """The P4.1 read-only proposal-planning protocol over the NDJSON boundary.
+
+    A single :class:`~hrca.boundary.WorkspaceSession` is shared across requests
+    (as in a live boundary loop) so ``open_project`` establishes the root that
+    later proposal actions operate on. Proposal planning derives a non-applied
+    package from the saved draft and synchronized Twin — it never writes the
+    selected repository.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store_base = self._tmp.name
+        self.session = boundary.WorkspaceSession(store_base=self.store_base)
+        self.wsid = twin.workspace_id_for(os.path.realpath(FIXTURES))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _do(self, action, **overrides):
+        req = _twin_request(action, **overrides)
+        return boundary.handle_request(req, self.session)
+
+    def _open_sync(self):
+        open_env = self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        self.assertTrue(open_env["ok"])
+        sync_env = self._do(contract.ACTION_SYNC_TWIN, task={})
+        self.assertTrue(sync_env["ok"])
+        return sync_env
+
+    def _module_purpose_id(self):
+        blocks = self._do(contract.ACTION_GET_CODE_MAP)["result"]["blocks"]
+        module_id = next(
+            b["block_id"]
+            for b in blocks
+            if b.get("block_type") == "entity"
+            and (b.get("payload") or {}).get("kind") == "module"
+            and (b.get("payload") or {}).get("locator") == "app.service"
+        )
+        return next(
+            b["block_id"]
+            for b in blocks
+            if b.get("block_type") == "purpose" and b.get("parent_id") == module_id
+        )
+
+    def _purpose_ops(self, value="entry point for the service"):
+        return [
+            {
+                "op": "replace_description",
+                "target_block_id": self._module_purpose_id(),
+                "proposed_text": value,
+            }
+        ]
+
+    def test_plan_proposal_without_open_rejected(self):
+        env = self._do(contract.ACTION_PLAN_PROPOSAL)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "project_not_open")
+
+    def test_plan_proposal_without_sync_rejected(self):
+        self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        env = self._do(contract.ACTION_PLAN_PROPOSAL)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "twin_not_synchronized")
+
+    def test_plan_proposal_without_draft_rejected(self):
+        self._open_sync()
+        env = self._do(contract.ACTION_PLAN_PROPOSAL)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "draft_not_found")
+
+    def test_noop_draft_plans_no_change(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": []})
+        env = self._do(contract.ACTION_PLAN_PROPOSAL)
+        self.assertTrue(env["ok"])
+        self.assertTrue(env["result"]["no_change"])
+        self.assertIsNone(env["result"]["proposal"])
+
+    def test_documentation_draft_plans_ready_package(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()})
+        env = self._do(contract.ACTION_PLAN_PROPOSAL)
+        self.assertTrue(env["ok"])
+        result = env["result"]
+        self.assertFalse(result["no_change"])
+        self.assertEqual(result["state"], "ready")
+        package = result["proposal"]
+        self.assertFalse(package["executable"])
+        self.assertFalse(package["applied"])
+        self.assertTrue(package["proposal_id"].startswith("proposal:"))
+        self.assertEqual(package["target_scope"]["entities"], ["app.service"])
+
+    def test_proposal_planning_is_deterministic(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()})
+        first = self._do(contract.ACTION_PLAN_PROPOSAL)["result"]["proposal"]
+        second = self._do(contract.ACTION_PLAN_PROPOSAL)["result"]["proposal"]
+        self.assertEqual(dumps(first), dumps(second))
+
+    def test_stale_draft_blocks_proposal(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()})
+        store, _ = twin_store.load(self.store_base, self.wsid)
+        store["workspace_revision"]["baseline_fingerprint"] = "fp:changed"
+        twin_store.save(self.store_base, self.wsid, store)
+        env = self._do(contract.ACTION_PLAN_PROPOSAL)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "draft_stale")
+
+    def test_proposal_planning_stays_out_of_repository(self):
+        self._open_sync()
+        self._do(contract.ACTION_SAVE_DRAFT, task={"operations": self._purpose_ops()})
+        self._do(contract.ACTION_PLAN_PROPOSAL)
+        draft_path = twin_store.workspace_draft_path(self.store_base, self.wsid)
+        self.assertTrue(os.path.isfile(draft_path))
+        self.assertFalse(draft_path.startswith(FIXTURES))
+
+
 if __name__ == "__main__":
     unittest.main()

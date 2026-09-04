@@ -61,6 +61,7 @@ ACTION_DISCARD_DRAFT = "discard_draft"
 ACTION_RESET_DRAFT = "reset_draft"
 ACTION_COMPARE_DRAFT = "compare_draft"
 ACTION_GENERATE_INTENT_DELTA = "generate_intent_delta"
+ACTION_PLAN_PROPOSAL = "plan_proposal"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -86,7 +87,14 @@ DRAFT_ACTIONS = frozenset(
         ACTION_GENERATE_INTENT_DELTA,
     }
 )
-ALLOWED_ACTIONS = SCAN_ACTIONS | WORKSPACE_ACTIONS | TWIN_ACTIONS | DRAFT_ACTIONS
+# The P4.1 read-only proposal-planning protocol: derive a deterministic,
+# non-applied Proposal Package from a validated Intent Delta. It reads only the
+# per-workspace draft store and the synchronized Twin — never source, Git state,
+# a command, or the network.
+PROPOSAL_ACTIONS = frozenset({ACTION_PLAN_PROPOSAL})
+ALLOWED_ACTIONS = (
+    SCAN_ACTIONS | WORKSPACE_ACTIONS | TWIN_ACTIONS | DRAFT_ACTIONS | PROPOSAL_ACTIONS
+)
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
 # names a mutating action (edit / commit / remote) is rejected even though the
@@ -264,10 +272,12 @@ __all__ = [
     "ACTION_RESET_DRAFT",
     "ACTION_COMPARE_DRAFT",
     "ACTION_GENERATE_INTENT_DELTA",
+    "ACTION_PLAN_PROPOSAL",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
     "DRAFT_ACTIONS",
+    "PROPOSAL_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",

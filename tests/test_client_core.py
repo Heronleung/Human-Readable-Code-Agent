@@ -13,6 +13,7 @@ from hrca.client_core import (
     BLOCK_TYPE_LABELS,
     INTENT_CLASS_LABELS,
     OPERATION_LABELS,
+    PROPOSAL_STATE_LABELS,
     PROVIDER_UNAVAILABLE,
     REPOSITORY_UNVERIFIED,
     TWIN_AVAILABLE,
@@ -41,6 +42,7 @@ from hrca.client_core import (
     build_get_tree_request,
     build_get_twin_request,
     build_open_project_request,
+    build_plan_proposal_request,
     build_request,
     build_reset_draft_request,
     build_save_draft_request,
@@ -52,11 +54,13 @@ from hrca.client_core import (
     format_entity_list,
     format_intent_delta,
     format_procedural_document,
+    format_proposal,
     format_twin_projection,
     format_twin_sync,
     intent_class_label,
     is_twin_source_path,
     operation_label,
+    proposal_state_label,
     resolve_backend_command,
     twin_state_from_sync,
 )
@@ -429,6 +433,16 @@ class DraftRequestBuilderTests(unittest.TestCase):
         self.assertEqual(req["action"], contract.ACTION_GENERATE_INTENT_DELTA)
 
 
+class ProposalRequestBuilderTests(unittest.TestCase):
+    def test_plan_proposal_request_shape(self):
+        req = build_plan_proposal_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_PLAN_PROPOSAL)
+        self.assertNotIn("path", req)
+        self.assertNotIn("task", req)
+
+
 class CodeMapVocabularyTests(unittest.TestCase):
     def test_block_type_label_falls_back_to_token(self):
         self.assertEqual(block_type_label("entity"), "Entity")
@@ -544,6 +558,76 @@ class DraftPresentationTests(unittest.TestCase):
         self.assertIn("Executable: false", text)
         self.assertIn("Entries: 1", text)
         self.assertIn("Replace description on app.service (approval: low)", text)
+
+
+class ProposalPresentationTests(unittest.TestCase):
+    def test_proposal_state_label_falls_back_to_token(self):
+        self.assertEqual(proposal_state_label("ready"), "Ready")
+        self.assertEqual(proposal_state_label("clarification_required"), "Clarification required")
+        self.assertEqual(proposal_state_label("unsupported"), "Unsupported")
+        self.assertEqual(proposal_state_label("no_change"), "No change")
+        self.assertEqual(proposal_state_label("blocked"), "Blocked")
+        self.assertEqual(proposal_state_label("not_a_state"), "not_a_state")
+
+    def test_proposal_state_labels_cover_all_states(self):
+        self.assertEqual(
+            set(PROPOSAL_STATE_LABELS),
+            {"ready", "clarification_required", "unsupported", "no_change", "blocked"},
+        )
+
+    def test_format_proposal_empty(self):
+        self.assertEqual(format_proposal({}), "")
+        self.assertEqual(format_proposal(None), "")
+
+    def test_format_proposal_marks_non_applied_and_structured(self):
+        package = {
+            "state": "ready",
+            "proposal_id": "proposal:abc123",
+            "target_scope": {"entities": ["app.service"], "artifacts": ["app/service.py"]},
+            "affected_artifacts": [
+                {"role": "target", "kind": "function", "path": "app/service.py"}
+            ],
+            "preserved_constraints": [{"entity_id": None, "invariant": "never rewritten"}],
+            "assumptions": ["the baseline is current"],
+            "clarifications": [],
+            "plan_steps": [
+                {"step": 1, "description": "Plan: replace the purpose description of x.", "requires_approval": False}
+            ],
+            "risks": [{"level": "low", "description": "documentation only"}],
+            "validation_plan": [{"check": "deterministic", "expected_outcome": "identical package"}],
+            "reason": None,
+        }
+        text = format_proposal(package)
+        self.assertIn("Proposal Package (not applied)", text)
+        self.assertIn("State: Ready", text)
+        self.assertIn("Executable: false", text)
+        self.assertIn("Applied: false", text)
+        self.assertIn("Proposal: proposal:abc123", text)
+        self.assertIn("app.service", text)
+        self.assertIn("Plan steps: 1", text)
+        self.assertIn("Preserved constraints: 1", text)
+        self.assertIn("Validation plan: 1", text)
+
+    def test_format_proposal_shows_clarification_and_reason(self):
+        package = {
+            "state": "clarification_required",
+            "proposal_id": "proposal:def",
+            "target_scope": {"entities": ["app.main"], "artifacts": []},
+            "affected_artifacts": [],
+            "preserved_constraints": [],
+            "assumptions": [],
+            "clarifications": [
+                {"entity_id": "app.main", "question": "confirm the behavior impact"}
+            ],
+            "plan_steps": [],
+            "risks": [],
+            "validation_plan": [],
+            "reason": "ambiguous behavior intent",
+        }
+        text = format_proposal(package)
+        self.assertIn("State: Clarification required", text)
+        self.assertIn("Reason: ambiguous behavior intent", text)
+        self.assertIn("confirm the behavior impact", text)
 
 
 class ClientStateConstantsTests(unittest.TestCase):

@@ -34,7 +34,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TextIO, Sequence
 
-from . import codemap, codemap_draft, contract, twin, twin_store, workspace
+from . import codemap, codemap_draft, contract, proposal, twin, twin_store, workspace
 from .planning import TaskValidationError, build_plan, validate_task
 from .report import build_report
 from .scanner import module_name_for, scan_directory
@@ -212,6 +212,8 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _compare_draft_result(request, session)
     elif action == contract.ACTION_GENERATE_INTENT_DELTA:
         result = _generate_intent_delta_result(request, session)
+    elif action == contract.ACTION_PLAN_PROPOSAL:
+        result = _plan_proposal_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -611,6 +613,29 @@ def _generate_intent_delta_result(
     if err is not None:  # pragma: no cover - guarded by the checks above
         raise contract.ContractError("draft_invalid")
     return {"intent_delta": delta, "no_change": False}
+
+
+def _plan_proposal_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Derive a deterministic, non-applied Proposal Package from the Intent Delta.
+
+    A no-op draft yields an honest ``no_change`` result; a missing draft maps to
+    ``draft_not_found``; a stale draft is blocked with ``draft_stale``. The
+    package is never claimed to be a patch, diff, approval or execution outcome
+    and never contains source content beyond bounded identifiers.
+    """
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    store = _twin_store(session)
+    baseline = _code_map_baseline(session, store)
+    draft = _load_draft_or_raise(session)
+    package, err = proposal.plan_proposal(draft, baseline, store)
+    if err == proposal.REASON_NO_CHANGE:
+        return {"proposal": None, "state": proposal.STATE_NO_CHANGE, "no_change": True}
+    if err == proposal.REASON_STALE:
+        raise contract.ContractError("draft_stale")
+    if err is not None:  # pragma: no cover - guarded by the reasons above
+        raise contract.ContractError("draft_invalid")
+    return {"proposal": package, "state": package["state"], "no_change": False}
 
 
 if __name__ == "__main__":

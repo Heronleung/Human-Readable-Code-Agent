@@ -496,6 +496,27 @@ def intent_class_label(intent_class: str) -> str:
     return INTENT_CLASS_LABELS.get(intent_class, intent_class)
 
 
+# -- Proposal Package client vocabulary (P4.1) ---------------------------
+#
+# The terminal proposal states are held here as literals so the client never
+# imports the proposal domain (which it must not import). Each label is a
+# bounded, fixed presentation string; unknown values fall back to their raw
+# token.
+
+PROPOSAL_STATE_LABELS = {
+    "ready": "Ready",
+    "clarification_required": "Clarification required",
+    "unsupported": "Unsupported",
+    "no_change": "No change",
+    "blocked": "Blocked",
+}
+
+
+def proposal_state_label(state: str) -> str:
+    """Return the human label for a proposal ``state``."""
+    return PROPOSAL_STATE_LABELS.get(state, state)
+
+
 def build_get_code_map_request(
     correlation_id: str, selector: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -573,6 +594,15 @@ def build_generate_intent_delta_request(correlation_id: str) -> Dict[str, Any]:
     }
 
 
+def build_plan_proposal_request(correlation_id: str) -> Dict[str, Any]:
+    """Build a ``plan_proposal`` request (derive the non-applied Proposal Package)."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_PLAN_PROPOSAL,
+    }
+
+
 def format_procedural_document(document: Any) -> str:
     """Return the procedural Code Map document text (rendered by the boundary).
 
@@ -639,6 +669,92 @@ def format_intent_delta(intent_delta: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_proposal(proposal: Dict[str, Any]) -> str:
+    """Render a non-applied Proposal Package as deterministic plain text.
+
+    The header marks the package non-executable and non-applied; each structured
+    field is shown as a labelled section so a user can inspect what a future
+    change would involve without any claim that code was generated or applied.
+    """
+    if not proposal:
+        return ""
+    state = proposal_state_label(str(proposal.get("state", "unknown")))
+    lines: List[str] = [
+        "Proposal Package (not applied)",
+        f"State: {state}",
+        "Executable: false",
+        "Applied: false",
+    ]
+    pid = proposal.get("proposal_id")
+    if pid:
+        lines.append(f"Proposal: {pid}")
+
+    scope = proposal.get("target_scope") or {}
+    entities = scope.get("entities") or []
+    artifacts = scope.get("artifacts") or []
+    lines.append("")
+    lines.append("Target scope:")
+    lines.append(f"  entities: {', '.join(str(e) for e in entities) if entities else 'none'}")
+    lines.append(f"  artifacts: {', '.join(str(a) for a in artifacts) if artifacts else 'none'}")
+
+    affected = proposal.get("affected_artifacts") or []
+    lines.append("")
+    lines.append(f"Affected artifacts: {len(affected)}")
+    for ref in affected:
+        role = ref.get("role", "target")
+        kind = ref.get("kind", "unknown")
+        path = ref.get("path") or ref.get("locator", "?")
+        lines.append(f"  - {kind}: {path} ({role})")
+
+    constraints = proposal.get("preserved_constraints") or []
+    lines.append("")
+    lines.append(f"Preserved constraints: {len(constraints)}")
+    for constraint in constraints:
+        entity = constraint.get("entity_id") or "global"
+        lines.append(f"  - {entity}: {constraint.get('invariant', '')}")
+
+    assumptions = proposal.get("assumptions") or []
+    lines.append("")
+    lines.append(f"Assumptions: {len(assumptions)}")
+    for assumption in assumptions:
+        lines.append(f"  - {assumption}")
+
+    clarifications = proposal.get("clarifications") or []
+    lines.append("")
+    lines.append(f"Clarifications: {len(clarifications)}")
+    for clarification in clarifications:
+        entity = clarification.get("entity_id") or "?"
+        lines.append(f"  - {entity}: {clarification.get('question', '')}")
+
+    steps = proposal.get("plan_steps") or []
+    lines.append("")
+    lines.append(f"Plan steps: {len(steps)}")
+    for step in steps:
+        approval = " (approval)" if step.get("requires_approval") else ""
+        lines.append(
+            f"  {step.get('step', '?')}. {step.get('description', '')}{approval}"
+        )
+
+    risks = proposal.get("risks") or []
+    lines.append("")
+    lines.append(f"Risks: {len(risks)}")
+    for risk in risks:
+        lines.append(f"  - [{risk.get('level', 'unknown')}] {risk.get('description', '')}")
+
+    validation = proposal.get("validation_plan") or []
+    lines.append("")
+    lines.append(f"Validation plan: {len(validation)}")
+    for check in validation:
+        lines.append(f"  - {check.get('check', '')}: {check.get('expected_outcome', '')}")
+
+    reason = proposal.get("reason")
+    if reason:
+        lines.append("")
+        lines.append(f"Reason: {reason}")
+
+    return "\n".join(lines)
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -683,6 +799,8 @@ __all__ = [
     "block_type_label",
     "operation_label",
     "intent_class_label",
+    "PROPOSAL_STATE_LABELS",
+    "proposal_state_label",
     "build_get_code_map_request",
     "build_save_draft_request",
     "build_get_draft_request",
@@ -690,10 +808,12 @@ __all__ = [
     "build_reset_draft_request",
     "build_compare_draft_request",
     "build_generate_intent_delta_request",
+    "build_plan_proposal_request",
     "format_procedural_document",
     "format_entity_list",
     "format_draft_operations",
     "format_intent_delta",
+    "format_proposal",
     "default_fixture_root",
     "resolve_backend_command",
 ]
