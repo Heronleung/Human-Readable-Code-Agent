@@ -43,6 +43,15 @@ _FORBIDDEN_TOP_LEVEL = frozenset(
     {"scanner", "planning", "report", "provider", "subprocess", "git"}
 )
 
+# P4.2a provider/credential seam modules. A client must never import these:
+# they own the fixed DeepSeek identity, the credential store (including the
+# Win32 binding) and the non-secret configuration — backend infrastructure the
+# desktop shell reaches only through the NDJSON boundary.
+_PROVIDER_SEAM = frozenset(
+    {"deepseek", "credential_store", "credential_store_win",
+     "provider_config", "provider_cli"}
+)
+
 
 def _imported_top_level_names(path: str) -> set:
     with open(path, "r", encoding="utf-8") as fh:
@@ -118,6 +127,19 @@ class ClientArchitectureTests(unittest.TestCase):
                     "proposal",
                     imported,
                     f"{module} imports the proposal domain",
+                )
+
+    def test_client_modules_do_not_import_provider_seam(self):
+        # The desktop shell reports provider readiness only through the
+        # contract; importing the fixed DeepSeek identity or the credential
+        # store would couple it to backend credential/network infrastructure.
+        for module, path in _CLIENT_MODULES.items():
+            with self.subTest(module=module):
+                imported = _imported_top_level_names(path)
+                self.assertTrue(
+                    imported.isdisjoint(_PROVIDER_SEAM),
+                    f"{module} imports the provider/credential seam: "
+                    f"{sorted(imported & _PROVIDER_SEAM)}",
                 )
 
     def test_client_modules_exist(self):

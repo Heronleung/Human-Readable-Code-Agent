@@ -14,6 +14,7 @@ from hrca.contract import (
     ACTION_GET_CODE_MAP,
     ACTION_GET_DOCUMENT,
     ACTION_GET_DRAFT,
+    ACTION_GET_READINESS,
     ACTION_GET_TREE,
     ACTION_GET_TWIN,
     ACTION_OPEN_PROJECT,
@@ -33,6 +34,7 @@ from hrca.contract import (
     MAX_TREE_ENTRIES,
     PROPOSAL_ACTIONS,
     READ_ONLY_TASK_ACTIONS,
+    READINESS_ACTIONS,
     SCAN_ACTIONS,
     SERVE_SENTINEL,
     TWIN_ACTIONS,
@@ -78,7 +80,12 @@ class AllowedActionTests(unittest.TestCase):
     def test_allowed_actions_are_read_only(self):
         self.assertEqual(
             ALLOWED_ACTIONS,
-            SCAN_ACTIONS | WORKSPACE_ACTIONS | TWIN_ACTIONS | DRAFT_ACTIONS | PROPOSAL_ACTIONS,
+            SCAN_ACTIONS
+            | WORKSPACE_ACTIONS
+            | TWIN_ACTIONS
+            | DRAFT_ACTIONS
+            | PROPOSAL_ACTIONS
+            | READINESS_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -133,6 +140,18 @@ class AllowedActionTests(unittest.TestCase):
             self.assertNotIn(action, WORKSPACE_ACTIONS)
             self.assertNotIn(action, TWIN_ACTIONS)
             self.assertNotIn(action, DRAFT_ACTIONS)
+
+    def test_readiness_actions_are_allowlisted(self):
+        self.assertEqual(READINESS_ACTIONS, frozenset({ACTION_GET_READINESS}))
+
+    def test_readiness_actions_are_read_only(self):
+        for action in READINESS_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, WORKSPACE_ACTIONS)
+            self.assertNotIn(action, TWIN_ACTIONS)
+            self.assertNotIn(action, DRAFT_ACTIONS)
+            self.assertNotIn(action, PROPOSAL_ACTIONS)
 
     def test_no_forbidden_action_is_allowed(self):
         for action in _FORBIDDEN_ACTIONS:

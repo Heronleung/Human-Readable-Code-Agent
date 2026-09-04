@@ -2334,5 +2334,84 @@ class BackendSupervisorTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class ProviderReadinessGuiTests(unittest.TestCase):
+    """P4.2a redacted provider readiness presentation (offscreen).
+
+    The desktop surfaces only the bounded readiness state — never a credential,
+    endpoint or network claim. The check is issued through the local boundary as
+    a ``get_readiness`` request and drives no provider or network call.
+    """
+
+    def setUp(self):
+        _app()
+
+    def _fake_send(self, window):
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        return sent
+
+    def test_provider_button_is_present(self):
+        window = MainWindow()
+        self.assertEqual(window.provider_button.text(), "Check provider")
+        self.assertEqual(
+            window.provider_button.accessibleName(), "Check provider readiness"
+        )
+
+    def test_provider_button_sends_get_readiness(self):
+        window = MainWindow()
+        sent = self._fake_send(window)
+        window.provider_button.click()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_GET_READINESS)
+        self.assertNotIn("path", sent[0])
+        self.assertNotIn("task", sent[0])
+
+    def test_readiness_ready_updates_provider_state(self):
+        window = MainWindow()
+        self.assertIn("unavailable", window._provider_label.text())
+        window._on_readiness_ready(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-v4-flash",
+                "credential_present": True,
+                "authenticated": False,
+                "online": False,
+                "executable": False,
+            }
+        )
+        self.assertEqual(window._provider_state, "configured")
+        self.assertIn("configured", window._provider_label.text())
+        self.assertIn("Configured", window.status_label.text())
+
+    def test_readiness_ready_missing_credential(self):
+        window = MainWindow()
+        window._on_readiness_ready(
+            {
+                "state": "missing_credential",
+                "provider_id": "deepseek",
+                "model": "deepseek-v4-flash",
+                "credential_present": False,
+                "authenticated": False,
+                "online": False,
+                "executable": False,
+            }
+        )
+        self.assertEqual(window._provider_state, "missing_credential")
+        self.assertIn("missing_credential", window._provider_label.text())
+
+    def test_readiness_error_sets_failed_status(self):
+        window = MainWindow()
+        window._on_readiness_error("invalid_config")
+        self.assertIn("failed", window.status_label.text())
+        self.assertIn("invalid_config", window.status_label.text())
+
+
 if __name__ == "__main__":
     unittest.main()

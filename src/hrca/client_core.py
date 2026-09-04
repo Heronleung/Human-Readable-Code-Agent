@@ -55,6 +55,23 @@ TWIN_STATES = frozenset(
 # never makes a provider, credential, network or inference call.
 PROVIDER_UNAVAILABLE = "unavailable"
 
+# Provider readiness presentation states (P4.2a). The boundary reports one of
+# these bounded states from non-secret facts — the fixed provider/model identity
+# plus credential *presence* — and the client renders them through this
+# vocabulary, never importing the provider/credential seam. Unknown values fall
+# back to their raw token.
+PROVIDER_READINESS_STATE_LABELS = {
+    "configured": "Configured",
+    "missing_credential": "Credential missing",
+    "unavailable": "Unavailable",
+    "invalid_config": "Invalid configuration",
+}
+
+
+def provider_readiness_state_label(state: str) -> str:
+    """Return the human label for a provider readiness ``state``."""
+    return PROVIDER_READINESS_STATE_LABELS.get(state, state)
+
 # Repository state the client reports; always ``Unverified`` until a later
 # approved boundary capability supplies real repository state.
 REPOSITORY_UNVERIFIED = "Unverified"
@@ -603,6 +620,19 @@ def build_plan_proposal_request(correlation_id: str) -> Dict[str, Any]:
     }
 
 
+def build_get_readiness_request(correlation_id: str) -> Dict[str, Any]:
+    """Build a ``get_readiness`` request (redacted local provider readiness).
+
+    Carries no path, task or credential material: the boundary derives the
+    redacted state from non-secret configuration and credential presence alone.
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_GET_READINESS,
+    }
+
+
 def format_procedural_document(document: Any) -> str:
     """Return the procedural Code Map document text (rendered by the boundary).
 
@@ -755,6 +785,28 @@ def format_proposal(proposal: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def format_provider_readiness(result: Dict[str, Any]) -> str:
+    """Render a redacted readiness result as deterministic plain text (P4.2a).
+
+    Shows only the fixed provider id, the allowlisted model and the bounded
+    state, and asserts the honest ``false`` flags for authenticated / online /
+    executable. It never renders a credential, endpoint or header value.
+    """
+    state = provider_readiness_state_label(str(result.get("state", "unavailable")))
+    provider_id = str(result.get("provider_id", "unknown"))
+    model = result.get("model")
+    lines = [
+        f"Provider: {provider_id}",
+        f"State: {state}",
+    ]
+    if model:
+        lines.append(f"Model: {model}")
+    lines.append("Authenticated: false")
+    lines.append("Online: false")
+    lines.append("Executable: false")
+    return "\n".join(lines)
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -770,6 +822,8 @@ __all__ = [
     "TWIN_UNSUPPORTED",
     "TWIN_STATES",
     "PROVIDER_UNAVAILABLE",
+    "PROVIDER_READINESS_STATE_LABELS",
+    "provider_readiness_state_label",
     "REPOSITORY_UNVERIFIED",
     "VALIDATION_IDLE",
     "VALIDATION_RUNNING",
@@ -809,11 +863,13 @@ __all__ = [
     "build_compare_draft_request",
     "build_generate_intent_delta_request",
     "build_plan_proposal_request",
+    "build_get_readiness_request",
     "format_procedural_document",
     "format_entity_list",
     "format_draft_operations",
     "format_intent_delta",
     "format_proposal",
+    "format_provider_readiness",
     "default_fixture_root",
     "resolve_backend_command",
 ]

@@ -34,7 +34,18 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TextIO, Sequence
 
-from . import codemap, codemap_draft, contract, proposal, twin, twin_store, workspace
+from . import (
+    codemap,
+    codemap_draft,
+    contract,
+    credential_store,
+    deepseek,
+    proposal,
+    provider_config,
+    twin,
+    twin_store,
+    workspace,
+)
 from .planning import TaskValidationError, build_plan, validate_task
 from .report import build_report
 from .scanner import module_name_for, scan_directory
@@ -55,9 +66,18 @@ class WorkspaceSession:
     fresh test loop) always starts with no project accepted.
     """
 
-    def __init__(self, store_base: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        store_base: Optional[str] = None,
+        credential_store: Any = None,
+    ) -> None:
         self.root: Optional[str] = None
         self.store_base: str = store_base or twin_store.app_data_dir()
+        # Backend-owned credential store, injected for tests; resolved lazily to
+        # the platform store by the readiness handler so a ``--serve`` loop that
+        # never queries readiness never constructs (or touches) a credential
+        # store.
+        self.credential_store = credential_store
 
     def open(self, root: str) -> None:
         self.root = root
@@ -214,6 +234,8 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _generate_intent_delta_result(request, session)
     elif action == contract.ACTION_PLAN_PROPOSAL:
         result = _plan_proposal_result(request, session)
+    elif action == contract.ACTION_GET_READINESS:
+        result = _get_readiness_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -636,6 +658,37 @@ def _plan_proposal_result(request: Dict[str, Any], session: WorkspaceSession) ->
     if err is not None:  # pragma: no cover - guarded by the reasons above
         raise contract.ContractError("draft_invalid")
     return {"proposal": package, "state": package["state"], "no_change": False}
+
+
+# -- Provider readiness handler (P4.2a) ----------------------------------
+
+
+def _get_readiness_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Return the redacted local readiness result (P4.2a).
+
+    Only non-secret facts are reported: the fixed provider id, the allowlisted
+    model (or ``None`` when the config is invalid) and a bounded state derived
+    from credential *presence*. The credential value is never read or surfaced,
+    and the result never claims network authentication or availability.
+    """
+    store = session.credential_store
+    if store is None:
+        store = credential_store.make_credential_store()
+    config, config_error = provider_config.load(session.store_base)
+    if config is None and config_error is None:
+        config = provider_config.default_config()
+    store_available = store.available()
+    credential_present = (
+        store.has(credential_store.TARGET_NAME) if store_available else False
+    )
+    return deepseek.redacted_readiness(
+        config=config,
+        config_error=config_error,
+        credential_present=credential_present,
+        store_available=store_available,
+    )
 
 
 if __name__ == "__main__":

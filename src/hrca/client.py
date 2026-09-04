@@ -122,6 +122,7 @@ from .client_core import (
     build_get_code_map_request,
     build_get_document_request,
     build_get_draft_request,
+    build_get_readiness_request,
     build_get_tree_request,
     build_open_project_request,
     build_plan_proposal_request,
@@ -140,6 +141,7 @@ from .client_core import (
     is_twin_source_path,
     operation_label,
     proposal_state_label,
+    provider_readiness_state_label,
     resolve_backend_command,
     twin_state_from_sync,
 )
@@ -684,8 +686,16 @@ class MainWindow(QMainWindow):
         self.scan_button.setToolTip("Open a project before running a read-only scan.")
         self.scan_button.clicked.connect(self._on_run_scan)
 
+        self.provider_button = QPushButton("Check provider")
+        self.provider_button.setAccessibleName("Check provider readiness")
+        self.provider_button.setToolTip(
+            "Check local DeepSeek configuration and credential readiness (no network)."
+        )
+        self.provider_button.clicked.connect(self._check_provider_readiness)
+
         layout.addWidget(self.open_project_button)
         layout.addWidget(self.scan_button)
+        layout.addWidget(self.provider_button)
         layout.addStretch(1)
         return bar
 
@@ -1314,6 +1324,22 @@ class MainWindow(QMainWindow):
         if not self._send(request, self._on_scan_completed, self._on_scan_failed):
             self._set_status(STATE_FAILED, "a request is already in progress")
             self._set_validation_state(VALIDATION_IDLE)
+
+    def _check_provider_readiness(self) -> None:
+        cid = contract.new_correlation_id()
+        request = build_get_readiness_request(cid)
+        self._set_status(STATE_RUNNING, "checking provider readiness")
+        if not self._send(request, self._on_readiness_ready, self._on_readiness_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_readiness_ready(self, result: Dict[str, Any]) -> None:
+        state = str(result.get("state", PROVIDER_UNAVAILABLE))
+        self._provider_state = state
+        self._update_status()
+        self._set_status(STATE_SUCCESS, provider_readiness_state_label(state))
+
+    def _on_readiness_error(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
 
     def _open_document(self, rel_path: str) -> None:
         cid = contract.new_correlation_id()

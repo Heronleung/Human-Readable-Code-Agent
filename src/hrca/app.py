@@ -21,6 +21,11 @@ from typing import Optional, Sequence
 
 from . import contract
 
+# Argument sentinel that turns the unified entry executable into the backend
+# credential-configuration CLI (enroll/delete/readiness). Kept local so the
+# provider CLI is imported lazily, exactly like the boundary and the client.
+_PROVIDER_SENTINEL = "--provider"
+
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
@@ -28,6 +33,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         from .boundary import main as serve
 
         return serve(args)
+    if _PROVIDER_SENTINEL in args:
+        from .provider_cli import main as provider_main
+
+        return provider_main(args)
     from .client import main as run_client
 
     return run_client(args)

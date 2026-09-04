@@ -62,6 +62,7 @@ ACTION_RESET_DRAFT = "reset_draft"
 ACTION_COMPARE_DRAFT = "compare_draft"
 ACTION_GENERATE_INTENT_DELTA = "generate_intent_delta"
 ACTION_PLAN_PROPOSAL = "plan_proposal"
+ACTION_GET_READINESS = "get_readiness"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -92,8 +93,18 @@ DRAFT_ACTIONS = frozenset(
 # per-workspace draft store and the synchronized Twin — never source, Git state,
 # a command, or the network.
 PROPOSAL_ACTIONS = frozenset({ACTION_PLAN_PROPOSAL})
+# The P4.2a redacted local readiness protocol: report the fixed DeepSeek adapter
+# identity plus a bounded, credential-presence-derived state. It performs no
+# network access, no inference and never surfaces a credential, an endpoint, a
+# header or a config error reason.
+READINESS_ACTIONS = frozenset({ACTION_GET_READINESS})
 ALLOWED_ACTIONS = (
-    SCAN_ACTIONS | WORKSPACE_ACTIONS | TWIN_ACTIONS | DRAFT_ACTIONS | PROPOSAL_ACTIONS
+    SCAN_ACTIONS
+    | WORKSPACE_ACTIONS
+    | TWIN_ACTIONS
+    | DRAFT_ACTIONS
+    | PROPOSAL_ACTIONS
+    | READINESS_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -273,11 +284,13 @@ __all__ = [
     "ACTION_COMPARE_DRAFT",
     "ACTION_GENERATE_INTENT_DELTA",
     "ACTION_PLAN_PROPOSAL",
+    "ACTION_GET_READINESS",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
     "DRAFT_ACTIONS",
     "PROPOSAL_ACTIONS",
+    "READINESS_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",

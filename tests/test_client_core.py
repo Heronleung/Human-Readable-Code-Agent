@@ -14,6 +14,7 @@ from hrca.client_core import (
     INTENT_CLASS_LABELS,
     OPERATION_LABELS,
     PROPOSAL_STATE_LABELS,
+    PROVIDER_READINESS_STATE_LABELS,
     PROVIDER_UNAVAILABLE,
     REPOSITORY_UNVERIFIED,
     TWIN_AVAILABLE,
@@ -39,6 +40,7 @@ from hrca.client_core import (
     build_get_code_map_request,
     build_get_document_request,
     build_get_draft_request,
+    build_get_readiness_request,
     build_get_tree_request,
     build_get_twin_request,
     build_open_project_request,
@@ -55,12 +57,14 @@ from hrca.client_core import (
     format_intent_delta,
     format_procedural_document,
     format_proposal,
+    format_provider_readiness,
     format_twin_projection,
     format_twin_sync,
     intent_class_label,
     is_twin_source_path,
     operation_label,
     proposal_state_label,
+    provider_readiness_state_label,
     resolve_backend_command,
     twin_state_from_sync,
 )
@@ -628,6 +632,71 @@ class ProposalPresentationTests(unittest.TestCase):
         self.assertIn("State: Clarification required", text)
         self.assertIn("Reason: ambiguous behavior intent", text)
         self.assertIn("confirm the behavior impact", text)
+
+
+class ProviderReadinessTests(unittest.TestCase):
+    def test_get_readiness_request_shape(self):
+        req = build_get_readiness_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_READINESS)
+        self.assertNotIn("path", req)
+        self.assertNotIn("task", req)
+
+    def test_readiness_state_label_falls_back_to_token(self):
+        self.assertEqual(provider_readiness_state_label("configured"), "Configured")
+        self.assertEqual(
+            provider_readiness_state_label("missing_credential"), "Credential missing"
+        )
+        self.assertEqual(provider_readiness_state_label("unavailable"), "Unavailable")
+        self.assertEqual(
+            provider_readiness_state_label("invalid_config"), "Invalid configuration"
+        )
+        self.assertEqual(
+            provider_readiness_state_label("not_a_state"), "not_a_state"
+        )
+
+    def test_readiness_state_labels_cover_all_states(self):
+        self.assertEqual(
+            set(PROVIDER_READINESS_STATE_LABELS),
+            {"configured", "missing_credential", "unavailable", "invalid_config"},
+        )
+
+    def test_format_provider_readiness_is_redacted_and_bounded(self):
+        text = format_provider_readiness(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-v4-flash",
+                "credential_present": True,
+                "authenticated": False,
+                "online": False,
+                "executable": False,
+            }
+        )
+        self.assertIn("Provider: deepseek", text)
+        self.assertIn("State: Configured", text)
+        self.assertIn("Model: deepseek-v4-flash", text)
+        self.assertIn("Authenticated: false", text)
+        self.assertIn("Online: false", text)
+        self.assertIn("Executable: false", text)
+
+    def test_format_provider_readiness_never_claims_network(self):
+        text = format_provider_readiness(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-v4-flash",
+                "credential_present": True,
+                "authenticated": True,
+                "online": True,
+                "executable": True,
+            }
+        )
+        # Whatever the (defensive) input claims, the presentation of a local
+        # readiness check never asserts the provider is reachable.
+        self.assertNotIn("Authenticated: true", text)
+        self.assertNotIn("Online: true", text)
 
 
 class ClientStateConstantsTests(unittest.TestCase):
