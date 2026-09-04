@@ -979,7 +979,9 @@ class TwinPaneTests(unittest.TestCase):
         helpers_doc = window._codemap_document.toPlainText()
         self.assertIn("Function fmt(value) -> str", helpers_doc)
         self.assertNotIn("calculator", helpers_doc)
-        self.assertFalse(window._codemap_status.isVisibleTo(window._twin_panel))
+        # The status message clears, but its fixed-height region stays mounted.
+        self.assertEqual(window._codemap_status.text(), "")
+        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
 
         # A late calculator response (older generation) is discarded.
         window._on_code_map_loaded(
@@ -1003,6 +1005,98 @@ class TwinPaneTests(unittest.TestCase):
         self.assertEqual(window._codemap_document.toPlainText(), calc_doc)
         self.assertIn("twin_not_found", window._codemap_status.text())
         self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
+        self.assertEqual(window._twin_chip.text(), "Available")
+
+    def _laid_out_twin_window(self):
+        """A shown, settled MainWindow so Code Map geometry is actually computed."""
+        window = MainWindow()
+        window._root = "/some/root"
+        window.resize(1200, 800)
+        window.show()
+        QApplication.processEvents()
+        return window
+
+    def test_updating_state_preserves_document_geometry(self):
+        """Available -> Updating keeps the procedural document geometry fixed.
+
+        The in-place status region is a fixed-height, always-mounted label, so
+        entering the Updating state must not move the document, change its size,
+        alter its scroll range/position, or change the status region's own
+        geometry — the observable values that would visibly "jump" on a reflow.
+        """
+        window = self._laid_out_twin_window()
+        self._chain_send(window, result=_function_code_map_result())
+        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
+        QApplication.processEvents()
+
+        doc = window._codemap_document
+        status = window._codemap_status
+        calc_doc = doc.toPlainText()
+        self.assertIn("Function add", calc_doc)
+        self.assertGreater(doc.height(), 0)
+
+        before = {
+            "doc": doc.geometry(),
+            "scroll_value": doc.verticalScrollBar().value(),
+            "scroll_max": doc.verticalScrollBar().maximum(),
+            "status": status.geometry(),
+        }
+
+        # Deferred switch: the calculator projection stays mounted under an
+        # "Updating…" message. No geometry may change while the request is pending.
+        sent = self._fake_send(window)
+        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
+        QApplication.processEvents()
+
+        self.assertEqual(doc.toPlainText(), calc_doc)  # projection retained
+        self.assertIn("Updating Code Map for helpers.py", status.text())
+        self.assertEqual(len(sent), 1)
+
+        self.assertEqual(doc.geometry(), before["doc"])
+        self.assertEqual(doc.verticalScrollBar().value(), before["scroll_value"])
+        self.assertEqual(doc.verticalScrollBar().maximum(), before["scroll_max"])
+        self.assertEqual(status.geometry(), before["status"])
+        self.assertEqual(status.height(), style.CODEMAP_STATUS_HEIGHT)
+
+        # A matching complete response replaces the projection atomically and
+        # clears the message; the reserved status region itself never moves.
+        window._on_code_map_loaded(
+            _helpers_code_map_result(),
+            generation=window._twin_generation,
+            rel_path="helpers.py",
+        )
+        QApplication.processEvents()
+        self.assertIn("Function fmt(value) -> str", doc.toPlainText())
+        self.assertNotIn("calculator", doc.toPlainText())
+        self.assertEqual(status.text(), "")
+        self.assertEqual(status.geometry(), before["status"])
+        self.assertEqual(status.height(), style.CODEMAP_STATUS_HEIGHT)
+
+    def test_updating_failure_preserves_document_geometry(self):
+        """A failed switch retains the projection and geometry, showing a bounded status."""
+        window = self._laid_out_twin_window()
+        self._chain_send(window, result=_function_code_map_result())
+        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
+        QApplication.processEvents()
+
+        doc = window._codemap_document
+        status = window._codemap_status
+        calc_doc = doc.toPlainText()
+        before = {
+            "doc": doc.geometry(),
+            "scroll_value": doc.verticalScrollBar().value(),
+            "status": status.geometry(),
+        }
+
+        self._chain_send(window, get_error="twin_not_found")
+        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
+        QApplication.processEvents()
+
+        self.assertEqual(doc.toPlainText(), calc_doc)
+        self.assertIn("twin_not_found", status.text())
+        self.assertEqual(doc.geometry(), before["doc"])
+        self.assertEqual(doc.verticalScrollBar().value(), before["scroll_value"])
+        self.assertEqual(status.geometry(), before["status"])
         self.assertEqual(window._twin_chip.text(), "Available")
 
     def test_scan_completed_refreshes_selected_code_map(self):

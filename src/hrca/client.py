@@ -844,16 +844,18 @@ class MainWindow(QMainWindow):
         entity_header_layout.addWidget(self._codemap_details_button)
         body_layout.addWidget(entity_header)
 
-        # Small in-place status line (hidden by default). It carries the
-        # "Updating Code Map for …" indicator and bounded failure messages
-        # without ever replacing the mounted procedural document.
+        # Small in-place status line, always mounted at a fixed height. It
+        # carries the "Updating Code Map for …" indicator and bounded failure
+        # messages without ever replacing the mounted procedural document or
+        # changing the body geometry (the region is permanently reserved, so a
+        # message appearing or clearing never shifts the document below it).
         self._codemap_status = QLabel("")
         self._codemap_status.setObjectName("codemapStatus")
         self._codemap_status.setAccessibleName("Code Map status")
-        self._codemap_status.setWordWrap(True)
+        self._codemap_status.setWordWrap(False)
         self._codemap_status.setTextFormat(Qt.PlainText)
         self._codemap_status.setStyleSheet(style.secondary_text_style(self._palette))
-        self._codemap_status.setVisible(False)
+        self._codemap_status.setFixedHeight(style.CODEMAP_STATUS_HEIGHT)
         body_layout.addWidget(self._codemap_status)
 
         self._codemap_entity_list = QListWidget()
@@ -1477,18 +1479,20 @@ class MainWindow(QMainWindow):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
     def _show_codemap_status(self, text: str) -> None:
-        """Show the in-place Code Map status line without touching the projection."""
+        """Write the in-place status message without touching the projection.
+
+        The status region is always mounted at a fixed height, so this only
+        changes its text; it never toggles visibility or reflows the body.
+        """
         if self._codemap_status is None:
             return
         self._codemap_status.setText(text)
-        self._codemap_status.setVisible(True)
 
     def _hide_codemap_status(self) -> None:
-        """Hide the in-place Code Map status line."""
+        """Clear the in-place status message, leaving its reserved region intact."""
         if self._codemap_status is None:
             return
         self._codemap_status.setText("")
-        self._codemap_status.setVisible(False)
 
     def _load_codemap(self, rel_path: str) -> None:
         """Drive the selection -> sync -> get -> render Code Map lifecycle (P3.4).

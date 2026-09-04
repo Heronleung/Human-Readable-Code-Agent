@@ -157,6 +157,12 @@ TWIN_CONTENT_MAX_WIDTH = 720
 # column that would crowd out the document.
 CODEMAP_ENTITY_LIST_MAX_HEIGHT = 120
 
+# Fixed single-line height of the Code Map in-place status region (P3.4). The
+# status label is always mounted at this height so that showing or clearing its
+# "Updating…" / failure text never changes the body layout, the procedural
+# document's viewport origin, or the user's scroll position.
+CODEMAP_STATUS_HEIGHT = 20
+
 # Initial vertical-splitter primary-workspace height (px) and the
 # workspace : bottom-panel stretch ratio (3 : 1).
 PRIMARY_WORKSPACE_INITIAL_HEIGHT = 560
@@ -873,6 +879,7 @@ __all__ = [
     "TWIN_STRETCH",
     "TWIN_CONTENT_MAX_WIDTH",
     "CODEMAP_ENTITY_LIST_MAX_HEIGHT",
+    "CODEMAP_STATUS_HEIGHT",
     "PRIMARY_WORKSPACE_INITIAL_HEIGHT",
     "PRIMARY_WORKSPACE_STRETCH",
     "STATUS_ROOT_MAX_WIDTH",
