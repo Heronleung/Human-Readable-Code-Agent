@@ -104,6 +104,16 @@ CREDENTIAL_ACTION_MESSAGES = {
     "failed": "The operation could not be completed.",
 }
 
+# Bounded pending message shown the instant a manage/remove credential action is
+# submitted, before any response arrives. On Windows it names the native
+# Credential Manager prompt; elsewhere it stays platform-neutral because the
+# action resolves to "unavailable" on those platforms. It never mentions a key.
+CREDENTIAL_ACTION_PENDING = (
+    "Opening secure Windows credential prompt…"
+    if sys.platform == "win32"
+    else "Opening secure credential prompt…"
+)
+
 
 def provider_status_message(status: str) -> str:
     """Return the user-facing message for a provider status ``status``."""
@@ -902,6 +912,7 @@ __all__ = [
     "PROVIDER_STATUS_MESSAGES",
     "provider_status_message",
     "CREDENTIAL_ACTION_MESSAGES",
+    "CREDENTIAL_ACTION_PENDING",
     "credential_action_message",
     "REPOSITORY_UNVERIFIED",
     "VALIDATION_IDLE",

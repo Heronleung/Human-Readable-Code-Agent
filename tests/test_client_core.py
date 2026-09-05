@@ -12,6 +12,7 @@ from hrca import contract
 from hrca.client_core import (
     BLOCK_TYPE_LABELS,
     CREDENTIAL_ACTION_MESSAGES,
+    CREDENTIAL_ACTION_PENDING,
     INTENT_CLASS_LABELS,
     OPERATION_LABELS,
     PROPOSAL_STATE_LABELS,
@@ -764,6 +765,19 @@ class ProviderStatusMessageTests(unittest.TestCase):
             set(CREDENTIAL_ACTION_MESSAGES),
             {"stored", "cancelled", "removed", "unavailable", "failed"},
         )
+
+    def test_credential_pending_message_is_bounded_and_platform_specific(self):
+        # The pending message is shown the instant a key action is submitted and
+        # must be one of exactly two safe strings, never mentioning a key.
+        self.assertIn(
+            CREDENTIAL_ACTION_PENDING,
+            {
+                "Opening secure Windows credential prompt…",
+                "Opening secure credential prompt…",
+            },
+        )
+        self.assertNotIn("secret", CREDENTIAL_ACTION_PENDING)
+        self.assertNotIn("key", CREDENTIAL_ACTION_PENDING.lower())
 
     def test_manage_credential_request_shape(self):
         req = build_manage_credential_request("cid-1")

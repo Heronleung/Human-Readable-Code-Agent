@@ -43,6 +43,8 @@ try:
         _SETTINGS_KEY_PRESENT,
     )
     from hrca.client_core import (
+        CREDENTIAL_ACTION_PENDING,
+        PROVIDER_STATUS_PENDING,
         TWIN_AVAILABLE,
         TWIN_LOADING,
         TWIN_STALE,
@@ -2495,6 +2497,165 @@ class ProviderReadinessGuiTests(unittest.TestCase):
         window._provider_credential_present = True
         window._refresh_settings_dialog()
         self.assertEqual(window._settings_key_value.text(), _SETTINGS_KEY_PRESENT)
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class SettingsDialogTests(unittest.TestCase):
+    """P4.2a v3 modern Settings surface (offscreen).
+
+    The Settings control is text-only (no gear), the four toolbar controls are
+    compact peers of one shared height, the dialog is a sizeable left-nav sheet
+    of five honest sections, and every credential action visibly reports its
+    pending state and bounded outcome — never an unobserved no-op.
+    """
+
+    def setUp(self):
+        _app()
+
+    def _dialog(self, window):
+        window._build_settings_dialog()
+        return window._settings_dialog
+
+    def _fake_send(self, window):
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        return sent
+
+    def test_settings_button_is_text_only_without_icon(self):
+        window = MainWindow()
+        self.assertEqual(window.settings_button.text(), "Settings")
+        self.assertTrue(window.settings_button.icon().isNull())
+        self.assertEqual(window.settings_button.accessibleName(), "Settings")
+        self.assertEqual(window.settings_button.toolTip(), "Settings")
+
+    def test_toolbar_peer_controls_share_compact_height(self):
+        window = MainWindow()
+        for button in (
+            window.settings_button,
+            window.open_project_button,
+            window.scan_button,
+            window.provider_button,
+        ):
+            with self.subTest(button=button.text()):
+                self.assertEqual(button.minimumHeight(), style.COMMAND_BAR_BUTTON_HEIGHT)
+                self.assertEqual(button.maximumHeight(), style.COMMAND_BAR_BUTTON_HEIGHT)
+
+    def test_open_project_remains_primary_others_secondary(self):
+        window = MainWindow()
+        self.assertEqual(window.open_project_button.objectName(), "primaryButton")
+        for button in (window.settings_button, window.scan_button, window.provider_button):
+            with self.subTest(button=button.text()):
+                self.assertEqual(button.objectName(), "commandBarButton")
+
+    def test_dialog_minimum_geometry(self):
+        window = MainWindow()
+        dialog = self._dialog(window)
+        self.assertEqual(dialog.minimumWidth(), style.SETTINGS_DIALOG_MIN_WIDTH)
+        self.assertEqual(dialog.minimumHeight(), style.SETTINGS_DIALOG_MIN_HEIGHT)
+
+    def test_dialog_default_size_at_least_minimum(self):
+        window = MainWindow()
+        dialog = self._dialog(window)
+        dialog.show()
+        QApplication.processEvents()
+        self.assertGreaterEqual(dialog.width(), style.SETTINGS_DIALOG_MIN_WIDTH)
+        self.assertGreaterEqual(dialog.height(), style.SETTINGS_DIALOG_MIN_HEIGHT)
+
+    def test_navigation_lists_five_sections_in_order(self):
+        window = MainWindow()
+        self._dialog(window)
+        self.assertEqual(window._settings_nav.count(), 5)
+        labels = [window._settings_nav.item(i).text() for i in range(5)]
+        self.assertEqual(
+            labels, ["Provider", "Appearance", "Workspace", "Privacy & Safety", "About"]
+        )
+
+    def test_navigation_switches_content_page(self):
+        window = MainWindow()
+        self._dialog(window)
+        for i in range(5):
+            window._settings_nav.setCurrentRow(i)
+            QApplication.processEvents()
+            self.assertEqual(window._settings_stack.currentIndex(), i)
+
+    def test_provider_page_shows_fixed_identity_and_model(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._provider_model = "deepseek-v4-flash"
+        window._refresh_settings_dialog()
+        self.assertEqual(window._settings_provider_value.text(), "DeepSeek")
+        self.assertEqual(window._settings_model_value.text(), "deepseek-v4-flash")
+
+    def test_manage_click_shows_pending_and_disables_actions(self):
+        window = MainWindow()
+        self._dialog(window)
+        sent = self._fake_send(window)
+        window._manage_key_button.click()
+        self.assertEqual(sent[0]["action"], contract.ACTION_MANAGE_CREDENTIAL)
+        self.assertEqual(window._settings_action_status.text(), CREDENTIAL_ACTION_PENDING)
+        self.assertTrue(window._credential_action_pending)
+        self.assertFalse(window._manage_key_button.isEnabled())
+        self.assertFalse(window._remove_key_button.isEnabled())
+
+    def test_credential_outcomes_are_visible_in_surface(self):
+        outcomes = {
+            "stored": "API key stored securely.",
+            "cancelled": "No change — the secure prompt was cancelled.",
+            "removed": "API key removed.",
+            "unavailable": "Secure key management is unavailable on this platform.",
+            "failed": "The operation could not be completed.",
+        }
+        for state, message in outcomes.items():
+            with self.subTest(state=state):
+                window = MainWindow()
+                self._dialog(window)
+                window._credential_action_pending = True
+                window._set_settings_actions_enabled(False)
+                window._apply_credential_result(
+                    {"state": state, "credential_present": state == "stored"}
+                )
+                self.assertEqual(window._settings_action_status.text(), message)
+                self.assertFalse(window._credential_action_pending)
+                self.assertTrue(window._manage_key_button.isEnabled())
+
+    def test_remove_is_confirmed_and_request_has_no_secret(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._provider_credential_present = True
+        window._refresh_settings_dialog()
+        sent = self._fake_send(window)
+        with mock.patch.object(window, "_confirm_remove_credential", return_value=True):
+            window._remove_key_button.click()
+        self.assertEqual(sent[0]["action"], contract.ACTION_REMOVE_CREDENTIAL)
+        self.assertNotIn("secret", contract.dumps(sent[0]))
+
+    def test_remove_button_agrees_with_key_state(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._provider_credential_present = False
+        window._refresh_settings_dialog()
+        self.assertFalse(window._remove_key_button.isEnabled())
+        window._provider_credential_present = True
+        window._refresh_settings_dialog()
+        self.assertTrue(window._remove_key_button.isEnabled())
+
+    def test_provider_status_region_never_reflows(self):
+        window = MainWindow()
+        window.show()
+        QApplication.processEvents()
+        splitter_geom = window._vertical_splitter.geometry()
+        region_height = window._provider_status_label.parentWidget().height()
+        window._set_provider_status(PROVIDER_STATUS_PENDING)
+        QApplication.processEvents()
+        self.assertEqual(
+            window._provider_status_label.parentWidget().height(), region_height
+        )
+        self.assertEqual(window._vertical_splitter.geometry(), splitter_geom)
 
 
 if __name__ == "__main__":

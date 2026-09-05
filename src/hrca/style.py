@@ -30,7 +30,6 @@ relied on alone.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -42,7 +41,6 @@ from PySide6.QtGui import (
     QGuiApplication,
     QIcon,
     QPainter,
-    QPainterPath,
     QPen,
     QPixmap,
     QPolygonF,
@@ -133,11 +131,10 @@ TREE_DISCLOSURE_HIT_SIZE = 20
 LOCK_ICON_SIZE = 16
 LOCK_STROKE = 1.75
 
-# Toolbar Settings control (P4.2a). The gear is a monochrome vector glyph
-# painted at SETTINGS_ICON_SIZE with a SETTINGS_ICON_STROKE outline; it has no
-# emoji, glyph or image asset and only its colour changes with enabled state.
-SETTINGS_ICON_SIZE = 16
-SETTINGS_ICON_STROKE = 1.5
+# Toolbar peer controls (P4.2a). Settings / Open Project / Run read-only scan /
+# Provider status are compact peers of one shared height, so a single token owns
+# the vertical sizing and no widget hard-codes its own.
+COMMAND_BAR_BUTTON_HEIGHT = 28
 
 SPLITTER_HANDLE_WIDTH = 6          # 6 px interactive hit area
 SPLITTER_HAIRLINE_WIDTH = 1        # visually a 1 px hairline
@@ -192,6 +189,15 @@ WINDOW_DEFAULT_WIDTH = 1360
 WINDOW_DEFAULT_HEIGHT = 840
 WINDOW_MIN_WIDTH = 1024
 WINDOW_MIN_HEIGHT = 640
+
+# Application Settings dialog geometry (P4.2a). A sizeable left-nav sheet that
+# never covers the whole app: a minimum that keeps every section usable, a
+# slightly larger default, and a fixed-width navigation column.
+SETTINGS_DIALOG_MIN_WIDTH = 720
+SETTINGS_DIALOG_MIN_HEIGHT = 500
+SETTINGS_DIALOG_DEFAULT_WIDTH = 760
+SETTINGS_DIALOG_DEFAULT_HEIGHT = 520
+SETTINGS_NAV_WIDTH = 160
 
 # Accessibility thresholds (WCAG).
 CONTRAST_BODY = 4.5
@@ -426,53 +432,6 @@ def lock_icon(palette: Palette, locked: bool, enabled: bool = True) -> QIcon:
     else:
         painter.drawArc(QRectF(5.0, 4.0, 6.0, 6.0), 0, 135 * 16)
     painter.drawLine(QPointF(11.0, 7.0), QPointF(11.0, 10.0))
-    painter.end()
-    return QIcon(pixmap)
-
-
-def settings_icon(palette: Palette, enabled: bool = True) -> QIcon:
-    """Return a monochrome vector Settings gear icon for the toolbar (P4.2a).
-
-    The glyph is an eight-toothed gear — a stroked radial tooth set over a
-    ring-with-hole body filled by an even-odd path — painted with
-    :class:`QPainter`. It is drawn in ``text_secondary`` (or ``text_disabled``
-    when the control is disabled); no emoji, glyph, icon pack or image asset is
-    used, so the gear stays within the colour and vector rules of the design
-    system.
-    """
-    color = palette.text_secondary if enabled else palette.text_disabled
-
-    size = SETTINGS_ICON_SIZE
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    pen = QPen(QColor(color), SETTINGS_ICON_STROKE)
-    pen.setCapStyle(Qt.RoundCap)
-    painter.setPen(pen)
-    painter.setBrush(QColor(color))
-
-    centre = size / 2.0
-    # Eight radial teeth, evenly spaced; the bars share the body's outer radius
-    # so the teeth read as one continuous gear, not a separate decoration.
-    tooth_inner = 4.6
-    tooth_outer = 7.0
-    for i in range(8):
-        angle = (math.pi * i) / 4.0
-        dx = math.cos(angle)
-        dy = math.sin(angle)
-        painter.drawLine(
-            QPointF(centre + dx * tooth_inner, centre + dy * tooth_inner),
-            QPointF(centre + dx * tooth_outer, centre + dy * tooth_outer),
-        )
-
-    # Body ring with a punched centre hole via an even-odd fill rule.
-    painter.setPen(Qt.NoPen)
-    body = QPainterPath()
-    body.addEllipse(QRectF(centre - 5.0, centre - 5.0, 10.0, 10.0))
-    body.addEllipse(QRectF(centre - 2.0, centre - 2.0, 4.0, 4.0))
-    body.setFillRule(Qt.OddEvenFill)
-    painter.fillPath(body, QColor(color))
     painter.end()
     return QIcon(pixmap)
 
@@ -776,6 +735,19 @@ QTextEdit#chatComposer:disabled {
 /* ---- status bar ---- */
 QWidget#statusBar { background: $surface; border-top: 1px solid $border; }
 
+/* ---- application Settings dialog (left nav + content) ---- */
+QDialog#settingsDialog { background: $window; }
+QListWidget#settingsNav {
+    background: $surface;
+    border: none;
+    border-right: 1px solid $border;
+    outline: none;
+}
+QListWidget#settingsNav::item { padding: 8px 12px; color: $text_secondary; }
+QListWidget#settingsNav::item:selected { background: $accent; color: $on_accent; }
+QListWidget#settingsNav::item:hover:!selected { background: $sunken; }
+QWidget#settingsPage { background: $window; }
+
 /* ---- splitter handles are painted by HairlineSplitterHandle ---- */
 QSplitter::handle { background: transparent; }
 """
@@ -926,9 +898,8 @@ __all__ = [
     "TREE_DISCLOSURE_HIT_SIZE",
     "LOCK_ICON_SIZE",
     "LOCK_STROKE",
-    "SETTINGS_ICON_SIZE",
-    "SETTINGS_ICON_STROKE",
     "TAB_HEIGHT",
+    "COMMAND_BAR_BUTTON_HEIGHT",
     "SPLITTER_HANDLE_WIDTH",
     "SPLITTER_HAIRLINE_WIDTH",
     "EXPLORER_DEFAULT_WIDTH",
@@ -953,6 +924,11 @@ __all__ = [
     "WINDOW_DEFAULT_HEIGHT",
     "WINDOW_MIN_WIDTH",
     "WINDOW_MIN_HEIGHT",
+    "SETTINGS_DIALOG_MIN_WIDTH",
+    "SETTINGS_DIALOG_MIN_HEIGHT",
+    "SETTINGS_DIALOG_DEFAULT_WIDTH",
+    "SETTINGS_DIALOG_DEFAULT_HEIGHT",
+    "SETTINGS_NAV_WIDTH",
     "CONTRAST_BODY",
     "CONTRAST_LARGE",
     "STATE_INFO",
@@ -972,7 +948,6 @@ __all__ = [
     "tree_folder_font",
     "tree_chevron_vertices",
     "lock_icon",
-    "settings_icon",
     "TreeBranchStyle",
     "detect_color_scheme",
     "palette_for",

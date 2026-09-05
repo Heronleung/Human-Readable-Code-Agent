@@ -120,6 +120,7 @@ from .client_core import (
     VALIDATION_IDLE,
     VALIDATION_OK,
     VALIDATION_RUNNING,
+    CREDENTIAL_ACTION_PENDING,
     LineBuffer,
     ResponseRouter,
     block_type_label,
@@ -218,6 +219,18 @@ _SETTINGS_PRIVACY_NOTE = (
     "store and is never displayed here.\n"
     "This screen makes no connection to DeepSeek and never sends project data."
 )
+
+# The five Settings sections, in the fixed order the left navigation column
+# presents them. Each key maps to a fixed, honest page — never a decorative
+# control that silently does nothing.
+_SETTINGS_SECTIONS = ("provider", "appearance", "workspace", "privacy", "about")
+_SETTINGS_SECTION_LABELS = {
+    "provider": "Provider",
+    "appearance": "Appearance",
+    "workspace": "Workspace",
+    "privacy": "Privacy & Safety",
+    "about": "About",
+}
 
 # The six bottom-panel tabs, in the fixed order the tab bar presents them. The
 # first key ("chat") maps to the Agent Chat surface; the remaining five map to
@@ -580,6 +593,16 @@ class MainWindow(QMainWindow):
         self._provider_credential_present: bool = False
         self._provider_status_label: Optional[QLabel] = None
         self._settings_dialog: Optional[QDialog] = None
+        # P4.2a modern Settings surface: left navigation, stacked content pages,
+        # the in-surface API-key action status line, the workspace/About value
+        # labels, and a pending flag that disables key actions while one is in
+        # flight so a click is never an unobserved no-op.
+        self._settings_nav: Optional[QListWidget] = None
+        self._settings_stack: Optional[QStackedWidget] = None
+        self._settings_action_status: Optional[QLabel] = None
+        self._settings_workspace_value: Optional[QLabel] = None
+        self._settings_about_provider_value: Optional[QLabel] = None
+        self._credential_action_pending: bool = False
         self._validation_state: str = VALIDATION_IDLE
         self._current_document: Optional[str] = None
         self._tree: Optional[Dict[str, Any]] = None
@@ -710,7 +733,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(style.GAP_TIGHT)
 
         self.settings_button = QPushButton("Settings")
-        self.settings_button.setIcon(style.settings_icon(self._palette, True))
+        self.settings_button.setObjectName("commandBarButton")
         self.settings_button.setAccessibleName("Settings")
         self.settings_button.setToolTip("Settings")
         self.settings_button.clicked.connect(self._open_settings)
@@ -721,17 +744,29 @@ class MainWindow(QMainWindow):
         self.open_project_button.clicked.connect(self._on_open_project)
 
         self.scan_button = QPushButton("Run read-only scan")
+        self.scan_button.setObjectName("commandBarButton")
         self.scan_button.setAccessibleName("Run read-only scan")
         self.scan_button.setEnabled(False)
         self.scan_button.setToolTip("Open a project before running a read-only scan.")
         self.scan_button.clicked.connect(self._on_run_scan)
 
         self.provider_button = QPushButton("Provider status")
+        self.provider_button.setObjectName("commandBarButton")
         self.provider_button.setAccessibleName("Provider status")
         self.provider_button.setToolTip(
             "Check local DeepSeek configuration only — this never contacts DeepSeek."
         )
         self.provider_button.clicked.connect(self._check_provider_readiness)
+
+        # Settings / Open Project / Run read-only scan / Provider status are
+        # compact peer controls: one shared height token, no per-widget sizing.
+        for button in (
+            self.settings_button,
+            self.open_project_button,
+            self.scan_button,
+            self.provider_button,
+        ):
+            button.setFixedHeight(style.COMMAND_BAR_BUTTON_HEIGHT)
 
         layout.addWidget(self.settings_button)
         layout.addWidget(self.open_project_button)
@@ -1425,8 +1460,10 @@ class MainWindow(QMainWindow):
         self._build_settings_dialog()
         self._refresh_settings_dialog()
         self._settings_dialog.show()
-        # Refresh the fixed provider identity and redacted credential presence
-        # through the local boundary so the surface is never stale.
+        # Refresh the fixed provider identity, the allowlisted model and the
+        # redacted credential presence through the local boundary so the
+        # Provider page is never stale. This is a local readiness check only —
+        # it never contacts DeepSeek.
         self._check_provider_readiness()
 
     def _build_settings_dialog(self) -> None:
@@ -1435,26 +1472,86 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setObjectName("settingsDialog")
         dialog.setWindowTitle("Settings")
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(
-            style.SPACE_16, style.SPACE_16, style.SPACE_16, style.SPACE_16
+        dialog.setMinimumSize(
+            style.SETTINGS_DIALOG_MIN_WIDTH, style.SETTINGS_DIALOG_MIN_HEIGHT
         )
-        layout.setSpacing(style.GAP_GROUP)
+        dialog.resize(
+            style.SETTINGS_DIALOG_DEFAULT_WIDTH, style.SETTINGS_DIALOG_DEFAULT_HEIGHT
+        )
 
-        header = QLabel("Provider")
-        header.setFont(style.panel_header_font())
-        layout.addWidget(header)
+        root = QHBoxLayout(dialog)
+        root.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        root.setSpacing(style.SPACE_0)
+
+        self._settings_nav = QListWidget()
+        self._settings_nav.setObjectName("settingsNav")
+        self._settings_nav.setFixedWidth(style.SETTINGS_NAV_WIDTH)
+        self._settings_nav.setAccessibleName("Settings sections")
+        for key in _SETTINGS_SECTIONS:
+            item = QListWidgetItem(_SETTINGS_SECTION_LABELS[key])
+            item.setData(Qt.UserRole, key)
+            self._settings_nav.addItem(item)
+        self._settings_nav.currentRowChanged.connect(self._on_settings_nav_changed)
+        root.addWidget(self._settings_nav)
+
+        self._settings_stack = QStackedWidget()
+        self._settings_stack.setObjectName("settingsStack")
+        self._settings_stack.addWidget(self._build_settings_provider_page())
+        self._settings_stack.addWidget(self._build_settings_appearance_page())
+        self._settings_stack.addWidget(self._build_settings_workspace_page())
+        self._settings_stack.addWidget(self._build_settings_privacy_page())
+        self._settings_stack.addWidget(self._build_settings_about_page())
+        root.addWidget(self._settings_stack, stretch=1)
+
+        self._settings_nav.setCurrentRow(0)
+        self._settings_dialog = dialog
+
+    def _on_settings_nav_changed(self, row: int) -> None:
+        if 0 <= row < self._settings_stack.count():
+            self._settings_stack.setCurrentIndex(row)
+
+    def _settings_section_title(self, text: str) -> QLabel:
+        label = QLabel(text.upper())
+        label.setObjectName("settingsSectionTitle")
+        label.setFont(style.panel_header_font())
+        label.setStyleSheet(style.secondary_text_style(self._palette))
+        return label
+
+    def _settings_field_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setStyleSheet(style.secondary_text_style(self._palette))
+        return label
+
+    def _settings_page(self, title: str):
+        page = QWidget()
+        page.setObjectName("settingsPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_GROUP, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+        layout.addWidget(self._settings_section_title(title))
+        return page, layout
+
+    def _settings_body_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("secondary")
+        label.setStyleSheet(style.secondary_text_style(self._palette))
+        label.setWordWrap(True)
+        return label
+
+    def _build_settings_provider_page(self) -> QWidget:
+        page, layout = self._settings_page("Provider")
+
+        layout.addWidget(self._settings_body_label(_SETTINGS_PRIVACY_NOTE))
 
         grid = QGridLayout()
         grid.setContentsMargins(
             style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
         )
         grid.setSpacing(style.GAP_TIGHT)
-
-        def field_label(text: str) -> QLabel:
-            label = QLabel(text)
-            label.setStyleSheet(style.secondary_text_style(self._palette))
-            return label
 
         self._settings_provider_value = QLabel("DeepSeek")
         self._settings_provider_value.setStyleSheet(style.status_label_style(self._palette))
@@ -1463,11 +1560,11 @@ class MainWindow(QMainWindow):
         self._settings_key_value = QLabel(_SETTINGS_KEY_ABSENT)
         self._settings_key_value.setStyleSheet(style.status_label_style(self._palette))
 
-        grid.addWidget(field_label("Provider"), 0, 0)
+        grid.addWidget(self._settings_field_label("Provider"), 0, 0)
         grid.addWidget(self._settings_provider_value, 0, 1)
-        grid.addWidget(field_label("Model"), 1, 0)
+        grid.addWidget(self._settings_field_label("Model"), 1, 0)
         grid.addWidget(self._settings_model_value, 1, 1)
-        grid.addWidget(field_label("API key"), 2, 0)
+        grid.addWidget(self._settings_field_label("API key"), 2, 0)
         grid.addWidget(self._settings_key_value, 2, 1)
         layout.addLayout(grid)
 
@@ -1489,12 +1586,83 @@ class MainWindow(QMainWindow):
         actions.addStretch(1)
         layout.addLayout(actions)
 
-        note = QLabel(_SETTINGS_PRIVACY_NOTE)
-        note.setStyleSheet(style.secondary_text_style(self._palette))
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        # The in-surface action-status line: shows the pending message the
+        # instant a key action is submitted and the exact bounded outcome when
+        # it completes, so a click is never an unobserved no-op.
+        self._settings_action_status = QLabel("")
+        self._settings_action_status.setObjectName("settingsActionStatus")
+        self._settings_action_status.setAccessibleName("API key action status")
+        self._settings_action_status.setWordWrap(True)
+        self._settings_action_status.setStyleSheet(style.status_label_style(self._palette))
+        layout.addWidget(self._settings_action_status)
 
-        self._settings_dialog = dialog
+        layout.addStretch(1)
+        return page
+
+    def _build_settings_appearance_page(self) -> QWidget:
+        page, layout = self._settings_page("Appearance")
+        layout.addWidget(
+            self._settings_body_label(
+                "Monochrome interface policy\n\n"
+                "The application uses a single monochrome interface that follows "
+                "your operating system's light or dark appearance. There is no "
+                "separate theme setting to change."
+            )
+        )
+        layout.addStretch(1)
+        return page
+
+    def _build_settings_workspace_page(self) -> QWidget:
+        page, layout = self._settings_page("Workspace")
+        layout.addWidget(
+            self._settings_body_label(
+                "The workspace is the project currently opened in the main "
+                "window. Project selection and filesystem permissions are "
+                "managed by the boundary, not here."
+            )
+        )
+        self._settings_workspace_value = QLabel("No project open")
+        self._settings_workspace_value.setAccessibleName("Workspace project")
+        self._settings_workspace_value.setStyleSheet(style.status_label_style(self._palette))
+        layout.addWidget(self._settings_workspace_value)
+        layout.addStretch(1)
+        return page
+
+    def _build_settings_privacy_page(self) -> QWidget:
+        page, layout = self._settings_page("Privacy & Safety")
+        layout.addWidget(
+            self._settings_body_label(
+                "Provider calls are disabled in this offline slice: the "
+                "application never sends a prompt to DeepSeek and never makes "
+                "a network connection.\n\n"
+                "Your API key, when stored, lives in this computer's Windows "
+                "Credential Manager and is never displayed, logged or sent.\n\n"
+                "No project data leaves this computer."
+            )
+        )
+        layout.addStretch(1)
+        return page
+
+    def _build_settings_about_page(self) -> QWidget:
+        page, layout = self._settings_page("About")
+        grid = QGridLayout()
+        grid.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        grid.setSpacing(style.GAP_TIGHT)
+        self._settings_about_version_value = QLabel(contract.CONTRACT_VERSION)
+        self._settings_about_version_value.setStyleSheet(style.status_label_style(self._palette))
+        self._settings_about_provider_value = QLabel("Offline — provider calls disabled.")
+        self._settings_about_provider_value.setStyleSheet(
+            style.status_label_style(self._palette)
+        )
+        grid.addWidget(self._settings_field_label("Contract version"), 0, 0)
+        grid.addWidget(self._settings_about_version_value, 0, 1)
+        grid.addWidget(self._settings_field_label("Provider capability"), 1, 0)
+        grid.addWidget(self._settings_about_provider_value, 1, 1)
+        layout.addLayout(grid)
+        layout.addStretch(1)
+        return page
 
     def _refresh_settings_dialog(self) -> None:
         if self._settings_dialog is None:
@@ -1505,27 +1673,63 @@ class MainWindow(QMainWindow):
             if self._provider_credential_present
             else _SETTINGS_KEY_ABSENT
         )
-        self._remove_key_button.setEnabled(self._provider_credential_present)
+        self._settings_workspace_value.setText(self._root or "No project open")
+        self._set_settings_actions_enabled(not self._credential_action_pending)
+
+    def _set_settings_actions_enabled(self, enabled: bool) -> None:
+        if self._settings_dialog is None:
+            return
+        self._manage_key_button.setEnabled(enabled)
+        self._remove_key_button.setEnabled(
+            enabled and self._provider_credential_present
+        )
+
+    def _set_settings_action_status(self, text: str) -> None:
+        if self._settings_action_status is not None:
+            self._settings_action_status.setText(text)
+
+    def _begin_credential_action(self) -> None:
+        self._credential_action_pending = True
+        self._set_settings_action_status(CREDENTIAL_ACTION_PENDING)
+        self._set_settings_actions_enabled(False)
+
+    def _end_credential_action(self) -> None:
+        self._credential_action_pending = False
+        self._set_settings_actions_enabled(True)
 
     def _on_manage_credential(self) -> None:
+        if self._credential_action_pending:
+            return
         cid = contract.new_correlation_id()
         request = build_manage_credential_request(cid)
+        self._begin_credential_action()
         self._set_status(STATE_RUNNING, "managing API key")
         if not self._send(
             request, self._on_manage_credential_ready, self._on_credential_action_error
         ):
+            self._end_credential_action()
             self._set_status(STATE_FAILED, "a request is already in progress")
+            self._set_settings_action_status(
+                "Another operation is in progress — try again."
+            )
 
     def _on_remove_credential(self) -> None:
+        if self._credential_action_pending:
+            return
         if not self._confirm_remove_credential():
             return
         cid = contract.new_correlation_id()
         request = build_remove_credential_request(cid)
+        self._begin_credential_action()
         self._set_status(STATE_RUNNING, "removing API key")
         if not self._send(
             request, self._on_remove_credential_ready, self._on_credential_action_error
         ):
+            self._end_credential_action()
             self._set_status(STATE_FAILED, "a request is already in progress")
+            self._set_settings_action_status(
+                "Another operation is in progress — try again."
+            )
 
     def _confirm_remove_credential(self) -> bool:
         box = QMessageBox(self)
@@ -1549,15 +1753,18 @@ class MainWindow(QMainWindow):
 
     def _apply_credential_result(self, result: Dict[str, Any]) -> None:
         state = str(result.get("state", "failed"))
+        message = credential_action_message(state)
         self._provider_credential_present = bool(result.get("credential_present", False))
+        self._end_credential_action()
+        self._set_settings_action_status(message)
         if state in ("stored", "removed"):
-            self._set_status(STATE_SUCCESS, credential_action_message(state))
+            self._set_status(STATE_SUCCESS, message)
         elif state == "cancelled":
-            self._set_status(STATE_IDLE, credential_action_message(state))
+            self._set_status(STATE_IDLE, message)
         elif state == "unavailable":
-            self._set_status(STATE_UNAVAILABLE, credential_action_message(state))
+            self._set_status(STATE_UNAVAILABLE, message)
         else:  # failed
-            self._set_status(STATE_FAILED, credential_action_message(state))
+            self._set_status(STATE_FAILED, message)
         if state == "stored":
             self._provider_state = "configured"
             self._set_provider_status(PROVIDER_STATUS_CONFIGURED)
@@ -1574,8 +1781,11 @@ class MainWindow(QMainWindow):
         self._refresh_settings_dialog()
 
     def _on_credential_action_error(self, reason: str) -> None:
+        self._end_credential_action()
+        self._set_settings_action_status(credential_action_message("failed"))
         self._set_status(STATE_FAILED, reason)
         self._set_provider_status(PROVIDER_STATUS_FAILED)
+        self._refresh_settings_dialog()
 
     def _open_document(self, rel_path: str) -> None:
         cid = contract.new_correlation_id()
