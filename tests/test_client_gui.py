@@ -39,11 +39,16 @@ try:
         DocumentView,
         MainWindow,
         PythonHighlighter,
-        _SETTINGS_KEY_ABSENT,
-        _SETTINGS_KEY_PRESENT,
+        _SETTINGS_ACTIVE_LABEL,
+        _SETTINGS_ADD_PROFILE,
+        _SETTINGS_NO_PROFILES,
+        _SETTINGS_RENAME,
+        _SETTINGS_REPLACE,
     )
     from hrca.client_core import (
         CREDENTIAL_ACTION_PENDING,
+        CREDENTIAL_MASK,
+        PROFILE_ACTION_MESSAGES,
         PROVIDER_STATUS_PENDING,
         TWIN_AVAILABLE,
         TWIN_LOADING,
@@ -2360,6 +2365,16 @@ class ProviderReadinessGuiTests(unittest.TestCase):
         window._send = fake_send
         return sent
 
+    def _fake_send_credential(self, window):
+        sent = []
+
+        def fake_send_credential(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send_credential = fake_send_credential
+        return sent
+
     def test_provider_button_is_present(self):
         window = MainWindow()
         self.assertEqual(window.provider_button.text(), "Provider status")
@@ -2450,63 +2465,32 @@ class ProviderReadinessGuiTests(unittest.TestCase):
         window._on_readiness_error("invalid_config")
         self.assertIn("Provider check failed", window._provider_status_label.text())
 
-    def test_credential_result_stored_updates_status_region(self):
-        window = MainWindow()
-        window._apply_credential_result({"state": "stored", "credential_present": True})
-        self.assertEqual(window._provider_state, "configured")
-        self.assertTrue(window._provider_credential_present)
-        self.assertIn("DeepSeek is configured locally", window._provider_status_label.text())
-
-    def test_credential_result_removed_updates_status_region(self):
-        window = MainWindow()
-        window._provider_credential_present = True
-        window._apply_credential_result({"state": "removed", "credential_present": False})
-        self.assertEqual(window._provider_state, "missing_credential")
-        self.assertFalse(window._provider_credential_present)
-        self.assertIn("DeepSeek API key not configured", window._provider_status_label.text())
-
-    def test_manage_credential_button_sends_manage_credential(self):
-        window = MainWindow()
-        sent = self._fake_send(window)
-        window._build_settings_dialog()
-        window._manage_key_button.click()
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["action"], contract.ACTION_MANAGE_CREDENTIAL)
-        self.assertNotIn("path", sent[0])
-        self.assertNotIn("task", sent[0])
-        # The key can never enter a Qt request; the request is identity + action only.
-        self.assertNotIn("secret", contract.dumps(sent[0]))
-
-    def test_remove_button_disabled_without_key(self):
+    def test_show_credential_result_stored_updates_status(self):
         window = MainWindow()
         window._build_settings_dialog()
-        window._provider_credential_present = False
-        window._refresh_settings_dialog()
-        self.assertFalse(window._remove_key_button.isEnabled())
+        window._show_credential_result({"state": "stored", "credential_present": True})
+        self.assertEqual(window._settings_action_status.text(), "API key stored securely.")
 
-    def test_remove_button_enabled_with_key(self):
+    def test_show_credential_result_cancelled_is_bounded(self):
         window = MainWindow()
         window._build_settings_dialog()
-        window._provider_credential_present = True
-        window._refresh_settings_dialog()
-        self.assertTrue(window._remove_key_button.isEnabled())
-
-    def test_settings_dialog_never_shows_the_key(self):
-        window = MainWindow()
-        window._build_settings_dialog()
-        window._provider_credential_present = True
-        window._refresh_settings_dialog()
-        self.assertEqual(window._settings_key_value.text(), _SETTINGS_KEY_PRESENT)
+        window._show_credential_result({"state": "cancelled", "credential_present": False})
+        self.assertEqual(
+            window._settings_action_status.text(),
+            "No change — the secure prompt was cancelled.",
+        )
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class SettingsDialogTests(unittest.TestCase):
-    """P4.2a v3 modern Settings surface (offscreen).
+    """P4.2a credential-profile manager Settings surface (offscreen).
 
     The Settings control is text-only (no gear), the four toolbar controls are
     compact peers of one shared height, the dialog is a sizeable left-nav sheet
-    of five honest sections, and every credential action visibly reports its
-    pending state and bounded outcome — never an unobserved no-op.
+    of five honest sections, and the Provider page owns only non-secret profile
+    metadata: an active-credential selector, an Add action, and a card per saved
+    profile with a fixed read-only mask plus Rename / Replace / Delete controls.
+    Every action visibly reports its pending state and bounded outcome.
     """
 
     def setUp(self):
@@ -2525,6 +2509,24 @@ class SettingsDialogTests(unittest.TestCase):
 
         window._send = fake_send
         return sent
+
+    def _fake_send_credential(self, window):
+        sent = []
+
+        def fake_send_credential(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send_credential = fake_send_credential
+        return sent
+
+    def _profile(self, profile_id="a" * 32, name="Work", present=True):
+        return {
+            "profile_id": profile_id,
+            "provider_id": "deepseek",
+            "display_name": name,
+            "credential_present": present,
+        }
 
     def test_settings_button_is_text_only_without_icon(self):
         window = MainWindow()
@@ -2591,58 +2593,199 @@ class SettingsDialogTests(unittest.TestCase):
         self.assertEqual(window._settings_provider_value.text(), "DeepSeek")
         self.assertEqual(window._settings_model_value.text(), "deepseek-v4-flash")
 
-    def test_manage_click_shows_pending_and_disables_actions(self):
+    def test_active_selector_is_present_and_accessible(self):
+        window = MainWindow()
+        self._dialog(window)
+        self.assertIsNotNone(window._settings_active_combo)
+        self.assertEqual(
+            window._settings_active_combo.accessibleName(), _SETTINGS_ACTIVE_LABEL
+        )
+
+    def test_add_button_is_present_and_accessible(self):
+        window = MainWindow()
+        self._dialog(window)
+        self.assertEqual(window._add_profile_button.text(), _SETTINGS_ADD_PROFILE)
+        self.assertEqual(
+            window._add_profile_button.accessibleName(), _SETTINGS_ADD_PROFILE
+        )
+
+    def test_empty_state_shows_no_profiles(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._profiles = []
+        window._refresh_settings_dialog()
+        layout = window._settings_profiles_layout
+        labels = [layout.itemAt(i).widget() for i in range(layout.count())]
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(labels[0].text(), _SETTINGS_NO_PROFILES)
+
+    def test_profiles_render_name_provider_and_fixed_mask(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._profiles = [self._profile(name="Work")]
+        window._refresh_settings_dialog()
+        card = window._settings_profiles_layout.itemAt(0).widget()
+        self.assertEqual(card.objectName(), "profileCard")
+        texts = [label.text() for label in card.findChildren(QLabel)]
+        self.assertIn("Work", texts)
+        self.assertTrue(any(CREDENTIAL_MASK in text for text in texts))
+        self.assertTrue(any("deepseek" in text for text in texts))
+        joined = " ".join(texts)
+        self.assertNotIn("secret", joined)
+        self.assertNotIn("api_key", joined)
+
+    def test_profile_card_controls_are_accessible(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._profiles = [self._profile(name="Work")]
+        window._refresh_settings_dialog()
+        card = window._settings_profiles_layout.itemAt(0).widget()
+        buttons = card.findChildren(QPushButton)
+        texts = {button.text() for button in buttons}
+        self.assertIn(_SETTINGS_RENAME, texts)
+        self.assertIn(_SETTINGS_REPLACE, texts)
+        for button in buttons:
+            self.assertTrue(button.accessibleName())
+
+    def test_delete_control_is_icon_only_accessible_and_focusable(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._profiles = [self._profile(name="Work")]
+        window._refresh_settings_dialog()
+        card = window._settings_profiles_layout.itemAt(0).widget()
+        deletes = card.findChildren(QToolButton)
+        self.assertEqual(len(deletes), 1)
+        delete = deletes[0]
+        self.assertEqual(delete.accessibleName(), "Delete Work")
+        self.assertEqual(delete.toolTip(), "Delete Work")
+        self.assertFalse(delete.icon().isNull())
+        self.assertEqual(delete.text(), "")
+        self.assertEqual(delete.minimumWidth(), style.PROFILE_ACTION_BUTTON_SIZE)
+        self.assertEqual(delete.minimumHeight(), style.PROFILE_ACTION_BUTTON_SIZE)
+        self.assertEqual(delete.focusPolicy(), Qt.StrongFocus)
+
+    def test_add_profile_sends_manage_credential_with_profile_id(self):
+        window = MainWindow()
+        self._dialog(window)
+        sent = self._fake_send_credential(window)
+        with mock.patch.object(
+            window, "_prompt_profile_name", return_value=("Work", True)
+        ):
+            window._on_add_profile()
+        self.assertEqual(len(sent), 1)
+        request = sent[0]
+        self.assertEqual(request["action"], contract.ACTION_MANAGE_CREDENTIAL)
+        self.assertIsInstance(request["hwnd"], int)
+        self.assertEqual(len(request["profile_id"]), 32)
+        self.assertTrue(window._profile_action_pending)
+        self.assertIsNotNone(window._pending_add)
+        self.assertNotIn("secret", contract.dumps(request))
+
+    def test_add_cancelled_sends_nothing(self):
+        window = MainWindow()
+        self._dialog(window)
+        sent = self._fake_send_credential(window)
+        with mock.patch.object(
+            window, "_prompt_profile_name", return_value=("Work", False)
+        ):
+            window._on_add_profile()
+        self.assertEqual(len(sent), 0)
+        self.assertFalse(window._profile_action_pending)
+
+    def test_add_rejects_duplicate_name_client_side(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._profiles = [self._profile(name="Work")]
+        sent = self._fake_send_credential(window)
+        with mock.patch.object(
+            window, "_prompt_profile_name", return_value=("work", True)
+        ):
+            window._on_add_profile()
+        self.assertEqual(len(sent), 0)
+        self.assertEqual(
+            window._settings_action_status.text(),
+            "That profile name is already in use.",
+        )
+
+    def test_add_secret_stored_dispatches_add_profile(self):
         window = MainWindow()
         self._dialog(window)
         sent = self._fake_send(window)
-        window._manage_key_button.click()
-        self.assertEqual(sent[0]["action"], contract.ACTION_MANAGE_CREDENTIAL)
-        self.assertEqual(window._settings_action_status.text(), CREDENTIAL_ACTION_PENDING)
-        self.assertTrue(window._credential_action_pending)
-        self.assertFalse(window._manage_key_button.isEnabled())
-        self.assertFalse(window._remove_key_button.isEnabled())
+        window._pending_add = ("a" * 32, "Work")
+        window._profile_action_pending = True
+        window._on_add_secret_stored({"state": "stored", "credential_present": True})
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_ADD_PROFILE)
+        self.assertEqual(sent[0]["profile_id"], "a" * 32)
+        self.assertEqual(sent[0]["display_name"], "Work")
+        self.assertIsNone(window._pending_add)
 
-    def test_credential_outcomes_are_visible_in_surface(self):
-        outcomes = {
-            "stored": "API key stored securely.",
-            "cancelled": "No change — the secure prompt was cancelled.",
-            "removed": "API key removed.",
-            "unavailable": "Secure key management is unavailable on this platform.",
-            "failed": "The operation could not be completed.",
-        }
-        for state, message in outcomes.items():
-            with self.subTest(state=state):
-                window = MainWindow()
-                self._dialog(window)
-                window._credential_action_pending = True
-                window._set_settings_actions_enabled(False)
-                window._apply_credential_result(
-                    {"state": state, "credential_present": state == "stored"}
-                )
-                self.assertEqual(window._settings_action_status.text(), message)
-                self.assertFalse(window._credential_action_pending)
-                self.assertTrue(window._manage_key_button.isEnabled())
-
-    def test_remove_is_confirmed_and_request_has_no_secret(self):
+    def test_add_secret_cancelled_does_not_add_profile(self):
         window = MainWindow()
         self._dialog(window)
-        window._provider_credential_present = True
+        sent = self._fake_send(window)
+        window._pending_add = ("a" * 32, "Work")
+        window._profile_action_pending = True
+        window._on_add_secret_stored(
+            {"state": "cancelled", "credential_present": False}
+        )
+        self.assertEqual(len(sent), 0)
+        self.assertIsNone(window._pending_add)
+        self.assertFalse(window._profile_action_pending)
+
+    def test_active_selector_change_sends_set_active_profile(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._profiles = [
+            self._profile("a" * 32, "A"),
+            self._profile("b" * 32, "B"),
+        ]
+        window._active_profile_id = "a" * 32
         window._refresh_settings_dialog()
         sent = self._fake_send(window)
-        with mock.patch.object(window, "_confirm_remove_credential", return_value=True):
-            window._remove_key_button.click()
-        self.assertEqual(sent[0]["action"], contract.ACTION_REMOVE_CREDENTIAL)
-        self.assertNotIn("secret", contract.dumps(sent[0]))
+        window._settings_active_combo.setCurrentIndex(1)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_SET_ACTIVE_PROFILE)
+        self.assertEqual(sent[0]["profile_id"], "b" * 32)
 
-    def test_remove_button_agrees_with_key_state(self):
+    def test_profile_action_saved_refreshes_state(self):
         window = MainWindow()
         self._dialog(window)
-        window._provider_credential_present = False
-        window._refresh_settings_dialog()
-        self.assertFalse(window._remove_key_button.isEnabled())
-        window._provider_credential_present = True
-        window._refresh_settings_dialog()
-        self.assertTrue(window._remove_key_button.isEnabled())
+        window._profile_action_pending = True
+        window._on_profile_action_saved(
+            "added",
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-v4-flash",
+                "profiles": [self._profile("a" * 32, "Work")],
+                "active_profile_id": "a" * 32,
+                "credential_present": True,
+                "authenticated": False,
+                "online": False,
+                "executable": False,
+                "migrated": False,
+                "store_available": True,
+            },
+        )
+        self.assertEqual(len(window._profiles), 1)
+        self.assertEqual(window._active_profile_id, "a" * 32)
+        self.assertFalse(window._profile_action_pending)
+        self.assertEqual(
+            window._settings_action_status.text(), PROFILE_ACTION_MESSAGES["added"]
+        )
+
+    def test_profile_action_error_is_bounded(self):
+        window = MainWindow()
+        self._dialog(window)
+        self._fake_send(window)  # _refresh_profiles goes through the boundary
+        window._profile_action_pending = True
+        window._on_profile_action_error("profile_name_invalid")
+        self.assertFalse(window._profile_action_pending)
+        self.assertEqual(
+            window._settings_action_status.text(),
+            "That profile name is not valid or is already in use.",
+        )
 
     def test_provider_status_region_never_reflows(self):
         window = MainWindow()
@@ -2677,22 +2820,18 @@ class SettingsDialogTests(unittest.TestCase):
         for upper, lower in zip(rects, rects[1:]):
             self.assertLessEqual(upper.bottom(), lower.top())
 
-    def test_failed_outcome_surfaces_the_failure_category(self):
-        # A failed manage action with a bounded reason shows the category's own
-        # message, not the generic "could not be completed" text.
+    def test_credential_failure_category_is_surfaced(self):
+        # A failed native-host action with a bounded reason shows the category's
+        # own message, never a raw error or the secret.
         window = MainWindow()
         self._dialog(window)
-        window._credential_action_pending = True
-        window._set_settings_actions_enabled(False)
-        window._apply_credential_result(
+        window._show_credential_result(
             {"state": "failed", "reason": "prompt_failed", "credential_present": False}
         )
         self.assertEqual(
             window._settings_action_status.text(),
             "The secure credential prompt could not be shown.",
         )
-        self.assertIn("failed", window.status_label.text())
-        self.assertFalse(window._credential_action_pending)
 
 
 if __name__ == "__main__":

@@ -23,10 +23,19 @@ import abc
 import os
 from typing import Optional
 
-# Stable, application-owned Windows Credential Manager target name. This is the
-# only name the application ever writes under; it is a fixed constant and is
-# never derived from a repository, an environment variable or user input.
+from . import contract
+
+# Stable, application-owned Windows Credential Manager target name for the
+# legacy single unnamed DeepSeek credential (P4.2a, pre-profiles). It is a
+# fixed constant and is never derived from a repository, an environment
+# variable or user input. Profile credentials live under ``PROFILE_TARGET_PREFIX``
+# targets derived from the profile's opaque id (see :func:`profile_target`).
 TARGET_NAME = "hrca:deepseek"
+
+# Prefix for per-profile credential targets. A profile's secret is stored under
+# ``hrca:profile:<opaque-profile-id>`` so each profile has a distinct target
+# whose identity is the immutable profile id — never the editable display name.
+PROFILE_TARGET_PREFIX = "hrca:profile:"
 
 # Maximum target-name length enforced by :func:`_require_target`.
 _MAX_TARGET_CHARS = 256
@@ -42,6 +51,7 @@ _SAFE_MESSAGES = {
     "unavailable": "credential storage is unavailable on this platform",
     "prompt_failed": "the secure credential prompt failed",
     "prompt_invalid_argument": "the secure credential prompt rejected its arguments",
+    "prompt_session_unavailable": "the secure credential prompt is not available in this session",
 }
 
 
@@ -74,6 +84,21 @@ def _require_secret(secret: str) -> str:
     if not isinstance(secret, str) or not secret:
         raise CredentialStoreError("invalid_secret")
     return secret
+
+
+def profile_target(profile_id: str) -> str:
+    """Return the Credential Manager target for one opaque profile id.
+
+    The target is ``hrca:profile:<profile_id>`` where ``profile_id`` is the
+    profile's immutable opaque id (32 lowercase hex). The id — never the
+    editable display name — is the secret's identity, so a rename never reads,
+    copies or rewrites the secret. A non-canonical id raises a bounded
+    ``invalid_target`` error, so an arbitrary or hostile string can never name
+    a credential target.
+    """
+    if not contract.is_valid_profile_id(profile_id):
+        raise CredentialStoreError("invalid_target")
+    return f"{PROFILE_TARGET_PREFIX}{profile_id}"
 
 
 class CredentialStore(abc.ABC):
@@ -226,6 +251,8 @@ def native_credential_prompt():
 
 __all__ = [
     "TARGET_NAME",
+    "PROFILE_TARGET_PREFIX",
+    "profile_target",
     "CredentialStoreError",
     "CredentialStore",
     "FakeCredentialStore",

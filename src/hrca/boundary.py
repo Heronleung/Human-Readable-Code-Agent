@@ -244,6 +244,16 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _manage_credential_result(request, session)
     elif action == contract.ACTION_REMOVE_CREDENTIAL:
         result = _remove_credential_result(request, session)
+    elif action == contract.ACTION_GET_PROFILES:
+        result = _get_profiles_result(request, session)
+    elif action == contract.ACTION_ADD_PROFILE:
+        result = _add_profile_result(request, session)
+    elif action == contract.ACTION_RENAME_PROFILE:
+        result = _rename_profile_result(request, session)
+    elif action == contract.ACTION_DELETE_PROFILE:
+        result = _delete_profile_result(request, session)
+    elif action == contract.ACTION_SET_ACTIVE_PROFILE:
+        result = _set_active_profile_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -678,19 +688,25 @@ def _get_readiness_result(
 
     Only non-secret facts are reported: the fixed provider id, the allowlisted
     model (or ``None`` when the config is invalid) and a bounded state derived
-    from credential *presence*. The credential value is never read or surfaced,
-    and the result never claims network authentication or availability.
+    from the *active* profile's credential presence — or the legacy credential
+    presence when no profile exists yet. The credential value is never read or
+    surfaced, and the result never claims network authentication or
+    availability. This path performs no migration (it must stay read-free).
     """
-    store = session.credential_store
-    if store is None:
-        store = credential_store.make_credential_store()
+    store = _resolve_store(session)
+    store_available = store.available()
     config, config_error = provider_config.load(session.store_base)
     if config is None and config_error is None:
         config = provider_config.default_config()
-    store_available = store.available()
-    credential_present = (
-        store.has(credential_store.TARGET_NAME) if store_available else False
-    )
+    credential_present = False
+    if config is not None:
+        active = config.get("active_profile_id")
+        if active is not None:
+            credential_present = store_available and store.has(
+                credential_store.profile_target(active)
+            )
+        elif not config.get("profiles") and store_available:
+            credential_present = store.has(credential_store.TARGET_NAME)
     return deepseek.redacted_readiness(
         config=config,
         config_error=config_error,
@@ -700,6 +716,20 @@ def _get_readiness_result(
 
 
 # -- Credential management handlers (P4.2a) -------------------------------
+
+
+def _resolve_store(session: WorkspaceSession):
+    """Resolve the backend-owned credential store, lazily constructing it.
+
+    The store is constructed lazily so a boundary loop that never touches a
+    credential never constructs one. Unlike :func:`_credential_store` this
+    returns the raw store (including an unavailable one) so presence checks can
+    still run safely against it.
+    """
+    store = session.credential_store
+    if store is None:
+        store = credential_store.make_credential_store()
+    return store
 
 
 def _credential_store(session: WorkspaceSession):
@@ -798,6 +828,251 @@ def _remove_credential_result(
     return credential_store.redacted_credential_result(
         credential_store.CREDENTIAL_STATE_REMOVED, False
     )
+
+
+# -- Credential-profile handlers (P4.2a) ----------------------------------
+
+
+def _migrate_legacy_credential(
+    session: WorkspaceSession, store: Any, config: Dict[str, Any]
+) -> tuple:
+    """Migrate the legacy single DeepSeek credential into a default profile.
+
+    Creates one opaque default profile, copies the legacy secret from
+    ``TARGET_NAME`` to the profile's own target, verifies the new target's
+    presence, persists the profile (active) atomically, and only then deletes
+    the legacy entry. Any failure before that commit returns ``(config, False)``
+    and leaves the legacy credential and configuration untouched, so migration
+    is never lossy.
+    """
+    profile_id = contract.new_profile_id()
+    display_name = "Default"
+    target = credential_store.profile_target(profile_id)
+    try:
+        secret = store.read(credential_store.TARGET_NAME)
+    except credential_store.CredentialStoreError:
+        return config, False
+    if not secret:
+        return config, False
+    try:
+        store.store(target, secret)
+    except credential_store.CredentialStoreError:
+        return config, False
+    finally:
+        secret = None
+    if not store.has(target):
+        return config, False
+    new_config, err = provider_config.add_profile(config, profile_id, display_name)
+    if err is not None:
+        return config, False
+    new_config, err = provider_config.set_active_profile(new_config, profile_id)
+    if err is not None:
+        return config, False
+    if provider_config.save(session.store_base, new_config) is not None:
+        return config, False
+    try:
+        store.delete(credential_store.TARGET_NAME)
+    except credential_store.CredentialStoreError:
+        pass  # the legacy entry lingers harmlessly; the profile is authoritative
+    return new_config, True
+
+
+def _profiles_state(session: WorkspaceSession, *, migrate: bool = True):
+    """Load the profile configuration and return its state tuple.
+
+    Returns ``(config, config_error, migrated, store_available)``. When
+    ``migrate`` is true and no profiles exist while a legacy credential is
+    present, the legacy credential is migrated into a default profile (which
+    reads the secret and is therefore only performed on the profile-management
+    path, never the read-free readiness path).
+    """
+    store = _resolve_store(session)
+    store_available = store.available()
+    config, config_error = provider_config.load(session.store_base)
+    migrated = False
+    if config is None and config_error is None:
+        config = provider_config.default_config()
+    if (
+        migrate
+        and config is not None
+        and config_error is None
+        and not config.get("profiles")
+        and store_available
+        and store.has(credential_store.TARGET_NAME)
+    ):
+        config, migrated = _migrate_legacy_credential(session, store, config)
+    return config, config_error, migrated, store_available
+
+
+def _profiles_result(
+    session: WorkspaceSession,
+    config: Optional[Dict[str, Any]],
+    config_error: Optional[str],
+    migrated: bool,
+    store_available: bool,
+) -> Dict[str, Any]:
+    """Assemble the bounded, secret-free profile list result (P4.2a)."""
+    store = _resolve_store(session)
+    profiles = []
+    if config is not None:
+        for profile in config.get("profiles", []):
+            profile_id = profile.get("profile_id")
+            profiles.append(
+                {
+                    "profile_id": profile_id,
+                    "provider_id": profile.get("provider_id"),
+                    "display_name": profile.get("display_name"),
+                    "credential_present": (
+                        store_available
+                        and store.has(credential_store.profile_target(profile_id))
+                    ),
+                }
+            )
+    active = config.get("active_profile_id") if config is not None else None
+    active_present = any(
+        p["profile_id"] == active and p["credential_present"] for p in profiles
+    )
+    model = None
+    if config_error is None and config is not None:
+        candidate = config.get("model")
+        if deepseek.is_allowed_model(candidate):
+            model = candidate
+    state = deepseek.readiness_state(
+        config_error=config_error,
+        credential_present=active_present,
+        store_available=store_available,
+    )
+    return {
+        "provider_id": deepseek.PROVIDER_ID,
+        "model": model,
+        "state": state,
+        "profiles": profiles,
+        "active_profile_id": active,
+        "credential_present": active_present,
+        "authenticated": False,
+        "online": False,
+        "executable": False,
+        "migrated": migrated,
+        "store_available": store_available,
+    }
+
+
+def _profile_config_or_raise(session: WorkspaceSession) -> Dict[str, Any]:
+    """Load the migrated config, raising a bounded error when it is invalid."""
+    config, config_error, _migrated, _store_available = _profiles_state(session)
+    if config_error is not None:
+        raise contract.ContractError("invalid_request")
+    return config
+
+
+def _get_profiles_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Return the saved credential profiles with redacted presence (P4.2a)."""
+    config, config_error, migrated, store_available = _profiles_state(session)
+    return _profiles_result(session, config, config_error, migrated, store_available)
+
+
+def _add_profile_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Persist one profile whose secret was already stored by the native host.
+
+    The opaque profile id and display name arrive as metadata only; the secret
+    was collected and stored by the dedicated credential host under a target
+    derived from the id. The boundary verifies the credential is actually
+    present (so no orphaned metadata is created) and, on the first profile,
+    selects it as active.
+    """
+    profile_id = request.get("profile_id")
+    display_name = request.get("display_name")
+    if not contract.is_valid_profile_id(profile_id) or not isinstance(display_name, str):
+        raise contract.ContractError("invalid_request")
+    config = _profile_config_or_raise(session)
+    store = _resolve_store(session)
+    if store.available() and not store.has(credential_store.profile_target(profile_id)):
+        raise contract.ContractError("profile_credential_missing")
+    new_config, err = provider_config.add_profile(config, profile_id, display_name)
+    if err is not None:
+        raise contract.ContractError("profile_name_invalid")
+    if not config.get("profiles"):
+        new_config, err = provider_config.set_active_profile(new_config, profile_id)
+        if err is not None:  # pragma: no cover - first profile is always valid
+            raise contract.ContractError("invalid_request")
+    if provider_config.save(session.store_base, new_config) is not None:
+        raise contract.ContractError("profile_persist_failed")
+    return _profiles_result(session, new_config, None, False, store.available())
+
+
+def _rename_profile_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Change a profile's display name (metadata only, id and secret unchanged)."""
+    profile_id = request.get("profile_id")
+    display_name = request.get("display_name")
+    if not contract.is_valid_profile_id(profile_id) or not isinstance(display_name, str):
+        raise contract.ContractError("invalid_request")
+    config = _profile_config_or_raise(session)
+    new_config, err = provider_config.rename_profile(config, profile_id, display_name)
+    if err == "profile not found":
+        raise contract.ContractError("profile_not_found")
+    if err is not None:
+        raise contract.ContractError("profile_name_invalid")
+    if provider_config.save(session.store_base, new_config) is not None:
+        raise contract.ContractError("profile_persist_failed")
+    return _profiles_result(session, new_config, None, False, _resolve_store(session).available())
+
+
+def _delete_profile_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Delete one profile's credential and metadata (failure-safe, P4.2a).
+
+    The caller supplies the fallback ``active_profile_id`` (an existing
+    remaining profile id, or ``None`` to leave no active profile) so the
+    boundary never silently chooses another credential. The credential is
+    deleted first; if it cannot be removed the metadata is left untouched. Then
+    the metadata is removed with a single atomic write.
+    """
+    profile_id = request.get("profile_id")
+    active_profile_id = request.get("active_profile_id")
+    if not contract.is_valid_profile_id(profile_id):
+        raise contract.ContractError("invalid_request")
+    if active_profile_id is not None and not contract.is_valid_profile_id(active_profile_id):
+        raise contract.ContractError("invalid_request")
+    config = _profile_config_or_raise(session)
+    new_config, err = provider_config.remove_profile(config, profile_id, active_profile_id)
+    if err == "profile not found":
+        raise contract.ContractError("profile_not_found")
+    if err is not None:
+        raise contract.ContractError("invalid_request")
+    store = _resolve_store(session)
+    if store.available():
+        try:
+            store.delete(credential_store.profile_target(profile_id))
+        except credential_store.CredentialStoreError:
+            raise contract.ContractError("profile_persist_failed")
+    if provider_config.save(session.store_base, new_config) is not None:
+        raise contract.ContractError("profile_persist_failed")
+    return _profiles_result(session, new_config, None, False, store.available())
+
+
+def _set_active_profile_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Select exactly one active profile (a non-secret metadata write only)."""
+    profile_id = request.get("profile_id")
+    if profile_id is not None and not contract.is_valid_profile_id(profile_id):
+        raise contract.ContractError("invalid_request")
+    config = _profile_config_or_raise(session)
+    new_config, err = provider_config.set_active_profile(config, profile_id)
+    if err == "profile not found":
+        raise contract.ContractError("profile_not_found")
+    if err is not None:
+        raise contract.ContractError("invalid_request")
+    if provider_config.save(session.store_base, new_config) is not None:
+        raise contract.ContractError("profile_persist_failed")
+    return _profiles_result(session, new_config, None, False, _resolve_store(session).available())
 
 
 if __name__ == "__main__":

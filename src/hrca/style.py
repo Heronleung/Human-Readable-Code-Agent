@@ -131,6 +131,16 @@ TREE_DISCLOSURE_HIT_SIZE = 20
 LOCK_ICON_SIZE = 16
 LOCK_STROKE = 1.75
 
+# Credential-profile card controls (P4.2a). The icon-only delete action is a
+# monochrome vector trash can painted at PROFILE_ICON_SIZE, mounted in a fixed
+# PROFILE_ACTION_BUTTON_SIZE hit target (>= 24 x 24 px, the WCAG 2.5.8 target
+# size), so it is keyboard-focusable and comfortably clickable.
+PROFILE_ICON_SIZE = 16
+PROFILE_ACTION_BUTTON_SIZE = 24
+# Bounded height for the scrollable profile-card list; more profiles scroll
+# rather than grow the dialog without limit.
+PROFILE_LIST_MAX_HEIGHT = 240
+
 # Toolbar peer controls (P4.2a). Settings / Open Project / Run read-only scan /
 # Provider status are compact peers of one shared height, so a single token owns
 # the vertical sizing and no widget hard-codes its own.
@@ -438,6 +448,39 @@ def lock_icon(palette: Palette, locked: bool, enabled: bool = True) -> QIcon:
     else:
         painter.drawArc(QRectF(5.0, 4.0, 6.0, 6.0), 0, 135 * 16)
     painter.drawLine(QPointF(11.0, 7.0), QPointF(11.0, 10.0))
+    painter.end()
+    return QIcon(pixmap)
+
+
+def trash_icon(palette: Palette, enabled: bool = True) -> QIcon:
+    """Return a monochrome vector trash-can icon for a profile delete control.
+
+    Painted with :class:`QPainter` — no emoji, glyph, icon pack or image asset.
+    A disabled control is drawn in ``text_disabled``; an enabled one in
+    ``text_secondary`` (matching the flat tool-button hover treatment).
+    """
+    color = palette.text_secondary if enabled else palette.text_disabled
+    size = PROFILE_ICON_SIZE
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    pen = QPen(QColor(color), 1.4)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+
+    # Lid.
+    painter.drawLine(QPointF(3.5, 6.0), QPointF(12.5, 6.0))
+    # Handle.
+    painter.drawLine(QPointF(6.5, 6.0), QPointF(6.5, 4.0))
+    painter.drawLine(QPointF(9.5, 6.0), QPointF(9.5, 4.0))
+    painter.drawLine(QPointF(6.5, 4.0), QPointF(9.5, 4.0))
+    # Body.
+    painter.drawRoundedRect(QRectF(4.5, 6.0, 7.0, 6.5), 1.0, 1.0)
+    painter.drawLine(QPointF(6.6, 8.2), QPointF(6.6, 11.0))
+    painter.drawLine(QPointF(9.4, 8.2), QPointF(9.4, 11.0))
     painter.end()
     return QIcon(pixmap)
 
@@ -759,6 +802,22 @@ QListWidget#settingsNav::item:selected { background: $accent; color: $on_accent;
 QListWidget#settingsNav::item:hover:!selected { background: $sunken; }
 QWidget#settingsPage { background: $window; }
 
+/* ---- credential-profile cards (P4.2a) ---- */
+QFrame#profileCard {
+    background: $surface;
+    border: 1px solid $border;
+    border-radius: $radius;
+}
+QToolButton#profileDeleteButton {
+    background: transparent;
+    color: $text_secondary;
+    border: 1px solid transparent;
+    border-radius: $chip_radius;
+    padding: 0;
+}
+QToolButton#profileDeleteButton:hover { color: $text; background: $sunken; }
+QToolButton#profileDeleteButton:focus { border: 1px solid $focus; }
+
 /* ---- splitter handles are painted by HairlineSplitterHandle ---- */
 QSplitter::handle { background: transparent; }
 """
@@ -909,6 +968,9 @@ __all__ = [
     "TREE_DISCLOSURE_HIT_SIZE",
     "LOCK_ICON_SIZE",
     "LOCK_STROKE",
+    "PROFILE_ICON_SIZE",
+    "PROFILE_ACTION_BUTTON_SIZE",
+    "PROFILE_LIST_MAX_HEIGHT",
     "TAB_HEIGHT",
     "COMMAND_BAR_BUTTON_HEIGHT",
     "SPLITTER_HANDLE_WIDTH",
@@ -960,6 +1022,7 @@ __all__ = [
     "tree_folder_font",
     "tree_chevron_vertices",
     "lock_icon",
+    "trash_icon",
     "TreeBranchStyle",
     "detect_color_scheme",
     "palette_for",

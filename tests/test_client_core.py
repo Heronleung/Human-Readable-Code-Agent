@@ -14,8 +14,11 @@ from hrca.client_core import (
     CREDENTIAL_ACTION_MESSAGES,
     CREDENTIAL_ACTION_PENDING,
     CREDENTIAL_FAILURE_MESSAGES,
+    CREDENTIAL_MASK,
     INTENT_CLASS_LABELS,
     OPERATION_LABELS,
+    PROFILE_ACTION_MESSAGES,
+    PROFILE_FAILURE_MESSAGES,
     PROPOSAL_STATE_LABELS,
     PROVIDER_READINESS_STATE_LABELS,
     PROVIDER_STATUS_MESSAGES,
@@ -37,7 +40,10 @@ from hrca.client_core import (
     behavior_node_label,
     block_type_label,
     credential_action_message,
+    profile_failure_message,
+    build_add_profile_request,
     build_compare_draft_request,
+    build_delete_profile_request,
     build_discard_draft_request,
     build_fixture_task,
     build_generate_intent_delta_request,
@@ -45,6 +51,7 @@ from hrca.client_core import (
     build_get_code_map_request,
     build_get_document_request,
     build_get_draft_request,
+    build_get_profiles_request,
     build_get_readiness_request,
     build_get_tree_request,
     build_get_twin_request,
@@ -52,11 +59,13 @@ from hrca.client_core import (
     build_open_project_request,
     build_plan_proposal_request,
     build_remove_credential_request,
+    build_rename_profile_request,
     build_request,
     build_reset_draft_request,
     build_save_draft_request,
     build_scan_request,
     build_scan_task,
+    build_set_active_profile_request,
     build_sync_twin_request,
     default_fixture_root,
     format_draft_operations,
@@ -74,6 +83,7 @@ from hrca.client_core import (
     provider_readiness_state_label,
     provider_status_message,
     resolve_backend_command,
+    resolve_credential_host_command,
     twin_state_from_sync,
 )
 
@@ -175,6 +185,26 @@ class BackendCommandTests(unittest.TestCase):
             resolve_backend_command(frozen=True),
             [sys.executable, contract.SERVE_SENTINEL],
         )
+
+    def test_credential_host_source_resolution(self):
+        self.assertEqual(
+            resolve_credential_host_command(frozen=False),
+            [sys.executable, "-m", "hrca.credential_host"],
+        )
+
+    def test_credential_host_frozen_resolution(self):
+        self.assertEqual(
+            resolve_credential_host_command(frozen=True),
+            [sys.executable, contract.CREDENTIAL_SENTINEL],
+        )
+
+    def test_credential_host_command_carries_no_operation_or_handle(self):
+        # The operation and parent handle travel in the stdin request, never in
+        # the command line, so no secret or handle can leak via process args.
+        for frozen in (False, True):
+            command = resolve_credential_host_command(frozen=frozen)
+            self.assertNotIn("enroll", command)
+            self.assertNotIn("delete", command)
 
 
 class DefaultFixtureRootTests(unittest.TestCase):
@@ -777,6 +807,10 @@ class ProviderStatusMessageTests(unittest.TestCase):
             "The secure credential prompt could not be shown (invalid configuration).",
         )
         self.assertEqual(
+            credential_action_message("failed", "prompt_session_unavailable"),
+            "The secure credential prompt is not available in this Windows session.",
+        )
+        self.assertEqual(
             credential_action_message("failed", None),
             "The operation could not be completed.",
         )
@@ -789,7 +823,12 @@ class ProviderStatusMessageTests(unittest.TestCase):
     def test_credential_failure_messages_cover_bounded_reasons(self):
         self.assertEqual(
             set(CREDENTIAL_FAILURE_MESSAGES),
-            {"prompt_failed", "prompt_invalid_argument", "store_failed"},
+            {
+                "prompt_failed",
+                "prompt_invalid_argument",
+                "prompt_session_unavailable",
+                "store_failed",
+            },
         )
         # The messages are fixed sentences, never interpolated with a secret,
         # an endpoint, or a raw OS error code.
@@ -833,6 +872,110 @@ class ProviderStatusMessageTests(unittest.TestCase):
         self.assertEqual(req["action"], contract.ACTION_REMOVE_CREDENTIAL)
         self.assertNotIn("path", req)
         self.assertNotIn("task", req)
+
+    def test_manage_credential_request_carries_parent_handle(self):
+        # The native parent handle is an integer window handle, never a secret.
+        req = build_manage_credential_request("cid-1", hwnd=12345)
+        self.assertEqual(req["hwnd"], 12345)
+        self.assertNotIn("secret", req)
+        self.assertNotIn("credential", req)
+        # Without a handle the field is absent (the headless boundary contract).
+        self.assertNotIn("hwnd", build_manage_credential_request("cid-1"))
+
+    def test_remove_credential_request_carries_parent_handle(self):
+        req = build_remove_credential_request("cid-1", hwnd=12345)
+        self.assertEqual(req["hwnd"], 12345)
+        self.assertNotIn("secret", req)
+        self.assertNotIn("hwnd", build_remove_credential_request("cid-1"))
+
+    def test_manage_credential_request_carries_profile_id(self):
+        req = build_manage_credential_request("cid-1", hwnd=12345, profile_id="a" * 32)
+        self.assertEqual(req["profile_id"], "a" * 32)
+        self.assertNotIn("secret", contract.dumps(req))
+        # Without a profile id the field is absent (legacy single-key path).
+        self.assertNotIn("profile_id", build_manage_credential_request("cid-1", hwnd=1))
+
+
+class ProfileRequestBuilderTests(unittest.TestCase):
+    def test_get_profiles_request_shape(self):
+        req = build_get_profiles_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_PROFILES)
+        self.assertNotIn("profile_id", req)
+        self.assertNotIn("secret", req)
+
+    def test_add_profile_request_shape(self):
+        req = build_add_profile_request("cid-1", "a" * 32, "Work")
+        self.assertEqual(req["action"], contract.ACTION_ADD_PROFILE)
+        self.assertEqual(req["profile_id"], "a" * 32)
+        self.assertEqual(req["display_name"], "Work")
+        self.assertNotIn("secret", contract.dumps(req))
+
+    def test_rename_profile_request_shape(self):
+        req = build_rename_profile_request("cid-1", "a" * 32, "New")
+        self.assertEqual(req["action"], contract.ACTION_RENAME_PROFILE)
+        self.assertEqual(req["profile_id"], "a" * 32)
+        self.assertEqual(req["display_name"], "New")
+
+    def test_delete_profile_request_shape(self):
+        req = build_delete_profile_request("cid-1", "a" * 32, "b" * 32)
+        self.assertEqual(req["action"], contract.ACTION_DELETE_PROFILE)
+        self.assertEqual(req["profile_id"], "a" * 32)
+        self.assertEqual(req["active_profile_id"], "b" * 32)
+
+    def test_delete_profile_request_without_fallback(self):
+        req = build_delete_profile_request("cid-1", "a" * 32)
+        self.assertNotIn("active_profile_id", req)
+
+    def test_set_active_profile_request_shape(self):
+        req = build_set_active_profile_request("cid-1", "a" * 32)
+        self.assertEqual(req["action"], contract.ACTION_SET_ACTIVE_PROFILE)
+        self.assertEqual(req["profile_id"], "a" * 32)
+
+    def test_set_active_profile_request_accepts_none(self):
+        req = build_set_active_profile_request("cid-1", None)
+        self.assertNotIn("profile_id", req)
+
+    def test_profile_requests_are_secret_free(self):
+        for req in (
+            build_add_profile_request("c", "a" * 32, "Work"),
+            build_rename_profile_request("c", "a" * 32, "New"),
+            build_delete_profile_request("c", "a" * 32, "b" * 32),
+            build_set_active_profile_request("c", "a" * 32),
+        ):
+            for token in ("secret", "api_key", "password", "authorization", "bearer"):
+                self.assertNotIn(token, contract.dumps(req))
+
+
+class ProfileMessageTests(unittest.TestCase):
+    def test_mask_is_a_constant_presence_symbol(self):
+        self.assertEqual(CREDENTIAL_MASK, "••••••••")
+        # It is not derived from, or a copy of, any secret or length.
+        self.assertNotIn("secret", CREDENTIAL_MASK)
+        self.assertNotIn("key", CREDENTIAL_MASK)
+
+    def test_profile_action_messages_are_exact(self):
+        self.assertEqual(PROFILE_ACTION_MESSAGES["added"], "Profile added.")
+        self.assertEqual(PROFILE_ACTION_MESSAGES["renamed"], "Profile renamed.")
+        self.assertEqual(PROFILE_ACTION_MESSAGES["deleted"], "Profile removed.")
+        self.assertEqual(
+            PROFILE_ACTION_MESSAGES["active_updated"], "Active credential updated."
+        )
+
+    def test_profile_failure_messages_are_bounded(self):
+        self.assertEqual(
+            profile_failure_message("profile_not_found"), "That profile no longer exists."
+        )
+        self.assertEqual(
+            profile_failure_message("profile_name_invalid"),
+            "That profile name is not valid or is already in use.",
+        )
+        self.assertEqual(
+            profile_failure_message("unknown_reason"),
+            "The operation could not be completed.",
+        )
+        for message in PROFILE_FAILURE_MESSAGES.values():
+            for token in ("secret", "api_key", "password", "authorization", "bearer"):
+                self.assertNotIn(token, message)
 
 
 class ClientStateConstantsTests(unittest.TestCase):

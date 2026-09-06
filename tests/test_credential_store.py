@@ -7,11 +7,13 @@ import os
 import unittest
 
 from hrca.credential_store import (
+    PROFILE_TARGET_PREFIX,
     TARGET_NAME,
     CredentialStoreError,
     FakeCredentialStore,
     UnavailableCredentialStore,
     make_credential_store,
+    profile_target,
 )
 
 
@@ -75,6 +77,21 @@ class UnavailableCredentialStoreTests(unittest.TestCase):
             with self.assertRaises(CredentialStoreError) as ctx:
                 call()
             self.assertEqual(ctx.exception.code, "unavailable")
+
+
+class ProfileTargetTests(unittest.TestCase):
+    def test_target_is_derived_from_the_opaque_profile_id(self):
+        self.assertEqual(profile_target("a" * 32), f"{PROFILE_TARGET_PREFIX}{'a' * 32}")
+
+    def test_distinct_profiles_have_distinct_targets(self):
+        self.assertNotEqual(profile_target("a" * 32), profile_target("b" * 32))
+
+    def test_rejects_non_canonical_profile_id(self):
+        for bad in ("", "not-hex", "G" * 32, "a" * 31, "a" * 33, None, "x\n" * 20):
+            with self.subTest(bad=bad):
+                with self.assertRaises(CredentialStoreError) as ctx:
+                    profile_target(bad)
+                self.assertEqual(ctx.exception.code, "invalid_target")
 
 
 class CredentialStoreErrorTests(unittest.TestCase):

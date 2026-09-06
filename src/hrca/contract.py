@@ -65,6 +65,16 @@ ACTION_PLAN_PROPOSAL = "plan_proposal"
 ACTION_GET_READINESS = "get_readiness"
 ACTION_MANAGE_CREDENTIAL = "manage_credential"
 ACTION_REMOVE_CREDENTIAL = "remove_credential"
+# The P4.2a credential-profile protocol. The desktop owns profile *metadata*
+# (display name, active selection) through these read-only local actions, while
+# the dedicated native credential host owns the secret entry and storage. No
+# profile action carries, returns or touches a credential; a profile is
+# identified by an opaque immutable id, never its editable display name.
+ACTION_GET_PROFILES = "get_profiles"
+ACTION_ADD_PROFILE = "add_profile"
+ACTION_RENAME_PROFILE = "rename_profile"
+ACTION_DELETE_PROFILE = "delete_profile"
+ACTION_SET_ACTIVE_PROFILE = "set_active_profile"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -107,6 +117,21 @@ READINESS_ACTIONS = frozenset({ACTION_GET_READINESS})
 # holds, logs or serializes the key, and no source, Git state, command or
 # network is ever touched.
 CREDENTIAL_ACTIONS = frozenset({ACTION_MANAGE_CREDENTIAL, ACTION_REMOVE_CREDENTIAL})
+# The credential-profile metadata protocol (P4.2a): list saved profiles, add a
+# profile whose secret was already stored by the native host, rename a profile,
+# delete a profile (metadata plus its secret), and select exactly one active
+# profile. Every action touches only the non-secret provider configuration and
+# the platform credential store — never source, Git state, a command or the
+# network.
+PROFILE_ACTIONS = frozenset(
+    {
+        ACTION_GET_PROFILES,
+        ACTION_ADD_PROFILE,
+        ACTION_RENAME_PROFILE,
+        ACTION_DELETE_PROFILE,
+        ACTION_SET_ACTIVE_PROFILE,
+    }
+)
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -115,6 +140,7 @@ ALLOWED_ACTIONS = (
     | PROPOSAL_ACTIONS
     | READINESS_ACTIONS
     | CREDENTIAL_ACTIONS
+    | PROFILE_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -152,6 +178,13 @@ MAX_DRAFT_BYTES = 64 * 1024  # 64 KiB
 # build launches ``[sys.executable, "-m", "hrca.boundary", "--serve"]``.
 SERVE_SENTINEL = "--serve"
 
+# Argument sentinel that turns the unified entry executable into the dedicated
+# native credential host (a short-lived, single-purpose process that owns the
+# secure credential prompt and the Credential Manager write). A frozen build
+# launches ``[sys.executable, "--credential"]``; a source build launches
+# ``[sys.executable, "-m", "hrca.credential_host"]``.
+CREDENTIAL_SENTINEL = "--credential"
+
 # Bounded error code -> fixed message catalogue. An error response carries only
 # a code from this table; its message is always drawn from the catalogue, so
 # arbitrary caller text, file contents, and exception detail can never leak
@@ -183,6 +216,13 @@ _ERROR_MESSAGES = {
     "draft_stale": "the Twin Draft is stale against the current baseline",
     "draft_no_change": "the Twin Draft contains no changes",
     "draft_oversized": "the Twin Draft exceeds the maximum allowed size",
+    # Credential-profile errors (P4.2a). Messages are fixed and never
+    # interpolate a profile id, display name or credential, so caller text and
+    # secret material can never leak into a protocol error.
+    "profile_not_found": "the credential profile does not exist",
+    "profile_name_invalid": "the credential profile name is invalid",
+    "profile_credential_missing": "the credential for this profile is not present",
+    "profile_persist_failed": "the credential profile could not be saved",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)
@@ -233,6 +273,34 @@ def loads(text: str) -> Any:
 
 def new_correlation_id() -> str:
     """Return a fresh, ASCII-safe correlation identifier (32 hex chars)."""
+    return uuid.uuid4().hex
+
+
+# -- opaque credential-profile identifiers (P4.2a) ------------------------
+#
+# A profile id is an opaque, immutable 32-lowercase-hex identifier (a UUID hex).
+# It is generated once at profile creation and never derived from, or replaced
+# by, the editable display name; the Windows Credential Manager target for a
+# profile is derived from this id, so renaming a profile never touches the
+# secret's identity.
+
+# Number of characters in a canonical profile id (a ``uuid4().hex`` string).
+PROFILE_ID_LENGTH = 32
+
+_PROFILE_ID_ALPHABET = frozenset("0123456789abcdef")
+
+
+def is_valid_profile_id(value: Any) -> bool:
+    """Return True when ``value`` is a canonical opaque profile id."""
+    return (
+        isinstance(value, str)
+        and len(value) == PROFILE_ID_LENGTH
+        and all(ch in _PROFILE_ID_ALPHABET for ch in value)
+    )
+
+
+def new_profile_id() -> str:
+    """Return a fresh opaque profile id (32 lowercase hex chars)."""
     return uuid.uuid4().hex
 
 
@@ -297,6 +365,11 @@ __all__ = [
     "ACTION_GET_READINESS",
     "ACTION_MANAGE_CREDENTIAL",
     "ACTION_REMOVE_CREDENTIAL",
+    "ACTION_GET_PROFILES",
+    "ACTION_ADD_PROFILE",
+    "ACTION_RENAME_PROFILE",
+    "ACTION_DELETE_PROFILE",
+    "ACTION_SET_ACTIVE_PROFILE",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
@@ -304,6 +377,7 @@ __all__ = [
     "PROPOSAL_ACTIONS",
     "READINESS_ACTIONS",
     "CREDENTIAL_ACTIONS",
+    "PROFILE_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",
@@ -312,12 +386,16 @@ __all__ = [
     "MAX_DOCUMENT_BYTES",
     "MAX_DRAFT_BYTES",
     "SERVE_SENTINEL",
+    "CREDENTIAL_SENTINEL",
     "ERROR_CODES",
     "error_message",
     "ContractError",
     "dumps",
     "loads",
     "new_correlation_id",
+    "PROFILE_ID_LENGTH",
+    "is_valid_profile_id",
+    "new_profile_id",
     "build_request",
     "build_success",
     "build_error",

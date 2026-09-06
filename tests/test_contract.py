@@ -21,6 +21,11 @@ from hrca.contract import (
     ACTION_OPEN_PROJECT,
     ACTION_PLAN_PROPOSAL,
     ACTION_REMOVE_CREDENTIAL,
+    ACTION_ADD_PROFILE,
+    ACTION_DELETE_PROFILE,
+    ACTION_GET_PROFILES,
+    ACTION_RENAME_PROFILE,
+    ACTION_SET_ACTIVE_PROFILE,
     ACTION_RESET_DRAFT,
     ACTION_SAVE_DRAFT,
     ACTION_SCAN,
@@ -35,6 +40,7 @@ from hrca.contract import (
     MAX_MESSAGE_BYTES,
     MAX_TREE_DEPTH,
     MAX_TREE_ENTRIES,
+    PROFILE_ACTIONS,
     PROPOSAL_ACTIONS,
     READ_ONLY_TASK_ACTIONS,
     READINESS_ACTIONS,
@@ -48,8 +54,10 @@ from hrca.contract import (
     build_success,
     dumps,
     error_message,
+    is_valid_profile_id,
     loads,
     new_correlation_id,
+    new_profile_id,
 )
 
 # Actions that must never be permitted by the read-only boundary.
@@ -89,7 +97,8 @@ class AllowedActionTests(unittest.TestCase):
             | DRAFT_ACTIONS
             | PROPOSAL_ACTIONS
             | READINESS_ACTIONS
-            | CREDENTIAL_ACTIONS,
+            | CREDENTIAL_ACTIONS
+            | PROFILE_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -174,6 +183,34 @@ class AllowedActionTests(unittest.TestCase):
             self.assertNotIn(action, DRAFT_ACTIONS)
             self.assertNotIn(action, PROPOSAL_ACTIONS)
             self.assertNotIn(action, READINESS_ACTIONS)
+
+    def test_profile_actions_are_allowlisted(self):
+        self.assertEqual(
+            PROFILE_ACTIONS,
+            frozenset(
+                {
+                    ACTION_GET_PROFILES,
+                    ACTION_ADD_PROFILE,
+                    ACTION_RENAME_PROFILE,
+                    ACTION_DELETE_PROFILE,
+                    ACTION_SET_ACTIVE_PROFILE,
+                }
+            ),
+        )
+
+    def test_profile_actions_are_read_only(self):
+        # Profile management touches only the non-secret configuration and the
+        # platform credential store — never source, Git state, a command or the
+        # network.
+        for action in PROFILE_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, WORKSPACE_ACTIONS)
+            self.assertNotIn(action, TWIN_ACTIONS)
+            self.assertNotIn(action, DRAFT_ACTIONS)
+            self.assertNotIn(action, PROPOSAL_ACTIONS)
+            self.assertNotIn(action, READINESS_ACTIONS)
+            self.assertNotIn(action, CREDENTIAL_ACTIONS)
 
     def test_no_forbidden_action_is_allowed(self):
         for action in _FORBIDDEN_ACTIONS:
@@ -267,6 +304,25 @@ class CorrelationIdTests(unittest.TestCase):
         self.assertTrue(cid.isalnum())
         self.assertTrue(all(ord(ch) < 128 for ch in cid))
         self.assertLessEqual(len(cid), CORRELATION_ID_MAX_CHARS)
+
+
+class ProfileIdTests(unittest.TestCase):
+    def test_new_profile_id_is_canonical(self):
+        profile_id = new_profile_id()
+        self.assertTrue(is_valid_profile_id(profile_id))
+        self.assertEqual(len(profile_id), 32)
+
+    def test_is_valid_profile_id_rejects_non_canonical(self):
+        for bad in ("", "ABC", "G" * 32, "a" * 31, "a" * 33, None, 42, " " * 32, "A" * 32):
+            self.assertFalse(is_valid_profile_id(bad), bad)
+
+    def test_is_valid_profile_id_accepts_lower_hex(self):
+        self.assertTrue(is_valid_profile_id("a" * 32))
+        self.assertTrue(is_valid_profile_id("0123456789abcdef0123456789abcdef"))
+
+    def test_profile_ids_are_unique_and_distinct_from_correlation_ids(self):
+        seen = {new_profile_id() for _ in range(200)}
+        self.assertEqual(len(seen), 200)
 
 
 if __name__ == "__main__":

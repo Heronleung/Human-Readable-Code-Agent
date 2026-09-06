@@ -49,7 +49,7 @@ _FORBIDDEN_TOP_LEVEL = frozenset(
 # desktop shell reaches only through the NDJSON boundary.
 _PROVIDER_SEAM = frozenset(
     {"deepseek", "credential_store", "credential_store_win",
-     "provider_config", "provider_cli"}
+     "provider_config", "provider_cli", "credential_host"}
 )
 
 

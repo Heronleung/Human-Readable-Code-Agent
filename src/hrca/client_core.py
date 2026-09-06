@@ -114,6 +114,9 @@ CREDENTIAL_FAILURE_MESSAGES = {
     "prompt_invalid_argument": (
         "The secure credential prompt could not be shown (invalid configuration)."
     ),
+    "prompt_session_unavailable": (
+        "The secure credential prompt is not available in this Windows session."
+    ),
     "store_failed": "The API key could not be stored securely.",
 }
 
@@ -144,6 +147,35 @@ def credential_action_message(state: str, reason: Optional[str] = None) -> str:
     if state == "failed" and reason in CREDENTIAL_FAILURE_MESSAGES:
         return CREDENTIAL_FAILURE_MESSAGES[reason]
     return CREDENTIAL_ACTION_MESSAGES.get(state, state)
+
+
+# The fixed, read-only presence mask rendered for every stored credential
+# profile (P4.2a). It is a UI presence symbol — a constant string — never
+# derived from, or a copy of, the secret or its length, and never persisted.
+CREDENTIAL_MASK = "••••••••"
+
+# Bounded user-facing messages for successful credential-profile actions.
+PROFILE_ACTION_MESSAGES = {
+    "added": "Profile added.",
+    "renamed": "Profile renamed.",
+    "deleted": "Profile removed.",
+    "active_updated": "Active credential updated.",
+}
+
+# Bounded failure messages for the credential-profile protocol error codes. Each
+# maps a bounded boundary code to a safe sentence — never a key, a display name
+# or a raw error.
+PROFILE_FAILURE_MESSAGES = {
+    "profile_not_found": "That profile no longer exists.",
+    "profile_name_invalid": "That profile name is not valid or is already in use.",
+    "profile_credential_missing": "The API key for this profile is not present.",
+    "profile_persist_failed": "The profile change could not be saved.",
+}
+
+
+def profile_failure_message(code: str) -> str:
+    """Return the user-facing message for a bounded profile failure ``code``."""
+    return PROFILE_FAILURE_MESSAGES.get(code, "The operation could not be completed.")
 
 # Repository state the client reports; always ``Unverified`` until a later
 # approved boundary capability supplies real repository state.
@@ -304,6 +336,25 @@ def resolve_backend_command(frozen: Optional[bool] = None) -> List[str]:
     if is_frozen:
         return [sys.executable, contract.SERVE_SENTINEL]
     return [sys.executable, "-m", "hrca.boundary", contract.SERVE_SENTINEL]
+
+
+def resolve_credential_host_command(frozen: Optional[bool] = None) -> List[str]:
+    """Return the command that launches the dedicated native credential host.
+
+    The host is the short-lived, single-purpose process that owns the native
+    secure credential prompt and the Credential Manager write:
+
+    * frozen build — ``[sys.executable, "--credential"]``,
+    * source build — ``[sys.executable, "-m", "hrca.credential_host"]``.
+
+    The operation and the parent window handle are carried in the stdin request
+    (not the command line), so the command itself names no secret and no
+    per-operation argument.
+    """
+    is_frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    if is_frozen:
+        return [sys.executable, contract.CREDENTIAL_SENTINEL]
+    return [sys.executable, "-m", "hrca.credential_host"]
 
 
 def build_scan_task(scan_path: str) -> Dict[str, Any]:
@@ -706,31 +757,118 @@ def build_get_readiness_request(correlation_id: str) -> Dict[str, Any]:
     }
 
 
-def build_manage_credential_request(correlation_id: str) -> Dict[str, Any]:
+def build_manage_credential_request(
+    correlation_id: str,
+    hwnd: Optional[int] = None,
+    profile_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Build a ``manage_credential`` request (backend-owned secure enrollment).
 
-    The request carries only the correlation id and action name — never a key,
-    a path or a task. The boundary owns the native secure prompt and writes the
-    credential straight to the platform store; the desktop never sees the key.
+    The request carries only the correlation id, the action name, the optional
+    native parent window handle ``hwnd`` (an integer handle, never a key, path
+    or task), and the optional opaque ``profile_id`` naming the credential
+    target the host derives itself. The native credential host owns the secure
+    prompt and writes the credential straight to the platform store; the
+    desktop never sees the key.
     """
-    return {
+    request = {
         "contract_version": contract.CONTRACT_VERSION,
         "correlation_id": correlation_id,
         "action": contract.ACTION_MANAGE_CREDENTIAL,
     }
+    if hwnd is not None:
+        request["hwnd"] = int(hwnd)
+    if profile_id is not None:
+        request["profile_id"] = profile_id
+    return request
 
 
-def build_remove_credential_request(correlation_id: str) -> Dict[str, Any]:
+def build_remove_credential_request(
+    correlation_id: str,
+    hwnd: Optional[int] = None,
+    profile_id: Optional[str] = None,
+) -> Dict[str, Any]:
     """Build a ``remove_credential`` request (backend-owned delete).
 
-    Carries only the correlation id and action name; the boundary deletes the
-    stored credential and returns a redacted result. No key is ever surfaced.
+    Carries only the correlation id, the action name, the optional native
+    parent window handle ``hwnd``, and the optional opaque ``profile_id``; the
+    host deletes the stored credential and returns a redacted result. No key is
+    ever surfaced.
     """
-    return {
+    request = {
         "contract_version": contract.CONTRACT_VERSION,
         "correlation_id": correlation_id,
         "action": contract.ACTION_REMOVE_CREDENTIAL,
     }
+    if hwnd is not None:
+        request["hwnd"] = int(hwnd)
+    if profile_id is not None:
+        request["profile_id"] = profile_id
+    return request
+
+
+def build_get_profiles_request(correlation_id: str) -> Dict[str, Any]:
+    """Build a ``get_profiles`` request (list saved credential profiles)."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_GET_PROFILES,
+    }
+
+
+def build_add_profile_request(
+    correlation_id: str, profile_id: str, display_name: str
+) -> Dict[str, Any]:
+    """Build an ``add_profile`` request (metadata only; the secret is already stored)."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_ADD_PROFILE,
+        "profile_id": profile_id,
+        "display_name": display_name,
+    }
+
+
+def build_rename_profile_request(
+    correlation_id: str, profile_id: str, display_name: str
+) -> Dict[str, Any]:
+    """Build a ``rename_profile`` request (metadata only; id and secret unchanged)."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_RENAME_PROFILE,
+        "profile_id": profile_id,
+        "display_name": display_name,
+    }
+
+
+def build_delete_profile_request(
+    correlation_id: str, profile_id: str, active_profile_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Build a ``delete_profile`` request (credential + metadata, with a fallback)."""
+    request = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DELETE_PROFILE,
+        "profile_id": profile_id,
+    }
+    if active_profile_id is not None:
+        request["active_profile_id"] = active_profile_id
+    return request
+
+
+def build_set_active_profile_request(
+    correlation_id: str, profile_id: Optional[str]
+) -> Dict[str, Any]:
+    """Build a ``set_active_profile`` request (select one active profile)."""
+    request = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_SET_ACTIVE_PROFILE,
+    }
+    if profile_id is not None:
+        request["profile_id"] = profile_id
+    return request
 
 
 def format_procedural_document(document: Any) -> str:
@@ -936,6 +1074,10 @@ __all__ = [
     "CREDENTIAL_FAILURE_MESSAGES",
     "CREDENTIAL_ACTION_PENDING",
     "credential_action_message",
+    "CREDENTIAL_MASK",
+    "PROFILE_ACTION_MESSAGES",
+    "PROFILE_FAILURE_MESSAGES",
+    "profile_failure_message",
     "REPOSITORY_UNVERIFIED",
     "VALIDATION_IDLE",
     "VALIDATION_RUNNING",
@@ -978,6 +1120,11 @@ __all__ = [
     "build_get_readiness_request",
     "build_manage_credential_request",
     "build_remove_credential_request",
+    "build_get_profiles_request",
+    "build_add_profile_request",
+    "build_rename_profile_request",
+    "build_delete_profile_request",
+    "build_set_active_profile_request",
     "format_procedural_document",
     "format_entity_list",
     "format_draft_operations",
@@ -986,4 +1133,5 @@ __all__ = [
     "format_provider_readiness",
     "default_fixture_root",
     "resolve_backend_command",
+    "resolve_credential_host_command",
 ]

@@ -53,6 +53,12 @@ _CREDUIWIN_SECURE_PROMPT = 0x1000
 _PROMPT_FLAGS = _CREDUIWIN_GENERIC | _CREDUIWIN_IN_CRED_ONLY
 _ERROR_CANCELLED = 1223
 _ERROR_INVALID_PARAMETER = 87
+# Session/desktop eligibility failures: the prompt cannot be created because the
+# calling process is not in an interactive logon session able to present a
+# credential dialog (the P4.2a "no dialog appears" hypothesis).
+_ERROR_ACCESS_DENIED = 5
+_ERROR_NOT_SUPPORTED = 50
+_ERROR_NO_SUCH_LOGON_SESSION = 1312
 _CRED_PACK_GENERIC_CREDENTIALS = 0x4
 
 # Generous unpack buffer sizes: an API key is far shorter than these, but the
@@ -241,22 +247,42 @@ def _pack_generic_input(credui):
     return buf, size.value
 
 
-def prompt_secret(message: str) -> Optional[str]:
+def _prompt_error_code(result) -> str:
+    """Map a non-zero, non-cancel CredUI return to a bounded error code.
+
+    The Win32 return code is classified into a fixed, non-secret catalogue
+    (never the raw error text or the numeric code): an argument rejection, a
+    session/desktop eligibility failure, or a generic prompt failure.
+    """
+    if result == _ERROR_INVALID_PARAMETER:
+        return "prompt_invalid_argument"
+    if result in (_ERROR_ACCESS_DENIED, _ERROR_NOT_SUPPORTED, _ERROR_NO_SUCH_LOGON_SESSION):
+        return "prompt_session_unavailable"
+    return "prompt_failed"
+
+
+def prompt_secret(
+    message: str, hwnd_parent: Optional[int] = None
+) -> Optional[str]:
     """Show the Windows native secure credential prompt and return the secret.
 
     The prompt is the operating system's own credential dialog; the returned
     secret is passed straight to :meth:`WindowsCredentialStore.store` by the
     boundary and is never logged, printed, retained on an exception or
-    serialized. Returns ``None`` when the user cancels and raises a bounded
+    serialized. ``hwnd_parent`` is an optional native window handle (the desktop
+    application's top-level window) that becomes the dialog's owner so the
+    prompt appears modal to, and in front of, the visible application window in
+    the interactive session; when ``None`` the dialog is unowned. Returns
+    ``None`` when the user cancels and raises a bounded
     :class:`~hrca.credential_store.CredentialStoreError` on any other failure
-    (``prompt_invalid_argument`` for an API argument rejection, ``prompt_failed``
-    otherwise — never the raw Win32 error code or message).
+    (``prompt_invalid_argument`` / ``prompt_session_unavailable`` /
+    ``prompt_failed`` — never the raw Win32 error code or message).
     """
     credui = _credui()
 
     ui = _CREDUI_INFOW()
     ui.cbSize = ctypes.sizeof(_CREDUI_INFOW)
-    ui.hwndParent = None
+    ui.hwndParent = ctypes.c_void_p(hwnd_parent) if hwnd_parent is not None else None
     ui.pszMessageText = message
     ui.pszCaptionText = "DeepSeek API key"
     ui.hbmBanner = None
@@ -284,9 +310,7 @@ def prompt_secret(message: str) -> Optional[str]:
     if result != 0:
         if result == _ERROR_CANCELLED:
             return None
-        if result == _ERROR_INVALID_PARAMETER:
-            raise CredentialStoreError("prompt_invalid_argument")
-        raise CredentialStoreError("prompt_failed")
+        raise CredentialStoreError(_prompt_error_code(result))
 
     try:
         # Unpack the generic credential blob (username + domain + password).

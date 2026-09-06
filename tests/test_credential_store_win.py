@@ -55,6 +55,36 @@ class PromptFlagTests(unittest.TestCase):
         )
 
 
+class PromptErrorClassificationTests(unittest.TestCase):
+    """The CredUI return code maps to a bounded, non-secret failure category."""
+
+    def test_invalid_argument_is_classified(self):
+        self.assertEqual(
+            credential_store_win._prompt_error_code(87), "prompt_invalid_argument"
+        )
+
+    def test_session_eligibility_failures_are_classified(self):
+        for code in (5, 50, 1312):
+            self.assertEqual(
+                credential_store_win._prompt_error_code(code),
+                "prompt_session_unavailable",
+                code,
+            )
+
+    def test_unknown_failure_is_generic(self):
+        self.assertEqual(credential_store_win._prompt_error_code(31), "prompt_failed")
+        self.assertEqual(credential_store_win._prompt_error_code(9999), "prompt_failed")
+
+    def test_classification_is_bounded(self):
+        # Every classification is a CredentialStoreError catalogue code.
+        for code in (5, 50, 87, 31, 1312, 9999):
+            category = credential_store_win._prompt_error_code(code)
+            self.assertIn(
+                category,
+                {"prompt_invalid_argument", "prompt_session_unavailable", "prompt_failed"},
+            )
+
+
 class StructureLayoutTests(unittest.TestCase):
     """The ctypes structures must match the Win32 ABI layout exactly.
 
