@@ -745,9 +745,11 @@ def _manage_credential_result(
         secret = prompt("Enter the DeepSeek API key")
     except (EOFError, KeyboardInterrupt):
         secret = None
-    except credential_store.CredentialStoreError:
+    except credential_store.CredentialStoreError as exc:
         return credential_store.redacted_credential_result(
-            credential_store.CREDENTIAL_STATE_FAILED, store.has(credential_store.TARGET_NAME)
+            credential_store.CREDENTIAL_STATE_FAILED,
+            store.has(credential_store.TARGET_NAME),
+            reason=exc.code,
         )
     if secret is None:
         # User cancelled the native prompt; the store is left untouched.
@@ -756,9 +758,11 @@ def _manage_credential_result(
         )
     try:
         store.store(credential_store.TARGET_NAME, secret)
-    except credential_store.CredentialStoreError:
+    except credential_store.CredentialStoreError as exc:
         return credential_store.redacted_credential_result(
-            credential_store.CREDENTIAL_STATE_FAILED, store.has(credential_store.TARGET_NAME)
+            credential_store.CREDENTIAL_STATE_FAILED,
+            store.has(credential_store.TARGET_NAME),
+            reason=exc.code,
         )
     finally:
         # The secret is dropped from the local frame as soon as the store call
@@ -785,9 +789,11 @@ def _remove_credential_result(
         )
     try:
         store.delete(credential_store.TARGET_NAME)
-    except credential_store.CredentialStoreError:
+    except credential_store.CredentialStoreError as exc:
         return credential_store.redacted_credential_result(
-            credential_store.CREDENTIAL_STATE_FAILED, store.has(credential_store.TARGET_NAME)
+            credential_store.CREDENTIAL_STATE_FAILED,
+            store.has(credential_store.TARGET_NAME),
+            reason=exc.code,
         )
     return credential_store.redacted_credential_result(
         credential_store.CREDENTIAL_STATE_REMOVED, False

@@ -189,14 +189,23 @@ CREDENTIAL_RESULT_STATES = frozenset(
 )
 
 
-def redacted_credential_result(state: str, credential_present: bool) -> dict:
+def redacted_credential_result(
+    state: str, credential_present: bool, reason: Optional[str] = None
+) -> dict:
     """Return a bounded, secret-free credential action result (P4.2a).
 
     ``state`` is one of :data:`CREDENTIAL_RESULT_STATES`; ``credential_present``
-    is the redacted presence fact. No secret, error text or representation ever
-    appears in the returned mapping.
+    is the redacted presence fact; ``reason`` is an optional bounded failure
+    category drawn from the :class:`CredentialStoreError` code catalogue (in
+    practice ``prompt_failed`` or ``store_failed``) so a failed outcome never
+    collapses into an unexplained generic result. No secret, error text, raw OS
+    error code or any representation of the secret ever appears in the returned
+    mapping.
     """
-    return {"state": state, "credential_present": bool(credential_present)}
+    result = {"state": state, "credential_present": bool(credential_present)}
+    if reason is not None:
+        result["reason"] = reason
+    return result
 
 
 def native_credential_prompt():

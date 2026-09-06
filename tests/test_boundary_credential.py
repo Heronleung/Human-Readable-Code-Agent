@@ -11,6 +11,18 @@ from hrca import boundary, contract, credential_store
 _SECRET_LIKE = "secret-token-abc123"
 
 
+class FailingStore(credential_store.FakeCredentialStore):
+    """An available store whose ``store`` call fails with a bounded error.
+
+    Used to prove that a *store* failure is reported with its own bounded
+    reason, distinct from a *prompt* failure — never collapsed into a generic
+    "failed" outcome.
+    """
+
+    def store(self, target, secret):
+        raise credential_store.CredentialStoreError("store_failed")
+
+
 def _request(action, **overrides):
     req = {
         "contract_version": contract.CONTRACT_VERSION,
@@ -86,6 +98,37 @@ class BoundaryCredentialTests(unittest.TestCase):
         env = self._manage(raise_prompt)
         self.assertTrue(env["ok"])
         self.assertEqual(env["result"]["state"], "failed")
+
+    def test_manage_maps_prompt_failure_to_a_bounded_reason(self):
+        # A prompt failure carries its own bounded reason so the client can
+        # distinguish "the prompt could not be shown" from a store failure.
+        def raise_prompt(_message):
+            raise credential_store.CredentialStoreError("prompt_failed")
+
+        env = self._manage(raise_prompt)
+        self.assertTrue(env["ok"])
+        self.assertEqual(env["result"]["state"], "failed")
+        self.assertEqual(env["result"]["reason"], "prompt_failed")
+
+    def test_manage_maps_store_failure_to_a_bounded_reason(self):
+        # A store write failure is reported distinctly from a prompt failure.
+        self.session.credential_store = FailingStore()
+        env = self._manage(lambda _message: _SECRET_LIKE)
+        self.assertTrue(env["ok"])
+        self.assertEqual(env["result"]["state"], "failed")
+        self.assertEqual(env["result"]["reason"], "store_failed")
+        self.assertFalse(env["result"]["credential_present"])
+
+    def test_failed_reason_is_secret_free(self):
+        # The bounded reason is a fixed catalogue token; it never carries the
+        # secret or any raw OS error text.
+        def raise_prompt(_message):
+            raise credential_store.CredentialStoreError("prompt_failed")
+
+        env = self._manage(raise_prompt)
+        serialized = contract.dumps(env)
+        self.assertNotIn(_SECRET_LIKE, serialized)
+        self.assertEqual(env["result"]["reason"], "prompt_failed")
 
     def test_manage_never_serializes_the_secret(self):
         env = self._manage(lambda _message: _SECRET_LIKE)

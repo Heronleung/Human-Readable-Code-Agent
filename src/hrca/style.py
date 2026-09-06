@@ -198,6 +198,12 @@ SETTINGS_DIALOG_MIN_HEIGHT = 500
 SETTINGS_DIALOG_DEFAULT_WIDTH = 760
 SETTINGS_DIALOG_DEFAULT_HEIGHT = 520
 SETTINGS_NAV_WIDTH = 160
+# Compact Settings left-navigation row height (P4.2a). The nav item's
+# hover/selected/focus rectangle is this fixed, centrally-owned height — never
+# the item's own padding — so the five sections stay visually separated and
+# readable at every supported dialog size without the rectangle touching an
+# adjacent row.
+SETTINGS_NAV_ROW_HEIGHT = 32
 
 # Accessibility thresholds (WCAG).
 CONTRAST_BODY = 4.5
@@ -582,6 +588,7 @@ def build_stylesheet(palette: Palette) -> str:
         "$radius": f"{RADIUS_CONTAINER}px",
         "$chip_radius": f"{RADIUS_CHIP}px",
         "$tree_row": f"{TREE_ROW_HEIGHT}px",
+        "$settings_nav_row": f"{SETTINGS_NAV_ROW_HEIGHT}px",
         "$selection": _rgba(palette.accent, palette._chip_alpha),
     }
 
@@ -743,7 +750,11 @@ QListWidget#settingsNav {
     border-right: 1px solid $border;
     outline: none;
 }
-QListWidget#settingsNav::item { padding: 8px 12px; color: $text_secondary; }
+QListWidget#settingsNav::item {
+    height: $settings_nav_row;
+    padding: 0 12px;
+    color: $text_secondary;
+}
 QListWidget#settingsNav::item:selected { background: $accent; color: $on_accent; }
 QListWidget#settingsNav::item:hover:!selected { background: $sunken; }
 QWidget#settingsPage { background: $window; }
@@ -929,6 +940,7 @@ __all__ = [
     "SETTINGS_DIALOG_DEFAULT_WIDTH",
     "SETTINGS_DIALOG_DEFAULT_HEIGHT",
     "SETTINGS_NAV_WIDTH",
+    "SETTINGS_NAV_ROW_HEIGHT",
     "CONTRAST_BODY",
     "CONTRAST_LARGE",
     "STATE_INFO",

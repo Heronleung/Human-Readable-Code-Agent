@@ -13,6 +13,7 @@ from hrca.client_core import (
     BLOCK_TYPE_LABELS,
     CREDENTIAL_ACTION_MESSAGES,
     CREDENTIAL_ACTION_PENDING,
+    CREDENTIAL_FAILURE_MESSAGES,
     INTENT_CLASS_LABELS,
     OPERATION_LABELS,
     PROPOSAL_STATE_LABELS,
@@ -759,6 +760,37 @@ class ProviderStatusMessageTests(unittest.TestCase):
             credential_action_message("failed"),
             "The operation could not be completed.",
         )
+
+    def test_credential_failure_messages_are_distinct_and_safe(self):
+        # A failed action with a bounded reason gets a category-specific
+        # message; without one it keeps the generic sentence.
+        self.assertEqual(
+            credential_action_message("failed", "prompt_failed"),
+            "The secure credential prompt could not be shown.",
+        )
+        self.assertEqual(
+            credential_action_message("failed", "store_failed"),
+            "The API key could not be stored securely.",
+        )
+        self.assertEqual(
+            credential_action_message("failed", None),
+            "The operation could not be completed.",
+        )
+        # An unknown reason can never surface raw text; it falls back safely.
+        self.assertEqual(
+            credential_action_message("failed", "unexpected_reason"),
+            "The operation could not be completed.",
+        )
+
+    def test_credential_failure_messages_cover_bounded_reasons(self):
+        self.assertEqual(
+            set(CREDENTIAL_FAILURE_MESSAGES), {"prompt_failed", "store_failed"}
+        )
+        # The messages are fixed sentences, never interpolated with a secret,
+        # an endpoint, or a raw OS error code.
+        for message in CREDENTIAL_FAILURE_MESSAGES.values():
+            self.assertIsInstance(message, str)
+            self.assertNotIn("secret-token", message)
 
     def test_credential_action_messages_cover_all_states(self):
         self.assertEqual(

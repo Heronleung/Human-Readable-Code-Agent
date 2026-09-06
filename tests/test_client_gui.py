@@ -2657,6 +2657,43 @@ class SettingsDialogTests(unittest.TestCase):
         )
         self.assertEqual(window._vertical_splitter.geometry(), splitter_geom)
 
+    def test_navigation_rows_are_compact_and_do_not_touch(self):
+        # The left-nav rows share one centrally-owned compact height; the
+        # hover/selected/focus rectangle never crowds or touches an adjacent
+        # row, so the five sections stay visually separated.
+        window = MainWindow()
+        self._dialog(window)
+        dialog = window._settings_dialog
+        dialog.show()
+        QApplication.processEvents()
+        nav = window._settings_nav
+        for i in range(nav.count()):
+            self.assertEqual(nav.sizeHintForRow(i), style.SETTINGS_NAV_ROW_HEIGHT)
+        nav.doItemsLayout()
+        QApplication.processEvents()
+        rects = [nav.visualItemRect(nav.item(i)) for i in range(nav.count())]
+        for rect in rects:
+            self.assertEqual(rect.height(), style.SETTINGS_NAV_ROW_HEIGHT)
+        for upper, lower in zip(rects, rects[1:]):
+            self.assertLessEqual(upper.bottom(), lower.top())
+
+    def test_failed_outcome_surfaces_the_failure_category(self):
+        # A failed manage action with a bounded reason shows the category's own
+        # message, not the generic "could not be completed" text.
+        window = MainWindow()
+        self._dialog(window)
+        window._credential_action_pending = True
+        window._set_settings_actions_enabled(False)
+        window._apply_credential_result(
+            {"state": "failed", "reason": "prompt_failed", "credential_present": False}
+        )
+        self.assertEqual(
+            window._settings_action_status.text(),
+            "The secure credential prompt could not be shown.",
+        )
+        self.assertIn("failed", window.status_label.text())
+        self.assertFalse(window._credential_action_pending)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,9 +37,17 @@ CRED_PERSIST_LOCAL_MACHINE = 2
 _ERROR_NOT_FOUND = 1168
 
 # Flags and error codes for the native secure credential prompt (credui.dll).
+# The prompt is a single generic (plaintext) password field: CREDUIWIN_GENERIC
+# returns the credential in plain text and CREDUIWIN_IN_CRED_ONLY limits the
+# dialog to the lone input credential field. CREDUIWIN_SECURE_PROMPT is held
+# only for documentation and the invariant test below — it must never be
+# combined with CREDUIWIN_GENERIC, because the API rejects that combination
+# (it returns ERROR_INVALID_PARAMETER and shows no dialog), which is exactly
+# the P4.2a enrollment failure this module is repairing.
 _CREDUIWIN_GENERIC = 0x1
 _CREDUIWIN_IN_CRED_ONLY = 0x20
 _CREDUIWIN_SECURE_PROMPT = 0x1000
+_PROMPT_FLAGS = _CREDUIWIN_GENERIC | _CREDUIWIN_IN_CRED_ONLY
 _ERROR_CANCELLED = 1223
 _CRED_PACK_GENERIC_CREDENTIALS = 0x4
 
@@ -220,7 +228,7 @@ def prompt_secret(message: str) -> Optional[str]:
         ctypes.byref(out_buffer),
         ctypes.byref(out_size),
         ctypes.byref(save),
-        _CREDUIWIN_GENERIC | _CREDUIWIN_IN_CRED_ONLY | _CREDUIWIN_SECURE_PROMPT,
+        _PROMPT_FLAGS,
     )
     if result != 0:
         if result == _ERROR_CANCELLED:

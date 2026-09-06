@@ -104,6 +104,16 @@ CREDENTIAL_ACTION_MESSAGES = {
     "failed": "The operation could not be completed.",
 }
 
+# Bounded failure-category messages for a ``failed`` credential action. The
+# boundary reports the real failure category as a ``reason`` token; the desktop
+# maps it to a safe, action-oriented sentence instead of collapsing every
+# failure into the generic "could not be completed" text. Neither message names
+# a key, an endpoint or a raw OS error code.
+CREDENTIAL_FAILURE_MESSAGES = {
+    "prompt_failed": "The secure credential prompt could not be shown.",
+    "store_failed": "The API key could not be stored securely.",
+}
+
 # Bounded pending message shown the instant a manage/remove credential action is
 # submitted, before any response arrives. On Windows it names the native
 # Credential Manager prompt; elsewhere it stays platform-neutral because the
@@ -120,8 +130,16 @@ def provider_status_message(status: str) -> str:
     return PROVIDER_STATUS_MESSAGES.get(status, status)
 
 
-def credential_action_message(state: str) -> str:
-    """Return the user-facing message for a credential action ``state``."""
+def credential_action_message(state: str, reason: Optional[str] = None) -> str:
+    """Return the user-facing message for a credential action ``state``.
+
+    A ``failed`` state may carry a bounded failure ``reason`` (``prompt_failed``
+    / ``store_failed``); when present its category-specific message is returned
+    instead of the generic failure sentence. Any unknown reason falls back to
+    the generic message, so an unexpected token can never surface raw text.
+    """
+    if state == "failed" and reason in CREDENTIAL_FAILURE_MESSAGES:
+        return CREDENTIAL_FAILURE_MESSAGES[reason]
     return CREDENTIAL_ACTION_MESSAGES.get(state, state)
 
 # Repository state the client reports; always ``Unverified`` until a later
@@ -912,6 +930,7 @@ __all__ = [
     "PROVIDER_STATUS_MESSAGES",
     "provider_status_message",
     "CREDENTIAL_ACTION_MESSAGES",
+    "CREDENTIAL_FAILURE_MESSAGES",
     "CREDENTIAL_ACTION_PENDING",
     "credential_action_message",
     "REPOSITORY_UNVERIFIED",

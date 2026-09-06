@@ -1753,7 +1753,7 @@ class MainWindow(QMainWindow):
 
     def _apply_credential_result(self, result: Dict[str, Any]) -> None:
         state = str(result.get("state", "failed"))
-        message = credential_action_message(state)
+        message = credential_action_message(state, result.get("reason"))
         self._provider_credential_present = bool(result.get("credential_present", False))
         self._end_credential_action()
         self._set_settings_action_status(message)
