@@ -119,6 +119,18 @@ class BoundaryCredentialTests(unittest.TestCase):
         self.assertEqual(env["result"]["reason"], "store_failed")
         self.assertFalse(env["result"]["credential_present"])
 
+    def test_manage_maps_prompt_argument_failure_to_a_bounded_reason(self):
+        # An argument rejection (e.g. ERROR_INVALID_PARAMETER) is its own
+        # bounded category, distinct from a generic prompt failure, so a
+        # "no dialog appeared" symptom is diagnosable rather than collapsed.
+        def raise_prompt(_message):
+            raise credential_store.CredentialStoreError("prompt_invalid_argument")
+
+        env = self._manage(raise_prompt)
+        self.assertTrue(env["ok"])
+        self.assertEqual(env["result"]["state"], "failed")
+        self.assertEqual(env["result"]["reason"], "prompt_invalid_argument")
+
     def test_failed_reason_is_secret_free(self):
         # The bounded reason is a fixed catalogue token; it never carries the
         # secret or any raw OS error text.

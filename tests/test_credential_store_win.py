@@ -2,15 +2,20 @@
 
 These tests import :mod:`hrca.credential_store_win` — safe on every platform,
 because the module only *declares* its ``ctypes`` Win32 bindings and never
-calls a Win32 API at import time — and assert the credential-prompt flag
-invariant that the P4.2a enrollment repair depends on. No test here invokes
+calls a Win32 API at import time — and assert the flag/struct/binding
+invariants the P4.2a enrollment repair depends on. Tests that must actually
+resolve a Win32 DLL or call a packing API are gated on ``os.name == "nt"`` so
+the suite still runs (and skips) on a non-Windows host. No test here invokes
 ``CredUIPromptForWindowsCredentialsW``, writes to the real Credential Manager,
 or reads a stored credential.
 """
 
 from __future__ import annotations
 
+import ctypes
+import os
 import unittest
+from ctypes import wintypes
 
 from hrca import credential_store_win
 
@@ -19,29 +24,23 @@ class PromptFlagTests(unittest.TestCase):
     """The native prompt flags must be a valid, single-field generic prompt.
 
     The P4.2a enrollment defect was caused by combining ``CREDUIWIN_GENERIC``
-    with ``CREDUIWIN_SECURE_PROMPT``, which the Win32 API rejects with
-    ``ERROR_INVALID_PARAMETER`` and shows no dialog. These tests lock the
-    corrected flag invariant so the defect cannot regress silently.
+    with ``CREDUIWIN_SECURE_PROMPT`` (rejected with ERROR_INVALID_PARAMETER)
+    and, after that was removed, by using ``CREDUIWIN_IN_CRED_ONLY`` with a
+    NULL input buffer (also rejected with ERROR_INVALID_PARAMETER). These tests
+    lock the corrected flag invariant so the defect cannot regress silently.
     """
 
     def test_prompt_flags_request_a_generic_credential(self):
-        # CREDUIWIN_GENERIC returns the credential in plain text, which is how
-        # the API key is read back out of the native prompt for storage.
         self.assertTrue(
             credential_store_win._PROMPT_FLAGS & credential_store_win._CREDUIWIN_GENERIC
         )
 
     def test_prompt_flags_limit_to_input_credential(self):
-        # CREDUIWIN_IN_CRED_ONLY limits the dialog to the lone input field, so
-        # the user is prompted for exactly the API key (no username field).
         self.assertTrue(
             credential_store_win._PROMPT_FLAGS & credential_store_win._CREDUIWIN_IN_CRED_ONLY
         )
 
     def test_prompt_flags_exclude_secure_prompt(self):
-        # CREDUIWIN_GENERIC and CREDUIWIN_SECURE_PROMPT are mutually exclusive;
-        # the prompt therefore runs on the interactive desktop, never the
-        # secure desktop.
         self.assertEqual(
             credential_store_win._PROMPT_FLAGS
             & credential_store_win._CREDUIWIN_SECURE_PROMPT,
@@ -49,12 +48,123 @@ class PromptFlagTests(unittest.TestCase):
         )
 
     def test_prompt_flags_are_nonzero_and_bounded(self):
-        # The corrected combination is exactly GENERIC | IN_CRED_ONLY.
         self.assertEqual(
             credential_store_win._PROMPT_FLAGS,
             credential_store_win._CREDUIWIN_GENERIC
             | credential_store_win._CREDUIWIN_IN_CRED_ONLY,
         )
+
+
+class StructureLayoutTests(unittest.TestCase):
+    """The ctypes structures must match the Win32 ABI layout exactly.
+
+    A size/offset mismatch makes ``CredUIPromptForWindowsCredentialsW`` reject
+    the ``CREDUI_INFOW`` and show no dialog. These checks run on every platform
+    because they only inspect the declared structure, never the Win32 API.
+    """
+
+    def test_credui_info_struct_has_the_five_fields(self):
+        fields = [name for name, _ in credential_store_win._CREDUI_INFOW._fields_]
+        self.assertEqual(
+            fields,
+            ["cbSize", "hwndParent", "pszMessageText", "pszCaptionText", "hbmBanner"],
+        )
+
+    def test_credui_info_cbsize_is_first_and_sized(self):
+        first = credential_store_win._CREDUI_INFOW._fields_[0]
+        self.assertEqual(first[0], "cbSize")
+        self.assertEqual(first[1], wintypes.DWORD)
+        # cbSize is the DWORD at offset 0, so it is always sizeof(DWORD).
+        self.assertEqual(
+            credential_store_win._CREDUI_INFOW.cbSize.offset, 0
+        )
+
+    def test_credui_info_pointer_fields_follow_pointer_size(self):
+        # hwndParent / pszMessageText / pszCaptionText / hbmBanner are all
+        # pointer-width on the target ABI.
+        for name, ftype in credential_store_win._CREDUI_INFOW._fields_:
+            if name in ("hwndParent", "pszMessageText", "pszCaptionText", "hbmBanner"):
+                self.assertEqual(
+                    ctypes.sizeof(ftype),
+                    ctypes.sizeof(ctypes.c_void_p),
+                    name,
+                )
+
+
+@unittest.skipUnless(os.name == "nt", "requires the Windows credui/advapi32 DLLs")
+class NativeBindingTests(unittest.TestCase):
+    """Resolve the real Win32 DLLs and verify the ctypes bindings.
+
+    These run only on Windows. They bind the functions and, for the packing
+    helper, perform a pure in-memory ``CredPackAuthenticationBufferW`` round-trip
+    — no dialog is shown and no credential is stored or read.
+    """
+
+    def test_credui_binds_the_prompt_function(self):
+        credui = credential_store_win._credui()
+        fn = credui.CredUIPromptForWindowsCredentialsW
+        self.assertEqual(fn.restype, wintypes.DWORD)
+        self.assertEqual(len(fn.argtypes), 9)
+        self.assertEqual(fn.argtypes[0], ctypes.POINTER(credential_store_win._CREDUI_INFOW))
+        self.assertEqual(fn.argtypes[3], ctypes.c_void_p)  # pvInAuthBuffer
+        self.assertEqual(fn.argtypes[5], ctypes.POINTER(ctypes.c_void_p))
+        self.assertEqual(fn.argtypes[8], wintypes.DWORD)  # dwFlags
+
+    def test_credui_binds_the_pack_and_unpack_functions(self):
+        credui = credential_store_win._credui()
+        pack = credui.CredPackAuthenticationBufferW
+        self.assertEqual(pack.restype, wintypes.BOOL)
+        self.assertEqual(len(pack.argtypes), 5)
+        self.assertEqual(pack.argtypes[3], ctypes.POINTER(ctypes.c_ubyte))
+        self.assertEqual(pack.argtypes[4], ctypes.POINTER(wintypes.DWORD))
+
+        unpack = credui.CredUnPackAuthenticationBufferW
+        self.assertEqual(unpack.restype, wintypes.BOOL)
+        self.assertEqual(len(unpack.argtypes), 9)
+
+    def test_advapi32_binds_the_store_functions(self):
+        adv = credential_store_win._advapi32()
+        self.assertEqual(adv.CredWriteW.restype, wintypes.BOOL)
+        self.assertEqual(adv.CredReadW.restype, wintypes.BOOL)
+        self.assertEqual(adv.CredDeleteW.restype, wintypes.BOOL)
+        self.assertEqual(
+            adv.CredReadW.argtypes[3], ctypes.POINTER(ctypes.POINTER(credential_store_win._CREDENTIALW))
+        )
+
+    def test_pack_generic_input_produces_a_non_null_buffer(self):
+        # CREDUIWIN_IN_CRED_ONLY requires a non-NULL input buffer; this proves
+        # the packing path actually produces a usable buffer of a positive size.
+        credui = credential_store_win._credui()
+        buf, size = credential_store_win._pack_generic_input(credui)
+        self.assertGreater(size, 0)
+        self.assertGreaterEqual(ctypes.sizeof(buf), size)
+
+    def test_pack_then_unpack_round_trips(self):
+        # The packed buffer is exactly what the prompt receives as its input;
+        # unpacking it back must yield the prefilled username and the empty
+        # password, proving both the pack and unpack bindings are well-formed.
+        credui = credential_store_win._credui()
+        buf, size = credential_store_win._pack_generic_input(credui)
+        username = ctypes.create_unicode_buffer(credential_store_win._CREDUI_USERNAME_MAX)
+        domain = ctypes.create_unicode_buffer(credential_store_win._CREDUI_DOMAIN_MAX)
+        password = ctypes.create_unicode_buffer(credential_store_win._CREDUI_PASSWORD_MAX)
+        u_size = wintypes.DWORD(credential_store_win._CREDUI_USERNAME_MAX)
+        d_size = wintypes.DWORD(credential_store_win._CREDUI_DOMAIN_MAX)
+        p_size = wintypes.DWORD(credential_store_win._CREDUI_PASSWORD_MAX)
+        ok = credui.CredUnPackAuthenticationBufferW(
+            credential_store_win._CRED_PACK_GENERIC_CREDENTIALS,
+            ctypes.cast(buf, ctypes.c_void_p),
+            size,
+            username,
+            ctypes.byref(u_size),
+            domain,
+            ctypes.byref(d_size),
+            password,
+            ctypes.byref(p_size),
+        )
+        self.assertTrue(ok)
+        self.assertEqual(username.value, credential_store_win.TARGET_NAME)
+        self.assertEqual(password.value, "")
 
 
 if __name__ == "__main__":

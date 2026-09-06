@@ -26,6 +26,7 @@ from typing import Optional
 from .credential_store import (
     CredentialStore,
     CredentialStoreError,
+    TARGET_NAME,
     _require_secret,
     _require_target,
 )
@@ -38,17 +39,20 @@ _ERROR_NOT_FOUND = 1168
 
 # Flags and error codes for the native secure credential prompt (credui.dll).
 # The prompt is a single generic (plaintext) password field: CREDUIWIN_GENERIC
-# returns the credential in plain text and CREDUIWIN_IN_CRED_ONLY limits the
-# dialog to the lone input credential field. CREDUIWIN_SECURE_PROMPT is held
-# only for documentation and the invariant test below — it must never be
-# combined with CREDUIWIN_GENERIC, because the API rejects that combination
-# (it returns ERROR_INVALID_PARAMETER and shows no dialog), which is exactly
-# the P4.2a enrollment failure this module is repairing.
+# returns the credential in plain text, and CREDUIWIN_IN_CRED_ONLY limits the
+# dialog to the lone input credential field (the prefilled username is not
+# editable). Two API constraints the binding must honour:
+#
+# * CREDUIWIN_SECURE_PROMPT cannot be combined with CREDUIWIN_GENERIC.
+# * CREDUIWIN_IN_CRED_ONLY requires a non-NULL input buffer; with a NULL
+#   buffer CredUIPromptForWindowsCredentialsW fails with ERROR_INVALID_PARAMETER
+#   and shows no dialog (the remaining P4.2a enrollment defect).
 _CREDUIWIN_GENERIC = 0x1
 _CREDUIWIN_IN_CRED_ONLY = 0x20
 _CREDUIWIN_SECURE_PROMPT = 0x1000
 _PROMPT_FLAGS = _CREDUIWIN_GENERIC | _CREDUIWIN_IN_CRED_ONLY
 _ERROR_CANCELLED = 1223
+_ERROR_INVALID_PARAMETER = 87
 _CRED_PACK_GENERIC_CREDENTIALS = 0x4
 
 # Generous unpack buffer sizes: an API key is far shorter than these, but the
@@ -194,7 +198,47 @@ def _credui():
         ctypes.POINTER(wintypes.DWORD),
     ]
     credui.CredUnPackAuthenticationBufferW.restype = wintypes.BOOL
+    credui.CredPackAuthenticationBufferW.argtypes = [
+        wintypes.DWORD,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        ctypes.POINTER(ctypes.c_ubyte),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    credui.CredPackAuthenticationBufferW.restype = wintypes.BOOL
     return credui
+
+
+def _pack_generic_input(credui):
+    """Pack a prefilled generic credential to pass as the prompt's input buffer.
+
+    ``CREDUIWIN_IN_CRED_ONLY`` requires a non-NULL ``pvInAuthBuffer``; passing
+    ``NULL`` makes ``CredUIPromptForWindowsCredentialsW`` fail with
+    ``ERROR_INVALID_PARAMETER`` and show no dialog. This packs a generic
+    credential (fixed username = the application target name, empty password)
+    into an opaque buffer so the dialog shows only the password field for the
+    user to type the API key. The packed buffer is a plain byte blob holding no
+    secret and is freed with the ``buf`` reference when the caller drops it.
+    """
+    username = TARGET_NAME
+    password = ""
+    # Two-pass: the first call with a NULL buffer reports the required size.
+    size = wintypes.DWORD(0)
+    credui.CredPackAuthenticationBufferW(
+        _CRED_PACK_GENERIC_CREDENTIALS, username, password, None, ctypes.byref(size)
+    )
+    if size.value <= 0:
+        raise CredentialStoreError("prompt_failed")
+    buf = ctypes.create_string_buffer(size.value)
+    if not credui.CredPackAuthenticationBufferW(
+        _CRED_PACK_GENERIC_CREDENTIALS,
+        username,
+        password,
+        ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte)),
+        ctypes.byref(size),
+    ):
+        raise CredentialStoreError("prompt_failed")
+    return buf, size.value
 
 
 def prompt_secret(message: str) -> Optional[str]:
@@ -203,8 +247,10 @@ def prompt_secret(message: str) -> Optional[str]:
     The prompt is the operating system's own credential dialog; the returned
     secret is passed straight to :meth:`WindowsCredentialStore.store` by the
     boundary and is never logged, printed, retained on an exception or
-    serialized. Returns ``None`` when the user cancels and raises
-    :class:`~hrca.credential_store.CredentialStoreError` on any other failure.
+    serialized. Returns ``None`` when the user cancels and raises a bounded
+    :class:`~hrca.credential_store.CredentialStoreError` on any other failure
+    (``prompt_invalid_argument`` for an API argument rejection, ``prompt_failed``
+    otherwise — never the raw Win32 error code or message).
     """
     credui = _credui()
 
@@ -215,6 +261,11 @@ def prompt_secret(message: str) -> Optional[str]:
     ui.pszCaptionText = "DeepSeek API key"
     ui.hbmBanner = None
 
+    # CREDUIWIN_IN_CRED_ONLY needs a non-NULL input buffer (see
+    # _pack_generic_input); passing NULL would make the API fail with
+    # ERROR_INVALID_PARAMETER and show no dialog.
+    in_buffer, in_size = _pack_generic_input(credui)
+
     auth_package = wintypes.ULONG(0)
     out_buffer = ctypes.c_void_p()
     out_size = wintypes.ULONG(0)
@@ -223,8 +274,8 @@ def prompt_secret(message: str) -> Optional[str]:
         ctypes.byref(ui),
         0,
         ctypes.byref(auth_package),
-        None,
-        0,
+        ctypes.cast(in_buffer, ctypes.c_void_p),
+        in_size,
         ctypes.byref(out_buffer),
         ctypes.byref(out_size),
         ctypes.byref(save),
@@ -233,12 +284,14 @@ def prompt_secret(message: str) -> Optional[str]:
     if result != 0:
         if result == _ERROR_CANCELLED:
             return None
+        if result == _ERROR_INVALID_PARAMETER:
+            raise CredentialStoreError("prompt_invalid_argument")
         raise CredentialStoreError("prompt_failed")
 
     try:
         # Unpack the generic credential blob (username + domain + password).
-        # Only the password — the API key — is returned; the username field is
-        # the fixed target name the user is told to leave untouched.
+        # Only the password — the API key — is returned; the username is the
+        # prefilled target name, hidden by CREDUIWIN_IN_CRED_ONLY.
         username = ctypes.create_unicode_buffer(_CREDUI_USERNAME_MAX)
         domain = ctypes.create_unicode_buffer(_CREDUI_DOMAIN_MAX)
         password = ctypes.create_unicode_buffer(_CREDUI_PASSWORD_MAX)

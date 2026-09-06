@@ -111,6 +111,9 @@ CREDENTIAL_ACTION_MESSAGES = {
 # a key, an endpoint or a raw OS error code.
 CREDENTIAL_FAILURE_MESSAGES = {
     "prompt_failed": "The secure credential prompt could not be shown.",
+    "prompt_invalid_argument": (
+        "The secure credential prompt could not be shown (invalid configuration)."
+    ),
     "store_failed": "The API key could not be stored securely.",
 }
 

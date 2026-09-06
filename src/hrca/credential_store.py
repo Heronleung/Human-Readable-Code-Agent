@@ -41,6 +41,7 @@ _SAFE_MESSAGES = {
     "store_failed": "the credential store operation failed",
     "unavailable": "credential storage is unavailable on this platform",
     "prompt_failed": "the secure credential prompt failed",
+    "prompt_invalid_argument": "the secure credential prompt rejected its arguments",
 }
 
 

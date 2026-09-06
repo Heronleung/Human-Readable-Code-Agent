@@ -773,6 +773,10 @@ class ProviderStatusMessageTests(unittest.TestCase):
             "The API key could not be stored securely.",
         )
         self.assertEqual(
+            credential_action_message("failed", "prompt_invalid_argument"),
+            "The secure credential prompt could not be shown (invalid configuration).",
+        )
+        self.assertEqual(
             credential_action_message("failed", None),
             "The operation could not be completed.",
         )
@@ -784,7 +788,8 @@ class ProviderStatusMessageTests(unittest.TestCase):
 
     def test_credential_failure_messages_cover_bounded_reasons(self):
         self.assertEqual(
-            set(CREDENTIAL_FAILURE_MESSAGES), {"prompt_failed", "store_failed"}
+            set(CREDENTIAL_FAILURE_MESSAGES),
+            {"prompt_failed", "prompt_invalid_argument", "store_failed"},
         )
         # The messages are fixed sentences, never interpolated with a secret,
         # an endpoint, or a raw OS error code.
