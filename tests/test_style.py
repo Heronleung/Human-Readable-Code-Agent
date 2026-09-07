@@ -332,6 +332,17 @@ class StylesheetTests(unittest.TestCase):
                         r"^#[0-9a-f]{6}$",
                     )
 
+    def test_corner_radii_are_near_square(self):
+        # The pixel-inspired contract uses crisp 0-2 px radii, never soft pills.
+        self.assertLessEqual(style.RADIUS_CONTAINER, 2)
+        self.assertLessEqual(style.RADIUS_CHIP, 2)
+
+    def test_stylesheet_has_no_transition_animation_gradient_or_shadow(self):
+        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
+            qss = style.build_stylesheet(palette).lower()
+            for token in ("transition", "animation", "gradient", "box-shadow"):
+                self.assertNotIn(token, qss, f"{token} in the {palette.name} stylesheet")
+
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class TreeStyleTests(unittest.TestCase):

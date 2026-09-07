@@ -17,7 +17,7 @@ from unittest import mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QEvent, QEventLoop, QPointF, QProcess, QTimer, Qt, qInstallMessageHandler
+    from PySide6.QtCore import QEvent, QEventLoop, QPoint, QPointF, QProcess, QTimer, Qt, qInstallMessageHandler
     from PySide6.QtGui import QKeyEvent, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import (
@@ -389,6 +389,30 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertFalse(window.scan_button.isEnabled())
         window._on_project_opened({"root": "/some/root", "repository_state": "Unverified"})
         self.assertTrue(window.scan_button.isEnabled())
+
+    def test_scan_button_tooltip_is_explanatory(self):
+        window = MainWindow()
+        self.assertEqual(
+            window.scan_button.toolTip(),
+            "Open a project to run a local read-only scan.",
+        )
+
+    def test_scan_button_dispatches_local_read_only_scan(self):
+        window = MainWindow()
+        window._on_project_opened({"root": "/some/root", "repository_state": "Unverified"})
+        sent = []
+
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
+
+        window._send = fake_send
+        window.scan_button.click()
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["action"], contract.ACTION_SCAN)
+        self.assertIn("read", sent[0]["task"]["allowed_actions"])
+        self.assertNotIn("edit", sent[0]["task"]["allowed_actions"])
+        self.assertNotIn("secret", contract.dumps(sent[0]))
 
     def test_status_bar_single_row_text(self):
         window = MainWindow()
@@ -2347,9 +2371,10 @@ class BackendSupervisorTests(unittest.TestCase):
 class ProviderReadinessGuiTests(unittest.TestCase):
     """P4.2a redacted provider readiness presentation (offscreen).
 
-    The desktop surfaces only the bounded readiness state — never a credential,
-    endpoint or network claim. The check is issued through the local boundary as
-    a ``get_readiness`` request and drives no provider or network call.
+    There is no manual Provider status command: local readiness is refreshed
+    automatically (startup, Settings open, credential/profile changes) through
+    the local boundary as a ``get_profiles`` request. The desktop surfaces only
+    the bounded readiness state — never a credential, endpoint or network claim.
     """
 
     def setUp(self):
@@ -2375,10 +2400,9 @@ class ProviderReadinessGuiTests(unittest.TestCase):
         window._send_credential = fake_send_credential
         return sent
 
-    def test_provider_button_is_present(self):
+    def test_provider_button_is_absent(self):
         window = MainWindow()
-        self.assertEqual(window.provider_button.text(), "Provider status")
-        self.assertEqual(window.provider_button.accessibleName(), "Provider status")
+        self.assertFalse(hasattr(window, "provider_button"))
 
     def test_settings_button_is_present_before_open_project(self):
         window = MainWindow()
@@ -2391,78 +2415,91 @@ class ProviderReadinessGuiTests(unittest.TestCase):
     def test_provider_status_region_is_reserved(self):
         window = MainWindow()
         self.assertIsNotNone(window._provider_status_label)
-        # Blank until a check runs; the region itself is permanently mounted.
+        # Blank until a refresh runs; the region itself is permanently mounted.
         self.assertEqual(window._provider_status_label.text(), "")
 
-    def test_provider_button_sends_get_readiness(self):
+    def test_refresh_profiles_sends_get_profiles(self):
         window = MainWindow()
         sent = self._fake_send(window)
-        window.provider_button.click()
+        window._refresh_profiles()
         self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["action"], contract.ACTION_GET_READINESS)
+        self.assertEqual(sent[0]["action"], contract.ACTION_GET_PROFILES)
         self.assertNotIn("path", sent[0])
         self.assertNotIn("task", sent[0])
+        self.assertNotIn("secret", contract.dumps(sent[0]))
 
-    def test_readiness_ready_updates_provider_state(self):
+    def test_profiles_ready_updates_provider_state(self):
         window = MainWindow()
         self.assertIn("unavailable", window._provider_label.text())
-        window._on_readiness_ready(
+        window._on_profiles_ready(
             {
                 "state": "configured",
                 "provider_id": "deepseek",
                 "model": "deepseek-v4-flash",
+                "profiles": [],
+                "active_profile_id": None,
                 "credential_present": True,
                 "authenticated": False,
                 "online": False,
                 "executable": False,
+                "migrated": False,
+                "store_available": True,
             }
         )
         self.assertEqual(window._provider_state, "configured")
         self.assertIn("configured", window._provider_label.text())
         self.assertIn("Configured", window.status_label.text())
 
-    def test_readiness_ready_missing_credential(self):
+    def test_profiles_ready_missing_credential(self):
         window = MainWindow()
-        window._on_readiness_ready(
+        window._on_profiles_ready(
             {
                 "state": "missing_credential",
                 "provider_id": "deepseek",
                 "model": "deepseek-v4-flash",
+                "profiles": [],
+                "active_profile_id": None,
                 "credential_present": False,
                 "authenticated": False,
                 "online": False,
                 "executable": False,
+                "migrated": False,
+                "store_available": True,
             }
         )
         self.assertEqual(window._provider_state, "missing_credential")
         self.assertIn("missing_credential", window._provider_label.text())
 
-    def test_readiness_error_sets_failed_status(self):
+    def test_profiles_error_sets_failed_status(self):
         window = MainWindow()
-        window._on_readiness_error("invalid_config")
+        window._on_profiles_error("invalid_config")
         self.assertIn("failed", window.status_label.text())
         self.assertIn("invalid_config", window.status_label.text())
 
-    def test_readiness_ready_updates_provider_status_region(self):
+    def test_profiles_ready_updates_provider_status_region(self):
         window = MainWindow()
-        window._on_readiness_ready(
+        window._on_profiles_ready(
             {
                 "state": "configured",
                 "provider_id": "deepseek",
                 "model": "deepseek-v4-flash",
+                "profiles": [],
+                "active_profile_id": None,
                 "credential_present": True,
                 "authenticated": False,
                 "online": False,
                 "executable": False,
+                "migrated": False,
+                "store_available": True,
             }
         )
         self.assertIn("DeepSeek is configured locally", window._provider_status_label.text())
         self.assertEqual(window._provider_model, "deepseek-v4-flash")
         self.assertTrue(window._provider_credential_present)
 
-    def test_readiness_error_sets_provider_status_failed(self):
+    def test_profiles_error_sets_provider_status_failed(self):
         window = MainWindow()
-        window._on_readiness_error("invalid_config")
+        window._on_profiles_error("invalid_config")
         self.assertIn("Provider check failed", window._provider_status_label.text())
 
     def test_show_credential_result_stored_updates_status(self):
@@ -2541,7 +2578,6 @@ class SettingsDialogTests(unittest.TestCase):
             window.settings_button,
             window.open_project_button,
             window.scan_button,
-            window.provider_button,
         ):
             with self.subTest(button=button.text()):
                 self.assertEqual(button.minimumHeight(), style.COMMAND_BAR_BUTTON_HEIGHT)
@@ -2550,7 +2586,7 @@ class SettingsDialogTests(unittest.TestCase):
     def test_open_project_remains_primary_others_secondary(self):
         window = MainWindow()
         self.assertEqual(window.open_project_button.objectName(), "primaryButton")
-        for button in (window.settings_button, window.scan_button, window.provider_button):
+        for button in (window.settings_button, window.scan_button):
             with self.subTest(button=button.text()):
                 self.assertEqual(button.objectName(), "commandBarButton")
 
@@ -2615,7 +2651,12 @@ class SettingsDialogTests(unittest.TestCase):
         window._profiles = []
         window._refresh_settings_dialog()
         layout = window._settings_profiles_layout
-        labels = [layout.itemAt(i).widget() for i in range(layout.count())]
+        # Only widgets count; the trailing stretch is a spacer, not a widget.
+        labels = [
+            layout.itemAt(i).widget()
+            for i in range(layout.count())
+            if layout.itemAt(i).widget() is not None
+        ]
         self.assertEqual(len(labels), 1)
         self.assertEqual(labels[0].text(), _SETTINGS_NO_PROFILES)
 
@@ -2746,6 +2787,26 @@ class SettingsDialogTests(unittest.TestCase):
         scroll = window._settings_profiles_scroll
         self.assertEqual(scroll.minimumHeight(), style.PROFILE_LIST_HEIGHT)
         self.assertEqual(scroll.maximumHeight(), style.PROFILE_LIST_HEIGHT)
+
+    def test_cards_are_top_anchored_in_the_viewport(self):
+        # Card zero must start at the viewport top (y == 0), not be vertically
+        # centred, and stack downward with identical fixed gaps.
+        window = MainWindow()
+        self._dialog(window)
+        window._settings_dialog.show()
+        window._profiles = [self._profile(f"{i:032x}", f"P{i}") for i in range(6)]
+        window._refresh_settings_dialog()
+        QApplication.processEvents()
+        QApplication.processEvents()
+        viewport = window._settings_profiles_scroll.viewport()
+        ys = [
+            window._profile_cards[f"{i:032x}"]["card"].mapTo(viewport, QPoint(0, 0)).y()
+            for i in range(6)
+        ]
+        self.assertEqual(ys[0], 0)
+        # Uniform 64px pitch = 56px card height + 8px gap.
+        for upper, lower in zip(ys, ys[1:]):
+            self.assertEqual(lower - upper, style.PROFILE_CARD_HEIGHT + style.GAP_TIGHT)
 
     def test_cards_are_not_rebuilt_on_refresh(self):
         window = MainWindow()

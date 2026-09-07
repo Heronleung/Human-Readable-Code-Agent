@@ -66,11 +66,12 @@ GAP_TIGHT = SPACE_8
 GAP_GROUP = SPACE_16
 
 # ---------------------------------------------------------------------------
-# Corner radii — 6 px containers/inputs, 4 px small chips. No shadows, no
-# gradients, no bevels or 3D frames anywhere.
+# Corner radii — near-square 2 px for both containers/inputs and small chips.
+# Crisp, pixel-inspired edges; no soft pill shapes, shadows, gradients, bevels
+# or 3D frames anywhere.
 # ---------------------------------------------------------------------------
-RADIUS_CONTAINER = 6
-RADIUS_CHIP = 4
+RADIUS_CONTAINER = 2
+RADIUS_CHIP = 2
 
 # ---------------------------------------------------------------------------
 # Typography (px). Interface text uses the platform UI font at 13 px; status
@@ -384,11 +385,14 @@ def code_font(size: int = CODE_FONT_SIZE) -> QFont:
 
 
 def panel_header_font() -> QFont:
-    """Return the panel-header font (11 px, letter-spaced, uppercase applied by
-    the caller so letter-spacing stays in one place)."""
-    font = QFontDatabase.systemFont(QFontDatabase.GeneralFont)
+    """Return the panel-header / section micro-heading font (11 px fixed-width).
+
+    Micro-headings use the platform fixed-width face for a crisp, code-tool
+    look; uppercase is applied by the caller. Body copy and long prose stay on
+    the platform UI font via :func:`ui_font`.
+    """
+    font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
     font.setPixelSize(PANEL_HEADER_FONT_SIZE)
-    font.setLetterSpacing(QFont.AbsoluteSpacing, 1.0)
     return font
 
 
@@ -656,7 +660,7 @@ QPushButton {
     color: $text;
     border: 1px solid $border;
     border-radius: $radius;
-    padding: 6px 12px;
+    padding: 4px 10px;
 }
 QPushButton:hover { background: $sunken; }
 QPushButton:pressed { background: $border; }
@@ -754,14 +758,14 @@ QTabBar::tab {
     background: transparent;
     color: $text_secondary;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-bottom: 1px solid transparent;
     padding: 4px 12px;
     min-height: 22px;
 }
 QTabBar::tab:selected {
     color: $text;
     font-weight: bold;
-    border-bottom: 2px solid $accent;
+    border-bottom: 1px solid $accent;
 }
 QTabBar::tab:hover:!selected { color: $text; }
 QTabBar::close-button { subcontrol-origin: padding; }

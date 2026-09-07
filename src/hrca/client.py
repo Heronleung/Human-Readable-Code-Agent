@@ -139,7 +139,6 @@ from .client_core import (
     build_get_document_request,
     build_get_draft_request,
     build_get_profiles_request,
-    build_get_readiness_request,
     build_get_tree_request,
     build_manage_credential_request,
     build_open_project_request,
@@ -791,31 +790,23 @@ class MainWindow(QMainWindow):
         self.scan_button.setObjectName("commandBarButton")
         self.scan_button.setAccessibleName("Run read-only scan")
         self.scan_button.setEnabled(False)
-        self.scan_button.setToolTip("Open a project before running a read-only scan.")
+        self.scan_button.setToolTip("Open a project to run a local read-only scan.")
         self.scan_button.clicked.connect(self._on_run_scan)
 
-        self.provider_button = QPushButton("Provider status")
-        self.provider_button.setObjectName("commandBarButton")
-        self.provider_button.setAccessibleName("Provider status")
-        self.provider_button.setToolTip(
-            "Check local DeepSeek configuration only — this never contacts DeepSeek."
-        )
-        self.provider_button.clicked.connect(self._check_provider_readiness)
-
-        # Settings / Open Project / Run read-only scan / Provider status are
-        # compact peer controls: one shared height token, no per-widget sizing.
+        # Settings / Open Project / Run read-only scan are compact peer
+        # controls: one shared height token, no per-widget sizing. There is no
+        # separate Provider status command — local readiness is refreshed
+        # automatically (startup, Settings open, credential/profile changes).
         for button in (
             self.settings_button,
             self.open_project_button,
             self.scan_button,
-            self.provider_button,
         ):
             button.setFixedHeight(style.COMMAND_BAR_BUTTON_HEIGHT)
 
         layout.addWidget(self.settings_button)
         layout.addWidget(self.open_project_button)
         layout.addWidget(self.scan_button)
-        layout.addWidget(self.provider_button)
         layout.addStretch(1)
         return bar
 
@@ -1481,17 +1472,6 @@ class MainWindow(QMainWindow):
             self._set_status(STATE_FAILED, "a request is already in progress")
             self._set_validation_state(VALIDATION_IDLE)
 
-    def _check_provider_readiness(self) -> None:
-        cid = contract.new_correlation_id()
-        request = build_get_readiness_request(cid)
-        self._set_status(STATE_RUNNING, "checking provider readiness")
-        self._set_provider_status(PROVIDER_STATUS_PENDING)
-        if not self._send(request, self._on_readiness_ready, self._on_readiness_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_readiness_ready(self, result: Dict[str, Any]) -> None:
-        self._apply_provider_state(result)
-
     def _apply_provider_state(self, result: Dict[str, Any]) -> None:
         state = str(result.get("state", PROVIDER_UNAVAILABLE))
         self._provider_state = state
@@ -1505,8 +1485,10 @@ class MainWindow(QMainWindow):
     def _refresh_profiles(self) -> None:
         """Load the saved credential profiles from the local boundary (P4.2a).
 
-        This is a local metadata read that also runs any pending legacy
-        credential migration; it never contacts DeepSeek.
+        This is the single automatic local-readiness refresh: it reads saved
+        profiles (running any pending legacy migration) plus the redacted
+        credential presence, and updates the provider status strip. It never
+        contacts DeepSeek.
         """
         cid = contract.new_correlation_id()
         request = build_get_profiles_request(cid)
@@ -1520,10 +1502,6 @@ class MainWindow(QMainWindow):
         self._apply_provider_state(result)
 
     def _on_profiles_error(self, reason: str) -> None:
-        self._set_status(STATE_FAILED, reason)
-        self._set_provider_status(PROVIDER_STATUS_FAILED)
-
-    def _on_readiness_error(self, reason: str) -> None:
         self._set_status(STATE_FAILED, reason)
         self._set_provider_status(PROVIDER_STATUS_FAILED)
 
@@ -1879,12 +1857,19 @@ class MainWindow(QMainWindow):
         """Reconcile the mounted card list with ``self._profiles`` incrementally.
 
         Cards are added, removed or updated in place — never cleared and rebuilt —
-        so the list does not flash and the scroll anchor is preserved.
+        so the list does not flash and the scroll anchor is preserved. A single
+        trailing stretch keeps the cards top-anchored (zero stretch before the
+        first card), so the first card sits just below Add API key and all
+        unused viewport space stays below the cards.
         """
         layout = self._settings_profiles_layout
         if layout is None:
             return
         new_ids = [p.get("profile_id") for p in self._profiles]
+
+        # Drop the trailing stretch so it can be re-added as the last item.
+        if layout.count() and layout.itemAt(layout.count() - 1).spacerItem() is not None:
+            layout.takeAt(layout.count() - 1)
 
         for profile_id in list(self._profile_cards):
             if profile_id not in new_ids:
@@ -1900,6 +1885,7 @@ class MainWindow(QMainWindow):
                 label.setWordWrap(True)
                 self._empty_state_label = label
                 layout.addWidget(label)
+            layout.addStretch(1)
             return
 
         if self._empty_state_label is not None:
@@ -1913,6 +1899,8 @@ class MainWindow(QMainWindow):
                 self._update_card(self._profile_cards[profile_id], profile)
             else:
                 layout.addWidget(self._profile_card_widget(profile))
+
+        layout.addStretch(1)
 
     def _begin_profile_action(self, message: str) -> None:
         self._profile_action_pending = True
@@ -2035,6 +2023,10 @@ class MainWindow(QMainWindow):
     def _on_replace_secret_stored(self, result: Dict[str, Any]) -> None:
         self._end_profile_action()
         self._show_credential_result(result)
+        if str(result.get("state")) == "stored":
+            # Re-read local readiness so the strip stays truthful after a
+            # successful credential replacement (no provider/network call).
+            self._refresh_profiles()
 
     def _show_credential_result(self, result: Dict[str, Any]) -> None:
         state = str(result.get("state", "failed"))
@@ -3121,6 +3113,10 @@ def run_gui(argv: Optional[Sequence[str]] = None) -> int:
     style.apply(app, palette)
     window = MainWindow(palette=palette)
     window.show()
+    # Automatic local readiness at startup: read saved profiles and redacted
+    # credential presence through the local boundary so the fixed status strip
+    # is truthful without a manual command. Never a provider or network call.
+    window._refresh_profiles()
     return app.exec()
 
 
