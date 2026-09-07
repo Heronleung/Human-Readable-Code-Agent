@@ -762,17 +762,19 @@ def build_manage_credential_request(
     hwnd: Optional[int] = None,
     profile_id: Optional[str] = None,
     display_name: Optional[str] = None,
+    theme: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a ``manage_credential`` request (backend-owned secure enrollment).
 
     The request carries only the correlation id, the action name, the optional
     native parent window handle ``hwnd`` (an integer handle, never a key, path
     or task), the optional opaque ``profile_id`` naming the credential target
-    the host derives itself (replace mode), and the optional ``display_name``
-    shown read-only in replace mode. When ``profile_id`` is absent the host
-    renders Add mode (editable name). The native credential host owns the dark
-    entry sheet and writes the credential straight to the platform store; the
-    desktop never sees the key.
+    the host derives itself (replace mode), the optional ``display_name`` shown
+    read-only in replace mode, and the optional non-secret ``theme``
+    (``"light"`` / ``"dark"``) the native sheet uses to match the desktop. When
+    ``profile_id`` is absent the host renders Add mode (editable name). The
+    native credential host owns the entry sheet and writes the credential
+    straight to the platform store; the desktop never sees the key.
     """
     request = {
         "contract_version": contract.CONTRACT_VERSION,
@@ -785,6 +787,8 @@ def build_manage_credential_request(
         request["profile_id"] = profile_id
     if display_name is not None:
         request["display_name"] = display_name
+    if theme is not None:
+        request["theme"] = theme
     return request
 
 

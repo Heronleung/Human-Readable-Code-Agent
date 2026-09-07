@@ -34,6 +34,7 @@ def run(
     *,
     profile_id: Optional[str] = None,
     display_name: Optional[str] = None,
+    theme: str = "dark",
     store: Optional[credential_store.CredentialStore] = None,
     sheet: Any = None,
 ) -> Dict[str, Any]:
@@ -44,7 +45,8 @@ def run(
     profile id — when present this is *replace* mode (the id names the target
     and the name is read-only), when absent this is *add* mode (the host
     generates a fresh id and collects a display name); ``display_name`` is the
-    existing name shown read-only in replace mode; ``store``/``sheet`` are
+    existing name shown read-only in replace mode; ``theme`` is the non-secret
+    ``"light"``/``"dark"`` scheme the native sheet uses; ``store``/``sheet`` are
     injectable for tests. The returned mapping is the bounded redacted result —
     state, presence, an optional bounded failure reason, and (for a successful
     add) the generated ``profile_id`` and ``display_name`` — never the secret,
@@ -85,7 +87,9 @@ def run(
         )
     try:
         outcome = sheet_fn(
-            display_name if is_replace else None, hwnd_parent=hwnd_parent
+            display_name if is_replace else None,
+            hwnd_parent=hwnd_parent,
+            theme=theme,
         )
     except (EOFError, KeyboardInterrupt):
         outcome = None
@@ -177,12 +181,19 @@ def handle_request(
     if display_name is not None and not isinstance(display_name, str):
         return contract.build_error(correlation_id, "invalid_request")
 
+    # The non-secret theme ("light"/"dark") the native sheet uses to match the
+    # desktop; an unknown token is treated as absent (the sheet defaults dark).
+    theme = request.get("theme")
+    if theme not in ("light", "dark"):
+        theme = "dark"
+
     if action == contract.ACTION_MANAGE_CREDENTIAL:
         result = run(
             _OP_ENROLL,
             hwnd,
             profile_id=profile_id,
             display_name=display_name,
+            theme=theme,
             store=store,
             sheet=sheet,
         )

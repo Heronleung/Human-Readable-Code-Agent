@@ -33,6 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from . import visual_tokens
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
@@ -48,40 +49,28 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QProxyStyle, QStyle
 
 # ---------------------------------------------------------------------------
-# Spacing — a 4 px base scale. Only these values may appear as margins/padding.
-# ``SPACE_0`` is the flush (zero) inset/gap used at pane edges where a parent
-# and its only child meet with no padding.
+# Spacing / radii / typography — re-exported from the shared Qt-free token
+# module so the Qt factory and the native sheet consume one source of truth.
 # ---------------------------------------------------------------------------
-SPACE_0 = 0
-SPACE_4 = 4
-SPACE_8 = 8
-SPACE_12 = 12
-SPACE_16 = 16
-SPACE_24 = 24
+SPACE_0 = visual_tokens.SPACE_0
+SPACE_4 = visual_tokens.SPACE_4
+SPACE_8 = visual_tokens.SPACE_8
+SPACE_12 = visual_tokens.SPACE_12
+SPACE_16 = visual_tokens.SPACE_16
+SPACE_24 = visual_tokens.SPACE_24
+INSET = visual_tokens.INSET
+GAP_TIGHT = visual_tokens.GAP_TIGHT
+GAP_GROUP = visual_tokens.GAP_GROUP
+RADIUS_CONTAINER = visual_tokens.RADIUS_CONTAINER
+RADIUS_CHIP = visual_tokens.RADIUS_CHIP
 
-# Standard insets: 12 px content inset, 8 px between related controls,
-# 16 px between grouped sections.
-INSET = SPACE_12
-GAP_TIGHT = SPACE_8
-GAP_GROUP = SPACE_16
-
-# ---------------------------------------------------------------------------
-# Corner radii — near-square 2 px for both containers/inputs and small chips.
-# Crisp, pixel-inspired edges; no soft pill shapes, shadows, gradients, bevels
-# or 3D frames anywhere.
-# ---------------------------------------------------------------------------
-RADIUS_CONTAINER = 2
-RADIUS_CHIP = 2
-
-# ---------------------------------------------------------------------------
-# Typography (px). Interface text uses the platform UI font at 13 px; status
-# and panel headers are smaller; code and Twin text use the fixed-width font
-# at 13 px with about 1.45 line spacing.
-# ---------------------------------------------------------------------------
-UI_FONT_SIZE = 13
-STATUS_FONT_SIZE = 12
-PANEL_HEADER_FONT_SIZE = 11
-CODE_FONT_SIZE = 13
+# Typography roles (px): body copy uses the platform UI font; status, evidence
+# and micro-headings use the platform fixed-width font; code uses fixed-width at
+# about 1.45 line spacing.
+UI_FONT_SIZE = visual_tokens.FONT_BODY
+STATUS_FONT_SIZE = visual_tokens.FONT_STATUS
+PANEL_HEADER_FONT_SIZE = visual_tokens.FONT_MICRO_HEADING
+CODE_FONT_SIZE = visual_tokens.FONT_CODE
 CODE_LINE_SPACING = 1.45
 CODE_LINE_HEIGHT_PERCENT = 145  # int(CODE_LINE_SPACING * 100), Qt proportional mode
 
@@ -276,60 +265,21 @@ class Palette:
 
 
 # ---------------------------------------------------------------------------
-# Palettes.
+# Palettes — assembled from the shared token module; the Qt adapter adds only
+# the ``name``/``is_dark`` flags and the chip alpha, never a duplicate colour.
 # ---------------------------------------------------------------------------
 LIGHT_PALETTE = Palette(
     name="light",
     is_dark=False,
-    window="#f3f4f6",
-    surface="#ffffff",
-    sunken="#eceef1",
-    border="#d0d4da",
-    text="#1f2328",
-    text_secondary="#57606a",
-    text_disabled="#8c959f",
-    accent="#1f2328",
-    accent_hover="#333a41",
-    accent_pressed="#0e1013",
-    focus="#1f2328",
-    on_accent="#ffffff",
-    info="#57606a",
-    success="#1a7f37",
-    warning="#9a6700",
-    error="#cf222e",
-    neutral="#57606a",
-    syntax_keyword="#0550ae",
-    syntax_string="#116329",
-    syntax_comment="#57606a",
-    syntax_number="#6633bb",
-    _chip_alpha=10,
+    _chip_alpha=visual_tokens.chip_alpha("light"),
+    **visual_tokens.colors("light"),
 )
 
 DARK_PALETTE = Palette(
     name="dark",
     is_dark=True,
-    window="#1e1f22",
-    surface="#26272b",
-    sunken="#17181b",
-    border="#3a3c41",
-    text="#dcddde",
-    text_secondary="#9aa0a6",
-    text_disabled="#6e7681",
-    accent="#ffffff",
-    accent_hover="#e6e6e6",
-    accent_pressed="#cccccc",
-    focus="#e6e6e6",
-    on_accent="#1f2328",
-    info="#9aa0a6",
-    success="#3fb950",
-    warning="#d29922",
-    error="#ff7b72",
-    neutral="#9aa0a6",
-    syntax_keyword="#c586c0",
-    syntax_string="#ce9178",
-    syntax_comment="#7aa668",
-    syntax_number="#b5cea8",
-    _chip_alpha=28,
+    _chip_alpha=visual_tokens.chip_alpha("dark"),
+    **visual_tokens.colors("dark"),
 )
 
 PALETTES = {"light": LIGHT_PALETTE, "dark": DARK_PALETTE}

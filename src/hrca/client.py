@@ -1941,7 +1941,9 @@ class MainWindow(QMainWindow):
         # separate process); the desktop owns only the request and the result.
         self._begin_profile_action(CREDENTIAL_ACTION_PENDING)
         request = build_manage_credential_request(
-            contract.new_correlation_id(), self._native_window_handle()
+            contract.new_correlation_id(),
+            self._native_window_handle(),
+            theme=self._palette.name,
         )
         self._set_status(STATE_RUNNING, "collecting API key")
         if not self._send_credential(
@@ -2009,6 +2011,7 @@ class MainWindow(QMainWindow):
             self._native_window_handle(),
             profile_id=profile_id,
             display_name=profile.get("display_name"),
+            theme=self._palette.name,
         )
         self._set_status(STATE_RUNNING, "replacing API key")
         if not self._send_credential(

@@ -26,7 +26,7 @@ class FailingStore(credential_store.FakeCredentialStore):
 def _sheet_returning(value):
     """Build a fake sheet returning ``value`` (a tuple, ``None``, or a raising call)."""
 
-    def sheet(replace_name=None, hwnd_parent=None):
+    def sheet(replace_name=None, hwnd_parent=None, theme=None):
         if callable(value):
             return value()
         return value
@@ -35,7 +35,7 @@ def _sheet_returning(value):
 
 
 def _sheet_raising(code):
-    def sheet(replace_name=None, hwnd_parent=None):
+    def sheet(replace_name=None, hwnd_parent=None, theme=None):
         raise credential_store.CredentialStoreError(code)
 
     return sheet
@@ -63,12 +63,22 @@ class CredentialHostRunTests(unittest.TestCase):
     def test_add_passes_no_replace_name_to_sheet(self):
         seen = []
 
-        def sheet(replace_name=None, hwnd_parent=None):
+        def sheet(replace_name=None, hwnd_parent=None, theme=None):
             seen.append((replace_name, hwnd_parent))
             return ("Work", _SECRET_LIKE)
 
         credential_host.run("enroll", hwnd_parent=123, store=self.store, sheet=sheet)
         self.assertEqual(seen, [(None, 123)])
+
+    def test_run_passes_theme_to_sheet(self):
+        seen = []
+
+        def sheet(replace_name=None, hwnd_parent=None, theme=None):
+            seen.append(theme)
+            return ("Work", _SECRET_LIKE)
+
+        credential_host.run("enroll", theme="light", store=self.store, sheet=sheet)
+        self.assertEqual(seen, ["light"])
 
     def test_replace_stores_under_existing_target(self):
         profile_id = "a" * 32
@@ -89,7 +99,7 @@ class CredentialHostRunTests(unittest.TestCase):
     def test_replace_passes_display_name_to_sheet(self):
         seen = []
 
-        def sheet(replace_name=None, hwnd_parent=None):
+        def sheet(replace_name=None, hwnd_parent=None, theme=None):
             seen.append(replace_name)
             return ("Work", _SECRET_LIKE)
 
@@ -268,10 +278,34 @@ class CredentialHostRequestTests(unittest.TestCase):
         self.assertFalse(envelope["ok"])
         self.assertEqual(envelope["error"]["code"], "invalid_request")
 
+    def test_request_defaults_theme_to_dark(self):
+        seen = []
+
+        def sheet(replace_name=None, hwnd_parent=None, theme=None):
+            seen.append(theme)
+            return ("Work", _SECRET_LIKE)
+
+        credential_host.handle_request(
+            self._manage_request(), store=self.store, sheet=sheet
+        )
+        self.assertEqual(seen, ["dark"])
+
+    def test_request_passes_theme(self):
+        seen = []
+
+        def sheet(replace_name=None, hwnd_parent=None, theme=None):
+            seen.append(theme)
+            return ("Work", _SECRET_LIKE)
+
+        credential_host.handle_request(
+            self._manage_request(theme="light"), store=self.store, sheet=sheet
+        )
+        self.assertEqual(seen, ["light"])
+
     def test_ignores_invalid_hwnd(self):
         seen = []
 
-        def sheet(replace_name=None, hwnd_parent=None):
+        def sheet(replace_name=None, hwnd_parent=None, theme=None):
             seen.append(hwnd_parent)
             return ("Work", _SECRET_LIKE)
 

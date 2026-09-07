@@ -39,18 +39,12 @@ import ctypes
 from ctypes import wintypes
 from typing import Optional, Tuple
 
+from . import visual_tokens
 from .credential_store import CredentialStoreError
 
-# ---------------------------------------------------------------------------
-# Colour tokens — the same semantic values as the dark Settings surface
-# (``hrca.style.DARK_PALETTE``), expressed as 0x00BBGGRR COLORREF values.
-# ---------------------------------------------------------------------------
-_COLOR_WINDOW = 0x00221F1E  # #1e1f22
-_COLOR_SURFACE = 0x002B2726  # #26272b
-_COLOR_TEXT = 0x00DEDDDC  # #dcddde
-_COLOR_TEXT_SECONDARY = 0x00A6A09A  # #9aa0a6
-_COLOR_ACCENT = 0x00FFFFFF  # #ffffff (Save background)
-_COLOR_ON_ACCENT = 0x0028231F  # #1f2328 (Save foreground)
+# Colour and metric tokens are drawn from the shared Qt-free contract in
+# :mod:`hrca.visual_tokens`; the native adapter maps them to COLORREF brushes
+# and scaled metrics at window creation and never duplicates a palette literal.
 
 # ---------------------------------------------------------------------------
 # Window / control constants.
@@ -106,20 +100,22 @@ _ID_CANCEL = 1008
 _IDOK = 1
 _IDCANCEL = 2
 
-# Layout (pixels, client coordinates).
+# Layout (logical px, client coordinates). Field/button heights and the content
+# margin come from the shared token contract; the sheet-specific row positions
+# and widths derive from those. All are scaled once by the process DPI.
 _SHEET_WIDTH = 380
 _SHEET_HEIGHT = 178
-_MARGIN = 16
+_MARGIN = visual_tokens.GAP_GROUP
 _LABEL_WIDTH = 96
 _FIELD_X = _MARGIN + _LABEL_WIDTH
 _FIELD_WIDTH = _SHEET_WIDTH - _FIELD_X - _MARGIN
-_FIELD_HEIGHT = 24
+_FIELD_HEIGHT = visual_tokens.CONTROL_HEIGHT_FIELD
 _ROW1 = 14
-_ROW2 = 46
-_ROW3 = 78
-_BUTTON_ROW = 116
+_ROW2 = _ROW1 + _FIELD_HEIGHT + visual_tokens.GAP_TIGHT
+_ROW3 = _ROW2 + _FIELD_HEIGHT + visual_tokens.GAP_TIGHT
+_BUTTON_ROW = _ROW3 + _FIELD_HEIGHT + visual_tokens.GAP_GROUP
 _BUTTON_WIDTH = 108
-_BUTTON_HEIGHT = 30
+_BUTTON_HEIGHT = visual_tokens.CONTROL_HEIGHT_BUTTON
 
 _PROVIDER_ID = "deepseek"
 _PROVIDER_LABEL = "DeepSeek"
@@ -197,6 +193,10 @@ def _load_libs():
     _user32.GetWindowTextW.restype = ctypes.c_int
     _user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
     _user32.GetDlgItem.restype = wintypes.HWND
+    _user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
+    _user32.GetDlgCtrlID.restype = ctypes.c_int
+    _user32.GetDpiForWindow.argtypes = [wintypes.HWND]
+    _user32.GetDpiForWindow.restype = wintypes.UINT
     _user32.EnableWindow.argtypes = [wintypes.HWND, wintypes.BOOL]
     _user32.EnableWindow.restype = wintypes.BOOL
     _user32.SetFocus.argtypes = [wintypes.HWND]
@@ -263,8 +263,10 @@ _state = {
     "hwnd": None,
     "replace_name": None,
     "result": None,          # ("save", name, secret) or ("cancel", None, None)
-    "brushes": [],           # solid brushes owned by the window
+    "brushes": {},           # role -> HBRUSH (window/surface/accent)
+    "colorrefs": {},         # role -> COLORREF (from visual_tokens)
     "wndproc_ref": None,     # keep the WndProc callback alive
+    "dpi": 96,
 }
 
 _CLASS_NAME = "HrcaCredentialSheet"
@@ -281,17 +283,31 @@ def _window_proc(hwnd, msg, wparam, lparam):
             _on_cancel(hwnd)
             return 0
     elif msg == _WM_ERASEBKGND:
-        # Paint the client area with the dark window colour so the sheet is
+        # Paint the client area with the theme window colour so the sheet is
         # app-consistent behind its controls.
         rect = _RECT()
         _user32.GetClientRect(hwnd, ctypes.byref(rect))
-        _user32.FillRect(wparam, ctypes.byref(rect), _state["brushes"][0])
+        _user32.FillRect(wparam, ctypes.byref(rect), _state["brushes"]["window"])
         return 1
     elif msg in (_WM_CTLCOLORSTATIC, _WM_CTLCOLOREDIT, _WM_CTLCOLORBTN):
+        refs = _state["colorrefs"]
         hdc = wparam
-        _gdi32.SetBkColor(hdc, _COLOR_WINDOW)
-        _gdi32.SetTextColor(hdc, _COLOR_TEXT)
-        return int(_state["brushes"][0])  # window-colour brush
+        if msg == _WM_CTLCOLORSTATIC:
+            _gdi32.SetBkColor(hdc, refs["window"])
+            _gdi32.SetTextColor(hdc, refs["text_secondary"])
+            return int(_state["brushes"]["window"])
+        if msg == _WM_CTLCOLOREDIT:
+            _gdi32.SetBkColor(hdc, refs["surface"])
+            _gdi32.SetTextColor(hdc, refs["text"])
+            return int(_state["brushes"]["surface"])
+        # Buttons: Save is the primary (accent) action; Cancel is secondary.
+        if lparam and _user32.GetDlgCtrlID(lparam) == _ID_SAVE:
+            _gdi32.SetBkColor(hdc, refs["accent"])
+            _gdi32.SetTextColor(hdc, refs["on_accent"])
+            return int(_state["brushes"]["accent"])
+        _gdi32.SetBkColor(hdc, refs["surface"])
+        _gdi32.SetTextColor(hdc, refs["text"])
+        return int(_state["brushes"]["surface"])
     elif msg == _WM_CLOSE:
         _on_cancel(hwnd)
         return 0
@@ -352,28 +368,48 @@ def _read_and_clear(hwnd) -> str:
     return text
 
 
-def _apply_dark_mode(hwnd) -> None:
-    """Enable per-window dark title bar / borders; failures are non-fatal.
+def _apply_title_bar(hwnd, dark: bool) -> None:
+    """Apply the theme title bar / borders; failures are non-fatal.
 
     ``SetPreferredAppMode`` (uxtheme ordinal 135) and
     ``AllowDarkModeForWindow`` (ordinal 133) are undocumented-but-stable; the
-    DWM immersive-dark attribute is the documented surface.
+    DWM immersive attribute is the documented surface. In light mode the dark
+    attribute is explicitly cleared so the title bar matches the theme.
     """
+    app_mode = 2 if dark else 0  # 2 = ForceDark, 0 = Default
     try:
         mod = _kernel32.GetModuleHandleW("uxtheme.dll")
         proc = _kernel32.GetProcAddress(mod, ctypes.c_void_p(135))
         if proc:
-            ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int)(proc)(2)  # ForceDark
+            ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int)(proc)(app_mode)
         proc = _kernel32.GetProcAddress(mod, ctypes.c_void_p(133))
         if proc:
-            ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.BOOL)(proc)(hwnd, True)
+            ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.BOOL)(proc)(hwnd, dark)
     except Exception:
         pass
-    value = wintypes.BOOL(True)
+    value = wintypes.BOOL(dark)
     try:
         _dwmapi.DwmSetWindowAttribute(
             hwnd, _DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value), ctypes.sizeof(value)
         )
+    except Exception:
+        pass
+
+
+def _enable_dpi_awareness() -> None:
+    """Make the process DPI-aware on a best-effort basis (per-monitor v2, then system)."""
+    try:
+        mod = _kernel32.GetModuleHandleW("user32.dll")
+        addr = _kernel32.GetProcAddress(
+            mod, ctypes.c_char_p(b"SetProcessDpiAwarenessContext")
+        )
+        if addr:
+            # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4.
+            ctypes.WINFUNCTYPE(wintypes.BOOL, ctypes.c_void_p)(addr)(ctypes.c_void_p(-4))
+            return
+        addr = _kernel32.GetProcAddress(mod, ctypes.c_char_p(b"SetProcessDpiAware"))
+        if addr:
+            ctypes.WINFUNCTYPE(wintypes.BOOL)(addr)()
     except Exception:
         pass
 
@@ -391,7 +427,7 @@ def _register_class() -> bool:
     return _user32.RegisterClassExW(ctypes.byref(wc)) != 0
 
 
-def _center_on(hwnd, owner) -> None:
+def _center_on(hwnd, owner, width: int, height: int) -> None:
     """Center the sheet over its owner, or over the primary screen."""
     if owner:
         rect = (ctypes.c_long * 4)()
@@ -401,26 +437,35 @@ def _center_on(hwnd, owner) -> None:
     else:
         ox = _user32.GetSystemMetrics(0) // 2
         oy = _user32.GetSystemMetrics(1) // 2
-    x = ox - _SHEET_WIDTH // 2
-    y = oy - (_SHEET_HEIGHT + 30) // 2
+    x = ox - width // 2
+    y = oy - (height + 30) // 2
     _user32.SetWindowPos(hwnd, None, x, y, 0, 0, 0x0001)  # SWP_NOSIZE
 
 
 def entry_sheet(
     replace_name: Optional[str] = None,
     hwnd_parent: Optional[int] = None,
+    theme: str = "dark",
 ) -> Optional[Tuple[str, str]]:
-    """Render the native dark entry sheet and return ``(name, secret)``.
+    """Render the native entry sheet and return ``(name, secret)``.
 
     ``replace_name`` is ``None`` for Add (editable name) or the existing profile
-    name for Replace (read-only name). Returns ``None`` on cancel and raises a
-    bounded :class:`~hrca.credential_store.CredentialStoreError` on an internal
-    failure (window/control creation could not complete).
+    name for Replace (read-only name). ``theme`` is ``"light"`` or ``"dark"`` and
+    selects the shared palette from :mod:`hrca.visual_tokens`. Returns ``None``
+    on cancel and raises a bounded
+    :class:`~hrca.credential_store.CredentialStoreError` on an internal failure
+    (window/control creation could not complete).
     """
     _load_libs()
+    _enable_dpi_awareness()
+    colors = visual_tokens.colors(theme)
+    colorrefs = {key: visual_tokens.colorref(value) for key, value in colors.items()}
     _state["hwnd"] = None
     _state["replace_name"] = replace_name
     _state["result"] = None
+    _state["colorrefs"] = colorrefs
+    _state["brushes"] = {}
+    _state["dpi"] = 96
 
     hinstance = _kernel32.GetModuleHandleW(None)
     if not _register_class():
@@ -442,17 +487,41 @@ def entry_sheet(
         if not hwnd:
             raise CredentialStoreError("prompt_failed")
         _state["hwnd"] = hwnd
-        _state["brushes"] = [_gdi32.CreateSolidBrush(_COLOR_WINDOW)]
+        dpi = _user32.GetDpiForWindow(hwnd) or 96
+        _state["dpi"] = dpi
+        scale = lambda v: visual_tokens.scale(v, dpi)  # noqa: E731
 
-        _apply_dark_mode(hwnd)
+        # Brushes for the three semantic surface tiers from the shared tokens.
+        _state["brushes"]["window"] = _gdi32.CreateSolidBrush(colorrefs["window"])
+        _state["brushes"]["surface"] = _gdi32.CreateSolidBrush(colorrefs["surface"])
+        _state["brushes"]["accent"] = _gdi32.CreateSolidBrush(colorrefs["accent"])
+
+        _apply_title_bar(hwnd, theme == "dark")
+
+        # Scale every logical metric once (no mixed logical/physical constants).
+        sheet_w, sheet_h = scale(_SHEET_WIDTH), scale(_SHEET_HEIGHT)
+        margin = scale(_MARGIN)
+        label_w = scale(_LABEL_WIDTH)
+        field_h = scale(_FIELD_HEIGHT)
+        field_x = scale(_FIELD_X)
+        field_w = scale(_FIELD_WIDTH)
+        row1 = scale(_ROW1)
+        row2 = scale(_ROW2)
+        row3 = scale(_ROW3)
+        button_row = scale(_BUTTON_ROW)
+        button_w = scale(_BUTTON_WIDTH)
+        button_h = scale(_BUTTON_HEIGHT)
+
+        # Resize the sheet to the scaled logical size.
+        _user32.SetWindowPos(hwnd, None, 0, 0, sheet_w, sheet_h, 0x0006)  # SWP_NOMOVE|NOZORDER
 
         # Provider label + fixed DeepSeek control (never free text).
         _create_control("STATIC", _ID_PROVIDER_LABEL, "Provider", _SS_LEFT,
-                        _MARGIN, _ROW1, _LABEL_WIDTH, _FIELD_HEIGHT)
+                        margin, row1, label_w, field_h)
         provider = _create_control(
             "COMBOBOX", _ID_PROVIDER, None,
             _CBS_DROPDOWNLIST | _WS_VSCROLL | _WS_TABSTOP,
-            _FIELD_X, _ROW1, _FIELD_WIDTH, _FIELD_HEIGHT,
+            field_x, row1, field_w, field_h,
         )
         _user32.SendMessageW(
             provider, _CB_ADDSTRING, 0, ctypes.c_wchar_p(_PROVIDER_LABEL)
@@ -462,38 +531,38 @@ def entry_sheet(
 
         # Name field.
         _create_control("STATIC", _ID_NAME_LABEL, "Profile name", _SS_LEFT,
-                        _MARGIN, _ROW2, _LABEL_WIDTH, _FIELD_HEIGHT)
+                        margin, row2, label_w, field_h)
         name_style = _ES_AUTOHSCROLL | _WS_TABSTOP
         if replace_name is not None:
             name_style |= _ES_READONLY
         name_edit = _create_control(
             "EDIT", _ID_NAME, replace_name or "", name_style,
-            _FIELD_X, _ROW2, _FIELD_WIDTH, _FIELD_HEIGHT,
+            field_x, row2, field_w, field_h,
         )
         if replace_name is not None:
             _user32.SendMessageW(name_edit, _EM_SETREADONLY, 1, 0)
 
         # Key field (masked).
         _create_control("STATIC", _ID_KEY_LABEL, "API key", _SS_LEFT,
-                        _MARGIN, _ROW3, _LABEL_WIDTH, _FIELD_HEIGHT)
+                        margin, row3, label_w, field_h)
         _create_control(
             "EDIT", _ID_KEY, "",
             _ES_AUTOHSCROLL | _ES_PASSWORD | _WS_TABSTOP,
-            _FIELD_X, _ROW3, _FIELD_WIDTH, _FIELD_HEIGHT,
+            field_x, row3, field_w, field_h,
         )
 
         # Save / Cancel.
         _create_control("BUTTON", _ID_SAVE, "Save",
                         _BS_PUSHBUTTON | _WS_TABSTOP,
-                        _FIELD_X, _BUTTON_ROW, _BUTTON_WIDTH, _BUTTON_HEIGHT)
+                        field_x, button_row, button_w, button_h)
         _create_control("BUTTON", _ID_CANCEL, "Cancel",
                         _BS_PUSHBUTTON | _WS_TABSTOP,
-                        _FIELD_X + _BUTTON_WIDTH + 12, _BUTTON_ROW,
-                        _BUTTON_WIDTH, _BUTTON_HEIGHT)
+                        field_x + button_w + scale(12), button_row,
+                        button_w, button_h)
 
         _user32.SetFocus(name_edit if replace_name is None else _user32.GetDlgItem(hwnd, _ID_KEY))
 
-        _center_on(hwnd, owner)
+        _center_on(hwnd, owner, sheet_w, sheet_h)
         _user32.ShowWindow(hwnd, 1)  # SW_SHOWNORMAL
         _user32.UpdateWindow(hwnd)
 
@@ -512,12 +581,13 @@ def entry_sheet(
     finally:
         if owner:
             _user32.EnableWindow(owner, True)
-        for brush in _state["brushes"]:
+        for brush in _state["brushes"].values():
             if brush:
                 _gdi32.DeleteObject(brush)
-        _state["brushes"] = []
+        _state["brushes"] = {}
         _state["hwnd"] = None
         _state["replace_name"] = None
+        _state["colorrefs"] = {}
 
 
 def _create_control(cls, cid, text, style, x, y, w, h):
