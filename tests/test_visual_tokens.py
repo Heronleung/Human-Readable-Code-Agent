@@ -103,5 +103,31 @@ class AdapterParityTests(unittest.TestCase):
         self.assertIsNone(re.search(r"#[0-9a-fA-F]{6}", source))
 
 
+class SheetReferenceTests(unittest.TestCase):
+    """The token contract encodes the pre-v10 sheet as the visual reference."""
+
+    def test_dark_palette_matches_pre_v10_sheet(self):
+        # These are the exact application-owned colors of the v9 sheet at 9285b90.
+        self.assertEqual(visual_tokens.DARK_COLORS["window"], "#1e1f22")
+        self.assertEqual(visual_tokens.DARK_COLORS["surface"], "#26272b")
+        self.assertEqual(visual_tokens.DARK_COLORS["text"], "#dcddde")
+        self.assertEqual(visual_tokens.DARK_COLORS["text_secondary"], "#9aa0a6")
+        self.assertEqual(visual_tokens.DARK_COLORS["accent"], "#ffffff")
+        self.assertEqual(visual_tokens.DARK_COLORS["on_accent"], "#1f2328")
+
+    def test_native_sheet_uses_shared_body_font(self):
+        from hrca import credential_sheet_win
+
+        self.assertEqual(credential_sheet_win._SHEET_FONT_SIZE, visual_tokens.FONT_BODY)
+
+    def test_sheet_text_is_one_step_above_pre_v10_default(self):
+        # The pre-v10 sheet used the OS default GUI font (~9pt / 12px at 96 DPI);
+        # the shared body size is one restrained semantic step larger (+~1px).
+        self.assertEqual(visual_tokens.FONT_BODY, 13)
+        self.assertGreater(visual_tokens.FONT_BODY, 12)
+        # Secondary text stays subordinate (a step below the field/button size).
+        self.assertLess(visual_tokens.FONT_STATUS, visual_tokens.FONT_BODY)
+
+
 if __name__ == "__main__":
     unittest.main()

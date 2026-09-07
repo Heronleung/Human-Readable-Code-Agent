@@ -77,6 +77,7 @@ _WM_ERASEBKGND = 0x0014
 _WM_CTLCOLORSTATIC = 0x0138
 _WM_CTLCOLOREDIT = 0x0133
 _WM_CTLCOLORBTN = 0x0135
+_WM_SETFONT = 0x0030
 
 _BN_CLICKED = 0
 
@@ -110,12 +111,18 @@ _LABEL_WIDTH = 96
 _FIELD_X = _MARGIN + _LABEL_WIDTH
 _FIELD_WIDTH = _SHEET_WIDTH - _FIELD_X - _MARGIN
 _FIELD_HEIGHT = visual_tokens.CONTROL_HEIGHT_FIELD
+# Row positions follow the pre-v10 sheet reference exactly (label/field pitch).
 _ROW1 = 14
-_ROW2 = _ROW1 + _FIELD_HEIGHT + visual_tokens.GAP_TIGHT
-_ROW3 = _ROW2 + _FIELD_HEIGHT + visual_tokens.GAP_TIGHT
-_BUTTON_ROW = _ROW3 + _FIELD_HEIGHT + visual_tokens.GAP_GROUP
+_ROW2 = 46
+_ROW3 = 78
+_BUTTON_ROW = 116
 _BUTTON_WIDTH = 108
 _BUTTON_HEIGHT = visual_tokens.CONTROL_HEIGHT_BUTTON
+
+# The application-owned field/label/button text size. This is one restrained
+# semantic step above the pre-v10 default GUI font (~9pt / 12px): the shared
+# body size, scaled once by the process DPI in entry_sheet.
+_SHEET_FONT_SIZE = visual_tokens.FONT_BODY
 
 _PROVIDER_ID = "deepseek"
 _PROVIDER_LABEL = "DeepSeek"
@@ -238,6 +245,15 @@ def _load_libs():
 
     _gdi32.CreateSolidBrush.argtypes = [wintypes.COLORREF]
     _gdi32.CreateSolidBrush.restype = wintypes.HBRUSH
+    _gdi32.CreateFontW.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+        wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+        wintypes.LPCWSTR,
+    ]
+    _gdi32.CreateFontW.restype = wintypes.HFONT
+    _gdi32.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+    _gdi32.DeleteObject.restype = wintypes.BOOL
     _gdi32.SetTextColor.argtypes = [wintypes.HDC, wintypes.COLORREF]
     _gdi32.SetTextColor.restype = wintypes.COLORREF
     _gdi32.SetBkColor.argtypes = [wintypes.HDC, wintypes.COLORREF]
@@ -265,6 +281,7 @@ _state = {
     "result": None,          # ("save", name, secret) or ("cancel", None, None)
     "brushes": {},           # role -> HBRUSH (window/surface/accent)
     "colorrefs": {},         # role -> COLORREF (from visual_tokens)
+    "font": None,            # HFONT applied to all controls (FONT_BODY, scaled)
     "wndproc_ref": None,     # keep the WndProc callback alive
     "dpi": 96,
 }
@@ -496,6 +513,10 @@ def entry_sheet(
         _state["brushes"]["surface"] = _gdi32.CreateSolidBrush(colorrefs["surface"])
         _state["brushes"]["accent"] = _gdi32.CreateSolidBrush(colorrefs["accent"])
 
+        # One application-owned font (shared body size, scaled once by DPI)
+        # applied to every field, label and button.
+        _state["font"] = _create_field_font(dpi)
+
         _apply_title_bar(hwnd, theme == "dark")
 
         # Scale every logical metric once (no mixed logical/physical constants).
@@ -585,18 +606,36 @@ def entry_sheet(
             if brush:
                 _gdi32.DeleteObject(brush)
         _state["brushes"] = {}
+        if _state.get("font"):
+            _gdi32.DeleteObject(_state["font"])
+        _state["font"] = None
         _state["hwnd"] = None
         _state["replace_name"] = None
         _state["colorrefs"] = {}
 
 
+def _create_field_font(dpi: int):
+    """Return an HFONT at the shared body size, scaled once to ``dpi``."""
+    size = visual_tokens.scale(_SHEET_FONT_SIZE, dpi)
+    return _gdi32.CreateFontW(
+        -size, 0, 0, 0, 400,  # FW_NORMAL; negative height = pixel em size
+        0, 0, 0, 1,           # DEFAULT_CHARSET
+        0, 0, 5,              # CLEARTYPE_QUALITY
+        0, ctypes.c_wchar_p("Segoe UI"),
+    )
+
+
 def _create_control(cls, cid, text, style, x, y, w, h):
     hinstance = _kernel32.GetModuleHandleW(None)
     parent = _state["hwnd"]
-    return _user32.CreateWindowExW(
+    hwnd = _user32.CreateWindowExW(
         0, cls, text, _WS_CHILD | _WS_VISIBLE | style,
         x, y, w, h, parent, cid, hinstance, None,
     )
+    font = _state.get("font")
+    if font:
+        _user32.SendMessageW(hwnd, _WM_SETFONT, font, True)
+    return hwnd
 
 
 __all__ = ["entry_sheet"]
