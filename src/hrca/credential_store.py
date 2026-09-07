@@ -249,6 +249,23 @@ def native_credential_prompt():
     return None
 
 
+def native_entry_sheet():
+    """Return the platform native credential entry sheet, or ``None``.
+
+    On Windows this is :func:`hrca.credential_sheet_win.entry_sheet`, the
+    dedicated dark entry sheet rendered inside the short-lived credential host;
+    every other platform returns ``None`` so the host reports the action
+    unavailable rather than falling back to insecure input. The sheet returns
+    only ``(display_name, secret)`` or ``None`` on cancel — it never writes the
+    credential itself.
+    """
+    if os.name == "nt":
+        from .credential_sheet_win import entry_sheet
+
+        return entry_sheet
+    return None
+
+
 __all__ = [
     "TARGET_NAME",
     "PROFILE_TARGET_PREFIX",
@@ -266,4 +283,5 @@ __all__ = [
     "CREDENTIAL_RESULT_STATES",
     "redacted_credential_result",
     "native_credential_prompt",
+    "native_entry_sheet",
 ]

@@ -137,9 +137,14 @@ LOCK_STROKE = 1.75
 # size), so it is keyboard-focusable and comfortably clickable.
 PROFILE_ICON_SIZE = 16
 PROFILE_ACTION_BUTTON_SIZE = 24
-# Bounded height for the scrollable profile-card list; more profiles scroll
-# rather than grow the dialog without limit.
-PROFILE_LIST_MAX_HEIGHT = 240
+# Fixed, centrally-owned card height: the two visible text lines (name + detail)
+# plus the action row's vertical padding. Every card uses this exact height so
+# one profile and many profiles render identical cards (no shrink/grow).
+PROFILE_CARD_HEIGHT = 56
+# Fixed viewport height for the scrollable profile-card list. The viewport is
+# always this tall (not merely a maximum) so the controls above it stay
+# stationary and cards never resize as profiles are added; more profiles scroll.
+PROFILE_LIST_HEIGHT = 240
 
 # Toolbar peer controls (P4.2a). Settings / Open Project / Run read-only scan /
 # Provider status are compact peers of one shared height, so a single token owns
@@ -970,7 +975,8 @@ __all__ = [
     "LOCK_STROKE",
     "PROFILE_ICON_SIZE",
     "PROFILE_ACTION_BUTTON_SIZE",
-    "PROFILE_LIST_MAX_HEIGHT",
+    "PROFILE_CARD_HEIGHT",
+    "PROFILE_LIST_HEIGHT",
     "TAB_HEIGHT",
     "COMMAND_BAR_BUTTON_HEIGHT",
     "SPLITTER_HANDLE_WIDTH",

@@ -2664,74 +2664,107 @@ class SettingsDialogTests(unittest.TestCase):
         self.assertEqual(delete.minimumHeight(), style.PROFILE_ACTION_BUTTON_SIZE)
         self.assertEqual(delete.focusPolicy(), Qt.StrongFocus)
 
-    def test_add_profile_sends_manage_credential_with_profile_id(self):
+    def test_add_profile_sends_manage_credential_without_profile_id(self):
         window = MainWindow()
         self._dialog(window)
         sent = self._fake_send_credential(window)
-        with mock.patch.object(
-            window, "_prompt_profile_name", return_value=("Work", True)
-        ):
-            window._on_add_profile()
+        window._on_add_profile()
         self.assertEqual(len(sent), 1)
         request = sent[0]
         self.assertEqual(request["action"], contract.ACTION_MANAGE_CREDENTIAL)
         self.assertIsInstance(request["hwnd"], int)
-        self.assertEqual(len(request["profile_id"]), 32)
+        # Add mode carries no profile id or name — the native sheet collects both.
+        self.assertNotIn("profile_id", request)
+        self.assertNotIn("display_name", request)
         self.assertTrue(window._profile_action_pending)
-        self.assertIsNotNone(window._pending_add)
         self.assertNotIn("secret", contract.dumps(request))
 
-    def test_add_cancelled_sends_nothing(self):
-        window = MainWindow()
-        self._dialog(window)
-        sent = self._fake_send_credential(window)
-        with mock.patch.object(
-            window, "_prompt_profile_name", return_value=("Work", False)
-        ):
-            window._on_add_profile()
-        self.assertEqual(len(sent), 0)
-        self.assertFalse(window._profile_action_pending)
-
-    def test_add_rejects_duplicate_name_client_side(self):
-        window = MainWindow()
-        self._dialog(window)
-        window._profiles = [self._profile(name="Work")]
-        sent = self._fake_send_credential(window)
-        with mock.patch.object(
-            window, "_prompt_profile_name", return_value=("work", True)
-        ):
-            window._on_add_profile()
-        self.assertEqual(len(sent), 0)
-        self.assertEqual(
-            window._settings_action_status.text(),
-            "That profile name is already in use.",
-        )
-
-    def test_add_secret_stored_dispatches_add_profile(self):
+    def test_add_secret_stored_dispatches_add_profile_with_result_metadata(self):
         window = MainWindow()
         self._dialog(window)
         sent = self._fake_send(window)
-        window._pending_add = ("a" * 32, "Work")
         window._profile_action_pending = True
-        window._on_add_secret_stored({"state": "stored", "credential_present": True})
+        window._on_add_secret_stored(
+            {
+                "state": "stored",
+                "credential_present": True,
+                "profile_id": "a" * 32,
+                "display_name": "Work",
+            }
+        )
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["action"], contract.ACTION_ADD_PROFILE)
         self.assertEqual(sent[0]["profile_id"], "a" * 32)
         self.assertEqual(sent[0]["display_name"], "Work")
-        self.assertIsNone(window._pending_add)
 
     def test_add_secret_cancelled_does_not_add_profile(self):
         window = MainWindow()
         self._dialog(window)
         sent = self._fake_send(window)
-        window._pending_add = ("a" * 32, "Work")
         window._profile_action_pending = True
         window._on_add_secret_stored(
             {"state": "cancelled", "credential_present": False}
         )
         self.assertEqual(len(sent), 0)
-        self.assertIsNone(window._pending_add)
         self.assertFalse(window._profile_action_pending)
+
+    def test_add_secret_invalid_metadata_ends_bounded(self):
+        window = MainWindow()
+        self._dialog(window)
+        sent = self._fake_send(window)
+        window._profile_action_pending = True
+        window._on_add_secret_stored({"state": "stored", "credential_present": True})
+        self.assertEqual(len(sent), 0)
+        self.assertFalse(window._profile_action_pending)
+
+    def test_replace_sends_manage_credential_with_profile_and_name(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._profiles = [self._profile("a" * 32, "Work")]
+        sent = self._fake_send_credential(window)
+        window._on_replace_profile("a" * 32)
+        self.assertEqual(len(sent), 1)
+        request = sent[0]
+        self.assertEqual(request["action"], contract.ACTION_MANAGE_CREDENTIAL)
+        self.assertEqual(request["profile_id"], "a" * 32)
+        self.assertEqual(request["display_name"], "Work")
+        self.assertNotIn("secret", contract.dumps(request))
+
+    def test_cards_keep_fixed_height_across_six_profiles(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._profiles = [self._profile(f"{i:032x}", f"P{i}") for i in range(6)]
+        window._refresh_settings_dialog()
+        cards = [window._profile_cards[f"{i:032x}"]["card"] for i in range(6)]
+        for card in cards:
+            self.assertEqual(card.minimumHeight(), style.PROFILE_CARD_HEIGHT)
+            self.assertEqual(card.maximumHeight(), style.PROFILE_CARD_HEIGHT)
+
+    def test_profile_list_has_fixed_viewport(self):
+        window = MainWindow()
+        self._dialog(window)
+        scroll = window._settings_profiles_scroll
+        self.assertEqual(scroll.minimumHeight(), style.PROFILE_LIST_HEIGHT)
+        self.assertEqual(scroll.maximumHeight(), style.PROFILE_LIST_HEIGHT)
+
+    def test_cards_are_not_rebuilt_on_refresh(self):
+        window = MainWindow()
+        self._dialog(window)
+        window._profiles = [self._profile("a" * 32, "A"), self._profile("b" * 32, "B")]
+        window._refresh_settings_dialog()
+        first_card = window._profile_cards["a" * 32]["card"]
+        # A refresh with the same profiles keeps the same mounted card object.
+        window._refresh_settings_dialog()
+        self.assertIs(window._profile_cards["a" * 32]["card"], first_card)
+        # A rename updates the mounted card in place (no rebuild, no new object).
+        window._profiles = [self._profile("a" * 32, "A2"), self._profile("b" * 32, "B")]
+        window._refresh_settings_dialog()
+        self.assertIs(window._profile_cards["a" * 32]["card"], first_card)
+        self.assertEqual(window._profile_cards["a" * 32]["name_label"].text(), "A2")
+        self.assertEqual(
+            window._profile_cards["a" * 32]["delete_button"].accessibleName(),
+            "Delete A2",
+        )
 
     def test_active_selector_change_sends_set_active_profile(self):
         window = MainWindow()

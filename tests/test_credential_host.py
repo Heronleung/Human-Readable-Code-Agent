@@ -1,10 +1,11 @@
 """Tests for the P4.2a dedicated native credential host.
 
-The host owns the secure native prompt and the Credential Manager write for a
-single Manage / Remove operation. These tests inject a fake store and a fake
-prompt so the real Credential Manager, the native dialog and the per-user
+The host owns the native dark entry sheet and the Credential Manager write for
+one Add / Replace / Remove operation. These tests inject a fake store and a fake
+sheet so the real Credential Manager, the native dialog and the per-user
 app-data directory are never touched. Every result is asserted to be secret-free
-and to carry only a bounded redacted state/reason.
+and to carry only a bounded redacted state/reason (plus the non-secret profile
+metadata on a successful add).
 """
 
 from __future__ import annotations
@@ -22,103 +23,137 @@ class FailingStore(credential_store.FakeCredentialStore):
         raise credential_store.CredentialStoreError("store_failed")
 
 
-def _prompt_returning(value):
-    def prompt(_message, hwnd_parent=None):
+def _sheet_returning(value):
+    """Build a fake sheet returning ``value`` (a tuple, ``None``, or a raising call)."""
+
+    def sheet(replace_name=None, hwnd_parent=None):
+        if callable(value):
+            return value()
         return value
 
-    return prompt
+    return sheet
 
 
-def _prompt_raising(code):
-    def prompt(_message, hwnd_parent=None):
+def _sheet_raising(code):
+    def sheet(replace_name=None, hwnd_parent=None):
         raise credential_store.CredentialStoreError(code)
 
-    return prompt
+    return sheet
 
 
 class CredentialHostRunTests(unittest.TestCase):
     def setUp(self):
         self.store = credential_store.FakeCredentialStore()
 
-    def test_enroll_stores_and_reports_presence(self):
+    def test_add_stores_and_returns_profile_metadata(self):
         result = credential_host.run(
-            "enroll", store=self.store, prompt=_prompt_returning(_SECRET_LIKE)
+            "enroll", store=self.store, sheet=_sheet_returning(("Work", _SECRET_LIKE))
         )
         self.assertEqual(result["state"], "stored")
         self.assertTrue(result["credential_present"])
-        self.assertTrue(self.store.has(credential_store.TARGET_NAME))
+        self.assertIn("profile_id", result)
+        self.assertEqual(result["display_name"], "Work")
+        self.assertTrue(
+            contract.is_valid_profile_id(result["profile_id"])
+        )
+        self.assertTrue(
+            self.store.has(credential_store.profile_target(result["profile_id"]))
+        )
 
-    def test_enroll_passes_the_parent_handle_to_the_prompt(self):
+    def test_add_passes_no_replace_name_to_sheet(self):
         seen = []
 
-        def prompt(_message, hwnd_parent=None):
-            seen.append(hwnd_parent)
-            return _SECRET_LIKE
+        def sheet(replace_name=None, hwnd_parent=None):
+            seen.append((replace_name, hwnd_parent))
+            return ("Work", _SECRET_LIKE)
 
-        credential_host.run("enroll", hwnd_parent=12345, store=self.store, prompt=prompt)
-        self.assertEqual(seen, [12345])
+        credential_host.run("enroll", hwnd_parent=123, store=self.store, sheet=sheet)
+        self.assertEqual(seen, [(None, 123)])
 
-    def test_enroll_passes_no_parent_when_absent(self):
-        seen = []
-
-        def prompt(_message, hwnd_parent=None):
-            seen.append(hwnd_parent)
-            return _SECRET_LIKE
-
-        credential_host.run("enroll", store=self.store, prompt=prompt)
-        self.assertEqual(seen, [None])
-
-    def test_enroll_cancel_is_reported(self):
+    def test_replace_stores_under_existing_target(self):
+        profile_id = "a" * 32
+        target = credential_store.profile_target(profile_id)
+        self.store.store(target, "old-value")
         result = credential_host.run(
-            "enroll", store=self.store, prompt=_prompt_returning(None)
+            "enroll",
+            profile_id=profile_id,
+            display_name="Work",
+            store=self.store,
+            sheet=_sheet_returning(("Work", _SECRET_LIKE)),
+        )
+        self.assertEqual(result["state"], "stored")
+        self.assertNotIn("profile_id", result)
+        self.assertNotIn("display_name", result)
+        self.assertEqual(self.store.read(target), _SECRET_LIKE)
+
+    def test_replace_passes_display_name_to_sheet(self):
+        seen = []
+
+        def sheet(replace_name=None, hwnd_parent=None):
+            seen.append(replace_name)
+            return ("Work", _SECRET_LIKE)
+
+        credential_host.run(
+            "enroll",
+            profile_id="a" * 32,
+            display_name="Work",
+            store=self.store,
+            sheet=sheet,
+        )
+        self.assertEqual(seen, ["Work"])
+
+    def test_cancel_is_reported(self):
+        result = credential_host.run(
+            "enroll", store=self.store, sheet=_sheet_returning(None)
         )
         self.assertEqual(result["state"], "cancelled")
         self.assertFalse(result["credential_present"])
 
-    def test_enroll_unavailable_without_store(self):
+    def test_replace_cancel_preserves_old_credential(self):
+        profile_id = "a" * 32
+        target = credential_store.profile_target(profile_id)
+        self.store.store(target, "old-value")
+        result = credential_host.run(
+            "enroll", profile_id=profile_id, store=self.store, sheet=_sheet_returning(None)
+        )
+        self.assertEqual(result["state"], "cancelled")
+        self.assertTrue(result["credential_present"])
+        self.assertEqual(self.store.read(target), "old-value")
+
+    def test_unavailable_without_store(self):
         result = credential_host.run(
             "enroll",
             store=credential_store.UnavailableCredentialStore(),
-            prompt=_prompt_returning(_SECRET_LIKE),
+            sheet=_sheet_returning(("Work", _SECRET_LIKE)),
         )
         self.assertEqual(result["state"], "unavailable")
 
-    def test_enroll_unavailable_without_prompt(self):
-        # On a platform with no coherent native prompt the host must report
-        # unavailable rather than fall back to insecure input. The platform
-        # fallback is patched so this is deterministic on Windows too.
-        with mock.patch.object(
-            credential_store, "native_credential_prompt", return_value=None
+    def test_unavailable_without_sheet(self):
+        # On a platform with no native sheet the host must report unavailable
+        # rather than fall back to insecure input.
+        with unittest.mock.patch.object(
+            credential_store, "native_entry_sheet", return_value=None
         ):
-            result = credential_host.run("enroll", store=self.store, prompt=None)
+            result = credential_host.run("enroll", store=self.store)
         self.assertEqual(result["state"], "unavailable")
 
-    def test_enroll_maps_prompt_failure_reason(self):
+    def test_maps_sheet_failure_reason(self):
         result = credential_host.run(
-            "enroll", store=self.store, prompt=_prompt_raising("prompt_failed")
+            "enroll", store=self.store, sheet=_sheet_raising("prompt_failed")
         )
         self.assertEqual(result["state"], "failed")
         self.assertEqual(result["reason"], "prompt_failed")
 
-    def test_enroll_maps_session_unavailable_reason(self):
+    def test_maps_store_failure_reason(self):
         result = credential_host.run(
-            "enroll",
-            store=self.store,
-            prompt=_prompt_raising("prompt_session_unavailable"),
-        )
-        self.assertEqual(result["state"], "failed")
-        self.assertEqual(result["reason"], "prompt_session_unavailable")
-
-    def test_enroll_maps_store_failure_reason(self):
-        result = credential_host.run(
-            "enroll", store=FailingStore(), prompt=_prompt_returning(_SECRET_LIKE)
+            "enroll", store=FailingStore(), sheet=_sheet_returning(("Work", _SECRET_LIKE))
         )
         self.assertEqual(result["state"], "failed")
         self.assertEqual(result["reason"], "store_failed")
 
     def test_enroll_is_secret_free(self):
         result = credential_host.run(
-            "enroll", store=self.store, prompt=_prompt_returning(_SECRET_LIKE)
+            "enroll", store=self.store, sheet=_sheet_returning(("Work", _SECRET_LIKE))
         )
         serialized = contract.dumps(result)
         self.assertNotIn(_SECRET_LIKE, serialized)
@@ -132,15 +167,17 @@ class CredentialHostRunTests(unittest.TestCase):
         self.assertFalse(result["credential_present"])
         self.assertFalse(self.store.has(credential_store.TARGET_NAME))
 
+    def test_delete_with_profile_id_removes_profile_target(self):
+        profile_id = "a" * 32
+        target = credential_store.profile_target(profile_id)
+        self.store.store(target, "old")
+        result = credential_host.run("delete", profile_id=profile_id, store=self.store)
+        self.assertEqual(result["state"], "removed")
+        self.assertFalse(self.store.has(target))
+
     def test_delete_is_idempotent(self):
         result = credential_host.run("delete", store=self.store)
         self.assertEqual(result["state"], "removed")
-
-    def test_delete_unavailable_without_store(self):
-        result = credential_host.run(
-            "delete", store=credential_store.UnavailableCredentialStore()
-        )
-        self.assertEqual(result["state"], "unavailable")
 
 
 class CredentialHostRequestTests(unittest.TestCase):
@@ -156,15 +193,28 @@ class CredentialHostRequestTests(unittest.TestCase):
         req.update(overrides)
         return req
 
-    def test_manage_request_dispatches_to_enroll(self):
+    def test_add_request_dispatches_to_sheet(self):
         envelope = credential_host.handle_request(
             self._manage_request(hwnd=999),
             store=self.store,
-            prompt=_prompt_returning(_SECRET_LIKE),
+            sheet=_sheet_returning(("Work", _SECRET_LIKE)),
         )
         self.assertTrue(envelope["ok"])
         self.assertEqual(envelope["result"]["state"], "stored")
+        self.assertIn("profile_id", envelope["result"])
         self.assertEqual(envelope["correlation_id"], "cid-host")
+
+    def test_replace_request_dispatches_with_profile_and_name(self):
+        profile_id = "a" * 32
+        envelope = credential_host.handle_request(
+            self._manage_request(profile_id=profile_id, display_name="Work"),
+            store=self.store,
+            sheet=_sheet_returning(("Work", _SECRET_LIKE)),
+        )
+        self.assertTrue(envelope["ok"])
+        self.assertTrue(
+            self.store.has(credential_store.profile_target(profile_id))
+        )
 
     def test_remove_request_dispatches_to_delete(self):
         req = {
@@ -178,10 +228,7 @@ class CredentialHostRequestTests(unittest.TestCase):
 
     def test_rejects_non_credential_action(self):
         envelope = credential_host.handle_request(
-            {
-                "contract_version": contract.CONTRACT_VERSION,
-                "action": contract.ACTION_SCAN,
-            },
+            {"contract_version": contract.CONTRACT_VERSION, "action": contract.ACTION_SCAN},
             store=self.store,
         )
         self.assertFalse(envelope["ok"])
@@ -203,91 +250,38 @@ class CredentialHostRequestTests(unittest.TestCase):
         self.assertFalse(envelope["ok"])
         self.assertEqual(envelope["error"]["code"], "invalid_request")
 
-    def test_ignores_invalid_hwnd(self):
-        # A malformed (non-int) hwnd is treated as absent, never passed through.
-        seen = []
-
-        def prompt(_message, hwnd_parent=None):
-            seen.append(hwnd_parent)
-            return _SECRET_LIKE
-
+    def test_rejects_invalid_profile_id(self):
         envelope = credential_host.handle_request(
-            self._manage_request(hwnd="not-an-int"),
+            self._manage_request(profile_id="not-a-profile-id"),
             store=self.store,
-            prompt=prompt,
-        )
-        self.assertTrue(envelope["ok"])
-        self.assertEqual(seen, [None])
-
-
-class CredentialHostProfileTests(unittest.TestCase):
-    """The host stores/removes a secret under a profile-derived target (P4.2a)."""
-
-    def setUp(self):
-        self.store = credential_store.FakeCredentialStore()
-
-    def test_enroll_with_profile_id_uses_profile_target(self):
-        profile_id = "a" * 32
-        result = credential_host.run(
-            "enroll",
-            profile_id=profile_id,
-            store=self.store,
-            prompt=_prompt_returning(_SECRET_LIKE),
-        )
-        self.assertEqual(result["state"], "stored")
-        self.assertTrue(self.store.has(credential_store.profile_target(profile_id)))
-        self.assertFalse(self.store.has(credential_store.TARGET_NAME))
-
-    def test_delete_with_profile_id_removes_profile_target(self):
-        profile_id = "a" * 32
-        target = credential_store.profile_target(profile_id)
-        self.store.store(target, "old")
-        result = credential_host.run("delete", profile_id=profile_id, store=self.store)
-        self.assertEqual(result["state"], "removed")
-        self.assertFalse(self.store.has(target))
-
-    def test_request_with_profile_id_dispatches_to_profile_target(self):
-        profile_id = "a" * 32
-        envelope = credential_host.handle_request(
-            {
-                "contract_version": contract.CONTRACT_VERSION,
-                "correlation_id": "cid-host",
-                "action": contract.ACTION_MANAGE_CREDENTIAL,
-                "profile_id": profile_id,
-            },
-            store=self.store,
-            prompt=_prompt_returning(_SECRET_LIKE),
-        )
-        self.assertTrue(envelope["ok"])
-        self.assertTrue(self.store.has(credential_store.profile_target(profile_id)))
-
-    def test_request_rejects_invalid_profile_id(self):
-        envelope = credential_host.handle_request(
-            {
-                "contract_version": contract.CONTRACT_VERSION,
-                "correlation_id": "cid-host",
-                "action": contract.ACTION_MANAGE_CREDENTIAL,
-                "profile_id": "not-a-profile-id",
-            },
-            store=self.store,
-            prompt=_prompt_returning(_SECRET_LIKE),
+            sheet=_sheet_returning(("Work", _SECRET_LIKE)),
         )
         self.assertFalse(envelope["ok"])
         self.assertEqual(envelope["error"]["code"], "invalid_request")
 
-    def test_profile_result_is_secret_free(self):
-        profile_id = "a" * 32
+    def test_rejects_non_string_display_name(self):
         envelope = credential_host.handle_request(
-            {
-                "contract_version": contract.CONTRACT_VERSION,
-                "correlation_id": "cid-host",
-                "action": contract.ACTION_MANAGE_CREDENTIAL,
-                "profile_id": profile_id,
-            },
+            self._manage_request(profile_id="a" * 32, display_name=42),
             store=self.store,
-            prompt=_prompt_returning(_SECRET_LIKE),
+            sheet=_sheet_returning(("Work", _SECRET_LIKE)),
         )
-        self.assertNotIn(_SECRET_LIKE, contract.dumps(envelope))
+        self.assertFalse(envelope["ok"])
+        self.assertEqual(envelope["error"]["code"], "invalid_request")
+
+    def test_ignores_invalid_hwnd(self):
+        seen = []
+
+        def sheet(replace_name=None, hwnd_parent=None):
+            seen.append(hwnd_parent)
+            return ("Work", _SECRET_LIKE)
+
+        envelope = credential_host.handle_request(
+            self._manage_request(hwnd="not-an-int"),
+            store=self.store,
+            sheet=sheet,
+        )
+        self.assertTrue(envelope["ok"])
+        self.assertEqual(seen, [None])
 
 
 if __name__ == "__main__":

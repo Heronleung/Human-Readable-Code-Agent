@@ -622,16 +622,16 @@ class MainWindow(QMainWindow):
         self._settings_about_provider_value: Optional[QLabel] = None
         self._profile_action_pending: bool = False
         # Credential-profile manager state (P4.2a): the saved profiles (metadata
-        # only), the active profile id, and the in-flight two-phase add state
-        # ``(profile_id, display_name)`` carried from the native-host secret
-        # step to the boundary metadata step.
+        # only), the active profile id, and the per-profile card widgets kept
+        # for incremental (non-rebuilding) list updates.
         self._profiles: List[Dict[str, Any]] = []
         self._active_profile_id: Optional[str] = None
         self._settings_active_combo: Optional[QComboBox] = None
         self._add_profile_button: Optional[QPushButton] = None
         self._settings_profiles_list: Optional[QWidget] = None
         self._settings_profiles_layout: Optional[QVBoxLayout] = None
-        self._pending_add: Optional[tuple] = None
+        self._profile_cards: Dict[str, Dict[str, Any]] = {}
+        self._empty_state_label: Optional[QLabel] = None
         self._validation_state: str = VALIDATION_IDLE
         self._current_document: Optional[str] = None
         self._tree: Optional[Dict[str, Any]] = None
@@ -1691,7 +1691,10 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidget(self._settings_profiles_list)
-        scroll.setMaximumHeight(style.PROFILE_LIST_MAX_HEIGHT)
+        # A fixed viewport (not merely a maximum) so the controls above it stay
+        # stationary and the card list never reflows as profiles change.
+        scroll.setFixedHeight(style.PROFILE_LIST_HEIGHT)
+        self._settings_profiles_scroll = scroll
         layout.addWidget(scroll, stretch=1)
 
         # The in-surface action-status line: shows the pending message the
@@ -1777,7 +1780,7 @@ class MainWindow(QMainWindow):
         self._settings_model_value.setText(self._provider_model or "—")
         self._settings_workspace_value.setText(self._root or "No project open")
         self._rebuild_active_selector()
-        self._rebuild_profile_cards()
+        self._sync_profile_cards()
         self._set_settings_actions_enabled(not self._profile_action_pending)
 
     def _set_settings_actions_enabled(self, enabled: bool) -> None:
@@ -1809,13 +1812,14 @@ class MainWindow(QMainWindow):
     def _profile_card_widget(self, profile: Dict[str, Any]) -> QFrame:
         card = QFrame()
         card.setObjectName("profileCard")
+        card.setFixedHeight(style.PROFILE_CARD_HEIGHT)
         profile_id = profile.get("profile_id")
         name = str(profile.get("display_name", ""))
         card.setAccessibleName(f"Credential profile {name}")
 
         row = QHBoxLayout(card)
         row.setContentsMargins(
-            style.INSET, style.GAP_TIGHT, style.INSET, style.GAP_TIGHT
+            style.INSET, style.SPACE_0, style.INSET, style.SPACE_0
         )
         row.setSpacing(style.GAP_TIGHT)
 
@@ -1831,7 +1835,7 @@ class MainWindow(QMainWindow):
 
         rename = QPushButton(_SETTINGS_RENAME)
         rename.setAccessibleName(f"Rename {name}")
-        rename.clicked.connect(partial(self._on_rename_profile, profile_id, name))
+        rename.clicked.connect(partial(self._on_rename_profile, profile_id))
 
         replace = QPushButton(_SETTINGS_REPLACE)
         replace.setAccessibleName(f"Replace key for {name}")
@@ -1851,26 +1855,64 @@ class MainWindow(QMainWindow):
         row.addWidget(rename)
         row.addWidget(replace)
         row.addWidget(delete)
+
+        self._profile_cards[profile_id] = {
+            "card": card,
+            "name_label": name_label,
+            "rename_button": rename,
+            "replace_button": replace,
+            "delete_button": delete,
+        }
         return card
 
-    def _rebuild_profile_cards(self) -> None:
+    def _update_card(self, entry: Dict[str, Any], profile: Dict[str, Any]) -> None:
+        """Update one mounted card in place (no clear/rebuild, no flicker)."""
+        name = str(profile.get("display_name", ""))
+        entry["name_label"].setText(name)
+        entry["card"].setAccessibleName(f"Credential profile {name}")
+        entry["rename_button"].setAccessibleName(f"Rename {name}")
+        entry["replace_button"].setAccessibleName(f"Replace key for {name}")
+        entry["delete_button"].setAccessibleName(f"Delete {name}")
+        entry["delete_button"].setToolTip(f"Delete {name}")
+
+    def _sync_profile_cards(self) -> None:
+        """Reconcile the mounted card list with ``self._profiles`` incrementally.
+
+        Cards are added, removed or updated in place — never cleared and rebuilt —
+        so the list does not flash and the scroll anchor is preserved.
+        """
         layout = self._settings_profiles_layout
         if layout is None:
             return
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+        new_ids = [p.get("profile_id") for p in self._profiles]
+
+        for profile_id in list(self._profile_cards):
+            if profile_id not in new_ids:
+                entry = self._profile_cards.pop(profile_id)
+                layout.removeWidget(entry["card"])
+                entry["card"].deleteLater()
+
         if not self._profiles:
-            empty = QLabel(_SETTINGS_NO_PROFILES)
-            empty.setObjectName("secondary")
-            empty.setStyleSheet(style.secondary_text_style(self._palette))
-            empty.setWordWrap(True)
-            layout.addWidget(empty)
+            if self._empty_state_label is None:
+                label = QLabel(_SETTINGS_NO_PROFILES)
+                label.setObjectName("secondary")
+                label.setStyleSheet(style.secondary_text_style(self._palette))
+                label.setWordWrap(True)
+                self._empty_state_label = label
+                layout.addWidget(label)
             return
+
+        if self._empty_state_label is not None:
+            layout.removeWidget(self._empty_state_label)
+            self._empty_state_label.deleteLater()
+            self._empty_state_label = None
+
         for profile in self._profiles:
-            layout.addWidget(self._profile_card_widget(profile))
+            profile_id = profile.get("profile_id")
+            if profile_id in self._profile_cards:
+                self._update_card(self._profile_cards[profile_id], profile)
+            else:
+                layout.addWidget(self._profile_card_widget(profile))
 
     def _begin_profile_action(self, message: str) -> None:
         self._profile_action_pending = True
@@ -1907,32 +1949,16 @@ class MainWindow(QMainWindow):
     def _on_add_profile(self) -> None:
         if self._profile_action_pending:
             return
-        name, ok = self._prompt_profile_name("Add API key", "Display name:", "Default")
-        if not ok:
-            return
-        name = name.strip()
-        if not name:
-            self._set_settings_action_status("A profile name is required.")
-            return
-        if len(name) > _MAX_PROFILE_NAME_CHARS:
-            self._set_settings_action_status("That profile name is too long.")
-            return
-        if self._name_is_in_use(name):
-            self._set_settings_action_status("That profile name is already in use.")
-            return
-        profile_id = contract.new_profile_id()
-        self._pending_add = (profile_id, name)
+        # The name and key are both collected in the native entry sheet (a
+        # separate process); the desktop owns only the request and the result.
         self._begin_profile_action(CREDENTIAL_ACTION_PENDING)
         request = build_manage_credential_request(
-            contract.new_correlation_id(),
-            self._native_window_handle(),
-            profile_id=profile_id,
+            contract.new_correlation_id(), self._native_window_handle()
         )
         self._set_status(STATE_RUNNING, "collecting API key")
         if not self._send_credential(
             request, self._on_add_secret_stored, self._on_add_secret_failed
         ):
-            self._pending_add = None
             self._end_profile_action()
             self._set_status(STATE_FAILED, "a request is already in progress")
             self._set_settings_action_status(
@@ -1940,19 +1966,23 @@ class MainWindow(QMainWindow):
             )
 
     def _on_add_secret_stored(self, result: Dict[str, Any]) -> None:
-        if self._pending_add is None:
-            return
         state = str(result.get("state", "failed"))
         if state != "stored":
-            self._pending_add = None
             self._end_profile_action()
             self._show_credential_result(result)
             return
-        profile_id, name = self._pending_add
-        self._pending_add = None
+        profile_id = result.get("profile_id")
+        name = result.get("display_name")
+        if not profile_id or not isinstance(name, str) or not name.strip():
+            self._end_profile_action()
+            self._set_settings_action_status(
+                profile_failure_message("profile_persist_failed")
+            )
+            self._set_status(STATE_FAILED, "invalid profile metadata")
+            return
         self._set_settings_action_status("Adding profile…")
         request = build_add_profile_request(
-            contract.new_correlation_id(), profile_id, name
+            contract.new_correlation_id(), profile_id, name.strip()
         )
         if not self._send(
             request,
@@ -1967,7 +1997,6 @@ class MainWindow(QMainWindow):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
     def _on_add_secret_failed(self, reason: str) -> None:
-        self._pending_add = None
         self._end_profile_action()
         self._set_settings_action_status(credential_action_message("failed"))
         self._set_status(STATE_FAILED, reason)
@@ -1981,11 +2010,17 @@ class MainWindow(QMainWindow):
     def _on_replace_profile(self, profile_id: str) -> None:
         if self._profile_action_pending:
             return
+        profile = next(
+            (p for p in self._profiles if p.get("profile_id") == profile_id), None
+        )
+        if profile is None:
+            return
         self._begin_profile_action(CREDENTIAL_ACTION_PENDING)
         request = build_manage_credential_request(
             contract.new_correlation_id(),
             self._native_window_handle(),
             profile_id=profile_id,
+            display_name=profile.get("display_name"),
         )
         self._set_status(STATE_RUNNING, "replacing API key")
         if not self._send_credential(
@@ -2014,9 +2049,15 @@ class MainWindow(QMainWindow):
         else:  # failed
             self._set_status(STATE_FAILED, message)
 
-    def _on_rename_profile(self, profile_id: str, current_name: str) -> None:
+    def _on_rename_profile(self, profile_id: str) -> None:
         if self._profile_action_pending:
             return
+        profile = next(
+            (p for p in self._profiles if p.get("profile_id") == profile_id), None
+        )
+        if profile is None:
+            return
+        current_name = str(profile.get("display_name", ""))
         name, ok = self._prompt_profile_name(
             "Rename profile", "Display name:", current_name
         )
@@ -3031,14 +3072,12 @@ class MainWindow(QMainWindow):
         """A credential host that timed out or was abandoned must not leave the
         add/replace action pending; it ends with a bounded failure instead."""
         self._pending.pop(correlation_id, None)
-        self._pending_add = None
         self._end_profile_action()
         self._set_settings_action_status(credential_action_message("failed"))
         self._set_status(STATE_BLOCKED, "credential prompt blocked")
 
     def _on_credential_host_unavailable(self, message: str) -> None:
         """The credential host could not be launched; end with a bounded failure."""
-        self._pending_add = None
         self._end_profile_action()
         self._set_settings_action_status(credential_action_message("failed"))
         self._set_status(STATE_UNAVAILABLE, message)

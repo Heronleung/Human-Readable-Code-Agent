@@ -761,14 +761,17 @@ def build_manage_credential_request(
     correlation_id: str,
     hwnd: Optional[int] = None,
     profile_id: Optional[str] = None,
+    display_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a ``manage_credential`` request (backend-owned secure enrollment).
 
     The request carries only the correlation id, the action name, the optional
     native parent window handle ``hwnd`` (an integer handle, never a key, path
-    or task), and the optional opaque ``profile_id`` naming the credential
-    target the host derives itself. The native credential host owns the secure
-    prompt and writes the credential straight to the platform store; the
+    or task), the optional opaque ``profile_id`` naming the credential target
+    the host derives itself (replace mode), and the optional ``display_name``
+    shown read-only in replace mode. When ``profile_id`` is absent the host
+    renders Add mode (editable name). The native credential host owns the dark
+    entry sheet and writes the credential straight to the platform store; the
     desktop never sees the key.
     """
     request = {
@@ -780,6 +783,8 @@ def build_manage_credential_request(
         request["hwnd"] = int(hwnd)
     if profile_id is not None:
         request["profile_id"] = profile_id
+    if display_name is not None:
+        request["display_name"] = display_name
     return request
 
 

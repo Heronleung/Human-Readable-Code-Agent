@@ -18,6 +18,7 @@ _PROVIDER_SEAM_MODULES = {
     "deepseek": os.path.join(_SRC, "deepseek.py"),
     "credential_store": os.path.join(_SRC, "credential_store.py"),
     "credential_store_win": os.path.join(_SRC, "credential_store_win.py"),
+    "credential_sheet_win": os.path.join(_SRC, "credential_sheet_win.py"),
     "provider_config": os.path.join(_SRC, "provider_config.py"),
     "provider_cli": os.path.join(_SRC, "provider_cli.py"),
 }
