@@ -35,12 +35,14 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, TextIO, Sequence
 
 from . import (
+    advisory,
     codemap,
     codemap_draft,
     contract,
     credential_store,
     deepseek,
     proposal,
+    provider,
     provider_config,
     twin,
     twin_store,
@@ -71,6 +73,7 @@ class WorkspaceSession:
         store_base: Optional[str] = None,
         credential_store: Any = None,
         credential_prompt: Any = None,
+        advisory_transport: Any = None,
     ) -> None:
         self.root: Optional[str] = None
         self.store_base: str = store_base or twin_store.app_data_dir()
@@ -82,6 +85,10 @@ class WorkspaceSession:
         # Backend-owned secure credential prompt, injected for tests; resolved
         # lazily to the platform native prompt by the manage-credential handler.
         self.credential_prompt = credential_prompt
+        # Backend-owned advisory transport, injected for tests (a deterministic
+        # Provider double). When absent the confirmed plan-advisory handler
+        # constructs the real DeepSeek transport lazily.
+        self.advisory_transport = advisory_transport
 
     def open(self, root: str) -> None:
         self.root = root
@@ -254,6 +261,10 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _delete_profile_result(request, session)
     elif action == contract.ACTION_SET_ACTIVE_PROFILE:
         result = _set_active_profile_result(request, session)
+    elif action == contract.ACTION_PREPARE_ADVISORY:
+        result = _prepare_advisory_result(request, session)
+    elif action == contract.ACTION_PLAN_ADVISORY:
+        result = _plan_advisory_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -1073,6 +1084,350 @@ def _set_active_profile_result(
     if provider_config.save(session.store_base, new_config) is not None:
         raise contract.ContractError("profile_persist_failed")
     return _profiles_result(session, new_config, None, False, _resolve_store(session).available())
+
+
+# -- Advisory hosted-planning handlers (P4.2b) ----------------------------
+#
+# ``prepare_advisory`` builds the bounded disclosure context (offline, no
+# network); ``plan_advisory`` performs exactly one confirmed provider request.
+# Both preserve the deterministic P4.1 proposal; only ``provider_suggested``
+# fields may come from the provider, and they never overwrite the deterministic
+# authority. No credential, source excerpt, raw prompt or raw response is ever
+# placed in a result, and the transport module is imported lazily so frozen
+# scan/serve/readiness remain offline.
+
+
+def _advisory_state(session: WorkspaceSession) -> tuple:
+    """Re-derive the current Intent Delta and Proposal Package for the session.
+
+    Returns ``(store, baseline, draft, package, delta, err)``. ``package`` and
+    ``delta`` are ``None`` when the draft is a no-op or stale (``err`` carries
+    the bounded reason). The derivation is identical to ``plan_proposal`` but
+    also retains the Intent Delta needed to build the advisory context.
+    """
+    store = _twin_store(session)
+    baseline = _code_map_baseline(session, store)
+    draft = _load_draft_or_raise(session)
+    if codemap_draft.is_noop(draft):
+        return store, baseline, draft, None, None, proposal.REASON_NO_CHANGE
+    if codemap_draft.conflict_for(draft, baseline)["state"] != codemap_draft.CONFLICT_NONE:
+        return store, baseline, draft, None, None, proposal.REASON_STALE
+    delta, delta_err = codemap_draft.generate_intent_delta(draft, baseline)
+    if delta_err is not None:  # pragma: no cover - guarded by the checks above
+        return store, baseline, draft, None, None, delta_err
+    package = proposal.build_proposal(delta, baseline, store)
+    return store, baseline, draft, package, delta, None
+
+
+def _advisory_authority(package: Any, store: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the authoritative deterministic slice for a result."""
+    return advisory.deterministic_authority(
+        package if isinstance(package, dict) else {}, store
+    )
+
+
+def _denial_for_document(reason: str) -> str:
+    """Map a ``workspace.read_document`` unavailable reason to a bounded denial."""
+    if reason == "binary":
+        return advisory.DENY_BINARY
+    if reason == "unsupported_type":
+        return advisory.DENY_UNSUPPORTED_PATH
+    if reason == "file_too_large":
+        return advisory.DENY_OVER_LIMIT
+    if reason == "path_not_found":
+        return advisory.DENY_MISSING_ANCHOR
+    return advisory.DENY_OUTSIDE_ROOT
+
+
+def _add_denial(denials: List[str], reason: str) -> None:
+    """Append ``reason`` once, keeping the list sorted and deduplicated."""
+    if reason not in denials:
+        denials.append(reason)
+        denials.sort()
+
+
+def _build_advisory_excerpts(
+    session: WorkspaceSession, blocks: List[Dict[str, Any]], entities: List[str]
+) -> tuple:
+    """Return ``(excerpts, denials)`` for the target entities' source anchors.
+
+    Only ``.py``/``.pyi`` files below the accepted root are read (via the
+    read-only workspace policy, which already enforces containment, binary and
+    size limits). A denied, missing or unreadable anchor is recorded as a
+    bounded denial so the disclosure reports the limitation truthfully rather
+    than fabricating a replacement excerpt.
+    """
+    anchors = advisory.entity_anchors(blocks, entities)
+    excerpts: Dict[str, List[str]] = {}
+    denials: List[str] = []
+    covered: set = set()
+    for anchor in anchors:
+        locator = anchor["locator"]
+        file = anchor["file"]
+        lineno = anchor["lineno"]
+        end_lineno = anchor["end_lineno"]
+        if not isinstance(lineno, int) or not isinstance(end_lineno, int):
+            continue
+        covered.add(locator)
+        try:
+            doc = workspace.read_document(session.root, file)
+        except contract.ContractError:
+            _add_denial(denials, advisory.DENY_OUTSIDE_ROOT)
+            continue
+        if doc.get("kind") != "source":
+            _add_denial(denials, _denial_for_document(doc.get("reason") or ""))
+            continue
+        excerpt = advisory.slice_excerpt(
+            file=file, lineno=lineno, end_lineno=end_lineno,
+            content=doc.get("content", ""),
+        )
+        excerpts.setdefault(file, []).append(excerpt)
+
+    missing = sorted(set(entities) - covered)
+    if missing:
+        _add_denial(denials, advisory.DENY_MISSING_ANCHOR)
+    for file in excerpts:
+        excerpts[file] = sorted(set(excerpts[file]))
+    return excerpts, denials
+
+
+def _active_credential_target(session: WorkspaceSession) -> Optional[str]:
+    """Return the credential-store target for the active profile, or the legacy
+    target when no profile exists yet, or ``None`` when no credential applies."""
+    config, config_error = provider_config.load(session.store_base)
+    if config is None and config_error is None:
+        config = provider_config.default_config()
+    if config is None:
+        return None
+    active = config.get("active_profile_id")
+    if active is not None:
+        return credential_store.profile_target(active)
+    if not config.get("profiles"):
+        return credential_store.TARGET_NAME
+    return None
+
+
+def _advisory_result(
+    *,
+    state: str,
+    token: Optional[str],
+    sent: bool,
+    authority: Dict[str, Any],
+    provider_suggested: Optional[Dict[str, Any]],
+    usage: Optional[Dict[str, Optional[int]]],
+    limitations: List[str],
+) -> Dict[str, Any]:
+    """Assemble one versioned advisory result through the shared domain."""
+    return advisory.assemble_result(
+        state=state,
+        provider_id=deepseek.PROVIDER_ID,
+        model=deepseek.DEFAULT_MODEL,
+        advisory_token=token,
+        sent=sent,
+        deterministic=authority,
+        provider_suggested=provider_suggested,
+        usage=usage,
+        limitations=limitations,
+    )
+
+
+def _prepare_advisory_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Build the deterministic disclosure context for the current proposal.
+
+    Performs no network, credential or provider access. Returns
+    ``advisory_available`` plus, when available, the itemized disclosure
+    manifest and the content-addressed advisory token; otherwise a bounded
+    ``reason`` (no_change / stale / unsupported / clarification_required / a
+    denial reason). The deterministic proposal is always preserved.
+    """
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    store, baseline, _draft, package, delta, err = _advisory_state(session)
+    base = {
+        "provider_id": deepseek.PROVIDER_ID,
+        "model": deepseek.DEFAULT_MODEL,
+        "proposal": package,
+        "disclosure": None,
+        "advisory_token": None,
+    }
+    if err == proposal.REASON_NO_CHANGE:
+        return {**base, "advisory_available": False, "reason": proposal.REASON_NO_CHANGE}
+    if err == proposal.REASON_STALE:
+        return {**base, "advisory_available": False, "reason": proposal.REASON_STALE}
+    if package is None:  # pragma: no cover - guarded by the reasons above
+        raise contract.ContractError("draft_invalid")
+    if package["state"] != proposal.STATE_READY:
+        return {**base, "advisory_available": False, "reason": package["state"]}
+
+    blocks = baseline.get("blocks") or []
+    entities = (package.get("target_scope") or {}).get("entities") or []
+    excerpts, denials = _build_advisory_excerpts(session, blocks, entities)
+    context, context_err = advisory.build_context(
+        delta=delta or {},
+        proposal=package,
+        store=store,
+        excerpts=excerpts,
+        denials=denials,
+    )
+    if context is None:
+        return {**base, "advisory_available": False, "reason": context_err}
+    return {
+        **base,
+        "advisory_available": True,
+        "reason": None,
+        "disclosure": context["disclosure"],
+        "advisory_token": context["advisory_token"],
+    }
+
+
+def _plan_advisory_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Perform one user-confirmed advisory planning request.
+
+    ``task`` must carry a boolean ``confirmed`` and the ``advisory_token`` from a
+    prior ``prepare_advisory``. An absent/false ``confirmed`` sends nothing and
+    returns ``cancel_requested``. The context is re-derived deterministically
+    and must match the token (else ``stale_response``) before exactly one
+    backend-owned network attempt is made. Every failure state preserves the
+    deterministic proposal.
+    """
+    if session.root is None:
+        raise contract.ContractError("project_not_open")
+    task = request.get("task")
+    if not isinstance(task, dict):
+        raise contract.ContractError("invalid_request")
+    confirmed = task.get("confirmed")
+    if not isinstance(confirmed, bool):
+        raise contract.ContractError("invalid_request")
+    token = task.get("advisory_token")
+    if not isinstance(token, str) or not token:
+        raise contract.ContractError("invalid_request")
+
+    store, baseline, _draft, package, delta, err = _advisory_state(session)
+    authority = _advisory_authority(package, store)
+
+    if not confirmed:
+        return _advisory_result(
+            state=advisory.STATE_CANCEL_REQUESTED,
+            token=token,
+            sent=False,
+            authority=authority,
+            provider_suggested=None,
+            usage=None,
+            limitations=["cancelled by the user; nothing was sent"],
+        )
+
+    if package is None or package["state"] != proposal.STATE_READY:
+        return _advisory_result(
+            state=advisory.STATE_STALE_RESPONSE,
+            token=token,
+            sent=False,
+            authority=authority,
+            provider_suggested=None,
+            usage=None,
+            limitations=["the deterministic proposal is no longer ready"],
+        )
+
+    blocks = baseline.get("blocks") or []
+    entities = (package.get("target_scope") or {}).get("entities") or []
+    excerpts, denials = _build_advisory_excerpts(session, blocks, entities)
+    context, context_err = advisory.build_context(
+        delta=delta or {},
+        proposal=package,
+        store=store,
+        excerpts=excerpts,
+        denials=denials,
+    )
+    if context is None:
+        state = (
+            advisory.STATE_OVER_LIMIT
+            if context_err == advisory.DENY_OVER_LIMIT
+            else advisory.STATE_CONTEXT_REJECTED
+        )
+        return _advisory_result(
+            state=state,
+            token=token,
+            sent=False,
+            authority=authority,
+            provider_suggested=None,
+            usage=None,
+            limitations=[context_err],
+        )
+    if context["advisory_token"] != token:
+        return _advisory_result(
+            state=advisory.STATE_STALE_RESPONSE,
+            token=token,
+            sent=False,
+            authority=authority,
+            provider_suggested=None,
+            usage=None,
+            limitations=["prepared context no longer matches the current proposal"],
+        )
+
+    # Exactly one backend-owned network attempt. The transport is imported
+    # lazily (inside this handler only) so frozen scan/serve/readiness never
+    # pull in HTTP/socket code.
+    from . import deepseek_transport
+
+    if session.advisory_transport is not None:
+        transport = session.advisory_transport
+    else:
+        credential_store_impl = _resolve_store(session)
+        target = _active_credential_target(session)
+
+        def get_credential() -> Optional[str]:
+            if target is None or credential_store_impl is None or not credential_store_impl.available():
+                return None
+            try:
+                return credential_store_impl.read(target)
+            except credential_store.CredentialStoreError:
+                return None
+
+        transport = deepseek_transport.DeepSeekProvider(credential_getter=get_credential)
+
+    provider_request = advisory.build_provider_request(context)
+    try:
+        result = transport.generate(
+            provider.ProviderRequest(
+                task_id=provider_request["task_id"],
+                task=provider_request["task"],
+                context=tuple(provider_request["context"]),
+            )
+        )
+    except deepseek_transport.TransportError as exc:
+        return _advisory_result(
+            state=exc.code,
+            token=token,
+            sent=True,
+            authority=authority,
+            provider_suggested=None,
+            usage=None,
+            limitations=[exc.code],
+        )
+    except (provider.ProviderError, Exception):
+        return _advisory_result(
+            state=advisory.STATE_PROVIDER_FAILURE,
+            token=token,
+            sent=True,
+            authority=authority,
+            provider_suggested=None,
+            usage=None,
+            limitations=["the provider request failed"],
+        )
+
+    usage = result.usage.to_dict() if result.usage is not None else None
+    return _advisory_result(
+        state=advisory.STATE_READY,
+        token=token,
+        sent=True,
+        authority=authority,
+        provider_suggested=result.structured_payload,
+        usage=usage,
+        limitations=[],
+    )
 
 
 if __name__ == "__main__":

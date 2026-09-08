@@ -30,6 +30,9 @@ from hrca.contract import (
     ACTION_SAVE_DRAFT,
     ACTION_SCAN,
     ACTION_SYNC_TWIN,
+    ACTION_PREPARE_ADVISORY,
+    ACTION_PLAN_ADVISORY,
+    ADVISORY_ACTIONS,
     ALLOWED_ACTIONS,
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
@@ -98,7 +101,8 @@ class AllowedActionTests(unittest.TestCase):
             | PROPOSAL_ACTIONS
             | READINESS_ACTIONS
             | CREDENTIAL_ACTIONS
-            | PROFILE_ACTIONS,
+            | PROFILE_ACTIONS
+            | ADVISORY_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -216,6 +220,27 @@ class AllowedActionTests(unittest.TestCase):
         for action in _FORBIDDEN_ACTIONS:
             with self.subTest(action=action):
                 self.assertNotIn(action, ALLOWED_ACTIONS)
+
+    def test_advisory_actions_are_allowlisted(self):
+        self.assertEqual(
+            ADVISORY_ACTIONS,
+            frozenset({ACTION_PREPARE_ADVISORY, ACTION_PLAN_ADVISORY}),
+        )
+
+    def test_advisory_actions_are_read_only(self):
+        # Advisory planning performs exactly one confirmed provider request, but
+        # never source, Git, command or repository-write actions. The action
+        # names must be distinct from every deterministic/workspace action.
+        for action in ADVISORY_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, WORKSPACE_ACTIONS)
+            self.assertNotIn(action, TWIN_ACTIONS)
+            self.assertNotIn(action, DRAFT_ACTIONS)
+            self.assertNotIn(action, PROPOSAL_ACTIONS)
+            self.assertNotIn(action, READINESS_ACTIONS)
+            self.assertNotIn(action, CREDENTIAL_ACTIONS)
+            self.assertNotIn(action, PROFILE_ACTIONS)
 
     def test_task_actions_exclude_mutators(self):
         self.assertTrue(READ_ONLY_TASK_ACTIONS <= ALLOWED_ACTIONS)

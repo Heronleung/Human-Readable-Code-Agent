@@ -75,6 +75,13 @@ ACTION_ADD_PROFILE = "add_profile"
 ACTION_RENAME_PROFILE = "rename_profile"
 ACTION_DELETE_PROFILE = "delete_profile"
 ACTION_SET_ACTIVE_PROFILE = "set_active_profile"
+# The P4.2b advisory hosted-planning protocol. ``prepare_advisory`` builds the
+# deterministic disclosure manifest (no network); ``plan_advisory`` performs the
+# one user-confirmed, low-budget provider request. Neither action carries or
+# returns a credential, and neither performs any source, Git, command or
+# repository-write action.
+ACTION_PREPARE_ADVISORY = "prepare_advisory"
+ACTION_PLAN_ADVISORY = "plan_advisory"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -132,6 +139,12 @@ PROFILE_ACTIONS = frozenset(
         ACTION_SET_ACTIVE_PROFILE,
     }
 )
+# The P4.2b advisory hosted-planning protocol. ``prepare_advisory`` is read-only
+# and offline; ``plan_advisory`` performs exactly one confirmed provider request
+# through the backend-owned transport. Neither action is automatic: the desktop
+# must call ``prepare_advisory`` first and then ``plan_advisory`` with an
+# explicit ``confirmed: true``.
+ADVISORY_ACTIONS = frozenset({ACTION_PREPARE_ADVISORY, ACTION_PLAN_ADVISORY})
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -141,6 +154,7 @@ ALLOWED_ACTIONS = (
     | READINESS_ACTIONS
     | CREDENTIAL_ACTIONS
     | PROFILE_ACTIONS
+    | ADVISORY_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -370,6 +384,8 @@ __all__ = [
     "ACTION_RENAME_PROFILE",
     "ACTION_DELETE_PROFILE",
     "ACTION_SET_ACTIVE_PROFILE",
+    "ACTION_PREPARE_ADVISORY",
+    "ACTION_PLAN_ADVISORY",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
@@ -378,6 +394,7 @@ __all__ = [
     "READINESS_ACTIONS",
     "CREDENTIAL_ACTIONS",
     "PROFILE_ACTIONS",
+    "ADVISORY_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",

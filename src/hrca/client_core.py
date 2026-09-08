@@ -1054,6 +1054,186 @@ def format_provider_readiness(result: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# -- Advisory hosted-planning client vocabulary (P4.2b) -------------------
+#
+# The normalized advisory states and the bounded "advisory not available"
+# reasons are held here as literals so the client never imports the advisory or
+# transport domain (which it must not import). Unknown values fall back to
+# their raw token, so an unexpected value can never surface raw text.
+
+ADVISORY_STATE_LABELS = {
+    "ready": "Ready",
+    "credential_missing": "Credential missing",
+    "provider_unavailable": "Provider unavailable",
+    "network_denied": "Network denied",
+    "timeout": "Timed out",
+    "rate_limited": "Rate limited",
+    "quota_exceeded": "Quota exceeded",
+    "invalid_output": "Invalid output",
+    "context_rejected": "Context rejected",
+    "over_limit": "Over limit",
+    "cancel_requested": "Cancelled",
+    "stale_response": "Stale",
+    "provider_failure": "Provider failure",
+}
+
+ADVISORY_UNAVAILABLE_REASONS = {
+    "no_change": "The draft contains no changes.",
+    "stale": "The draft is stale against the current baseline.",
+    "unsupported": "The intent targets an unknown entity.",
+    "clarification_required": "The intent needs clarification before planning.",
+    "secret_like": "A source excerpt looks secret-like and was excluded.",
+    "binary": "A source file is binary and cannot be excerpted.",
+    "missing_anchor": "A required source anchor is missing.",
+    "outside_root": "A source path is outside the project root.",
+    "unsupported_path": "A source path is not a supported source file.",
+    "ignored_path": "A source path is excluded from the workspace.",
+    "over_limit": "The context exceeds a bounded limit.",
+}
+
+
+def advisory_state_label(state: str) -> str:
+    """Return the human label for an advisory ``state``."""
+    return ADVISORY_STATE_LABELS.get(state, state)
+
+
+def advisory_unavailable_reason_label(reason: str) -> str:
+    """Return the human label for an advisory-not-available ``reason``."""
+    return ADVISORY_UNAVAILABLE_REASONS.get(reason, reason)
+
+
+def build_prepare_advisory_request(correlation_id: str) -> Dict[str, Any]:
+    """Build a ``prepare_advisory`` request (build the disclosure context).
+
+    Carries no path, task, token or credential material: the boundary derives
+    the disclosure from the current Intent Delta and deterministic proposal.
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_PREPARE_ADVISORY,
+    }
+
+
+def build_plan_advisory_request(
+    correlation_id: str, advisory_token: str, confirmed: bool
+) -> Dict[str, Any]:
+    """Build a ``plan_advisory`` request for one confirmed provider call.
+
+    ``advisory_token`` is the content-addressed token from a prior
+    ``prepare_advisory``; ``confirmed`` must be ``True`` for any network
+    request, and ``False`` sends nothing (the boundary returns
+    ``cancel_requested``).
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_PLAN_ADVISORY,
+        "task": {"advisory_token": advisory_token, "confirmed": bool(confirmed)},
+    }
+
+
+def format_advisory_disclosure(disclosure: Dict[str, Any]) -> str:
+    """Render an itemized disclosure manifest as deterministic plain text.
+
+    Shows the fixed provider/model, the one-attempt policy, every context item
+    with its kind, repository-relative label and byte size, the request/output
+    caps, and the data-egress statement. It never renders a credential or an
+    endpoint.
+    """
+    if not disclosure:
+        return ""
+    caps = disclosure.get("caps") or {}
+    lines = [
+        f"Provider: {disclosure.get('provider_id', 'unknown')}",
+        f"Model: {disclosure.get('model', 'unknown')}",
+        "One attempt: yes",
+        "",
+        "Disclosure — the items below will be sent to the provider:",
+    ]
+    for item in disclosure.get("items") or []:
+        lines.append(
+            f"  - {item.get('kind', 'unknown')}: {item.get('label', '?')} "
+            f"({item.get('bytes', 0)} bytes)"
+        )
+    lines.append("")
+    lines.append(
+        f"Caps: {caps.get('request_bytes', 0)} request bytes, "
+        f"{caps.get('context_items', 0)} context items, "
+        f"{caps.get('output_tokens', 0)} output tokens, "
+        f"{caps.get('timeout_seconds', 0)}s timeout."
+    )
+    lines.append("")
+    lines.append(str(disclosure.get("egress_statement", "")))
+    return "\n".join(lines)
+
+
+def format_advisory_result(result: Dict[str, Any]) -> str:
+    """Render a versioned advisory result as deterministic plain text.
+
+    Provider-suggested fields (clarification needs, impact, assumptions, risks,
+    plan suggestions) are shown under an explicit "provider-suggested" heading;
+    the deterministic proposal is labelled authoritative and never re-merged.
+    Limitations and usage metadata are shown when present; a credential, raw
+    prompt, raw response or hidden reasoning never appears.
+    """
+    if not result:
+        return ""
+    state = advisory_state_label(str(result.get("state", "unknown")))
+    lines = [
+        "Advisory plan (provider-suggested)",
+        f"State: {state}",
+        f"Provider: {result.get('provider_id', 'unknown')}",
+        f"Model: {result.get('model', 'unknown')}",
+        f"Sent: {'yes' if result.get('sent') else 'no'}",
+    ]
+    suggested = result.get("provider_suggested")
+    if suggested:
+        lines.append("")
+        lines.append("Provider-suggested (advisory only, never applied):")
+        impact = suggested.get("impact")
+        if impact:
+            lines.append(f"  Impact: {impact}")
+        for label, key in (
+            ("Clarification needs", "clarification_needs"),
+            ("Assumptions", "assumptions"),
+            ("Risks", "risks"),
+        ):
+            entries = suggested.get(key) or []
+            if entries:
+                lines.append(f"  {label}:")
+                for entry in entries:
+                    lines.append(f"    - {entry}")
+        suggestions = suggested.get("plan_suggestions") or []
+        if suggestions:
+            lines.append("  Plan suggestions:")
+            for step in suggestions:
+                lines.append(f"    {step.get('step', '?')}. {step.get('description', '')}")
+    deterministic = result.get("deterministic") or {}
+    lines.append("")
+    lines.append("Deterministic proposal: authoritative (unchanged by the provider).")
+    scope = deterministic.get("target_scope") or {}
+    entities = scope.get("entities") or []
+    if entities:
+        lines.append(f"  Target entities: {', '.join(str(e) for e in entities)}")
+    limitations = result.get("limitations") or []
+    if limitations:
+        lines.append("")
+        lines.append("Limitations:")
+        for limitation in limitations:
+            lines.append(f"  - {limitation}")
+    usage = result.get("usage")
+    if usage:
+        lines.append("")
+        lines.append(
+            "Usage: "
+            f"prompt {usage.get('prompt_tokens')}, "
+            f"completion {usage.get('completion_tokens')}, "
+            f"total {usage.get('total_tokens')}"
+        )
+    return "\n".join(lines)
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -1140,6 +1320,14 @@ __all__ = [
     "format_intent_delta",
     "format_proposal",
     "format_provider_readiness",
+    "ADVISORY_STATE_LABELS",
+    "ADVISORY_UNAVAILABLE_REASONS",
+    "advisory_state_label",
+    "advisory_unavailable_reason_label",
+    "build_prepare_advisory_request",
+    "build_plan_advisory_request",
+    "format_advisory_disclosure",
+    "format_advisory_result",
     "default_fixture_root",
     "resolve_backend_command",
     "resolve_credential_host_command",

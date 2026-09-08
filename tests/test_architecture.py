@@ -49,8 +49,14 @@ _FORBIDDEN_TOP_LEVEL = frozenset(
 # desktop shell reaches only through the NDJSON boundary.
 _PROVIDER_SEAM = frozenset(
     {"deepseek", "credential_store", "credential_store_win",
-     "credential_sheet_win", "provider_config", "provider_cli", "credential_host"}
+     "credential_sheet_win", "provider_config", "provider_cli", "credential_host",
+     "deepseek_transport", "advisory"}
 )
+
+# Network primitives a client must never import: only the backend transport may
+# open a socket. This enforces the P4.2b rule that the desktop is isolated from
+# HTTP and socket code.
+_NETWORK_MODULES = frozenset({"http", "socket", "urllib", "ssl", "requests"})
 
 
 def _imported_top_level_names(path: str) -> set:
@@ -68,6 +74,20 @@ def _imported_top_level_names(path: str) -> set:
                 for alias in node.names:
                     names.add(alias.name.split(".")[0])
     return names
+
+
+def _inside_function(node: ast.AST, tree: ast.AST) -> bool:
+    """Return True when ``node`` is nested within a function definition."""
+    parents = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    current = node
+    while current in parents:
+        current = parents[current]
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return True
+    return False
 
 
 class ClientArchitectureTests(unittest.TestCase):
@@ -131,8 +151,9 @@ class ClientArchitectureTests(unittest.TestCase):
 
     def test_client_modules_do_not_import_provider_seam(self):
         # The desktop shell reports provider readiness only through the
-        # contract; importing the fixed DeepSeek identity or the credential
-        # store would couple it to backend credential/network infrastructure.
+        # contract; importing the fixed DeepSeek identity, the credential
+        # store, the advisory domain or the transport would couple it to backend
+        # credential/network infrastructure.
         for module, path in _CLIENT_MODULES.items():
             with self.subTest(module=module):
                 imported = _imported_top_level_names(path)
@@ -141,6 +162,39 @@ class ClientArchitectureTests(unittest.TestCase):
                     f"{module} imports the provider/credential seam: "
                     f"{sorted(imported & _PROVIDER_SEAM)}",
                 )
+
+    def test_client_modules_do_not_import_network(self):
+        # The desktop shell never opens a socket; only the backend transport
+        # does. This isolates the client from HTTP and socket code (P4.2b).
+        for module, path in _CLIENT_MODULES.items():
+            with self.subTest(module=module):
+                imported = _imported_top_level_names(path)
+                self.assertTrue(
+                    imported.isdisjoint(_NETWORK_MODULES),
+                    f"{module} imports network primitives: "
+                    f"{sorted(imported & _NETWORK_MODULES)}",
+                )
+
+    def test_boundary_imports_transport_lazily(self):
+        # ``deepseek_transport`` (the only socket-opening module) must be
+        # imported inside a function body, never at module top level, so a
+        # frozen scan/serve/readiness loop never pulls in HTTP/socket code.
+        boundary_path = os.path.join(_SRC, "boundary.py")
+        with open(boundary_path, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        violations = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.level and "deepseek_transport" in {
+                    a.name for a in node.names
+                }:
+                    if not _inside_function(node, tree):
+                        violations.append(node.lineno)
+        self.assertFalse(
+            violations,
+            "boundary.py imports deepseek_transport at module top level "
+            f"(lines {violations}); import it lazily inside a function",
+        )
 
     def test_client_modules_exist(self):
         for path in _CLIENT_MODULES.values():

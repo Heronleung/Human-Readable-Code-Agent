@@ -21,6 +21,7 @@ _PROVIDER_SEAM_MODULES = {
     "credential_sheet_win": os.path.join(_SRC, "credential_sheet_win.py"),
     "provider_config": os.path.join(_SRC, "provider_config.py"),
     "provider_cli": os.path.join(_SRC, "provider_cli.py"),
+    "advisory": os.path.join(_SRC, "advisory.py"),
 }
 
 # Import statements that would indicate a network or HTTP dependency. None of

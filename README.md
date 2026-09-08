@@ -230,6 +230,35 @@ present next to the executable. Double-click `dist\hrca-app\hrca-app.exe` to
 open the GUI, then click **Open Project** to choose a project root (the bundled
 `fixtures` folder, or any local project).
 
+## Advisory hosted planning (P4.2b)
+
+One deliberately constrained hosted-provider interaction: an explicit,
+user-confirmed, low-budget DeepSeek request that returns a schema-validated
+**advisory** planning result for the current Intent Delta. It is advisory only —
+it never generates or applies source changes.
+
+- **Two-step, user-confirmed.** `prepare_advisory` builds an itemized disclosure
+  manifest offline (provider/model, every context item with its byte size, the
+  request-byte/context-item/output-token/timeout caps, the one-attempt policy,
+  and a data-egress statement). `plan_advisory` performs the single request only
+  with an explicit `confirmed: true`; cancellation sends nothing.
+- **Fixed, code-owned provider.** The official `https://api.deepseek.com`
+  origin, bearer authentication, and the single allowlisted model
+  (`deepseek-v4-flash`) are constants in `hrca.deepseek`/`hrca.deepseek_transport` —
+  never user-configurable, no arbitrary endpoint, model, proxy or fallback.
+- **Authority.** The deterministic P4.1 proposal (target scope, source anchors,
+  preserved constraints, baseline, stale/conflict decisions) stays authoritative.
+  Only `clarification_needs`, `impact`, `assumptions`, `risks` and ordered
+  `plan_suggestions` may come from the provider, always under
+  `provider_suggested`.
+- **Deny before network.** Context is rejected (before any socket is opened) when
+  it is outside the project root, secret-like, binary, unsupported, over a
+  byte/item/token limit, stale, or missing required anchors — and the limitation
+  is reported truthfully rather than silently filled in.
+- **Offline by default.** Normal launch, scan, `--serve` and readiness never
+  import or touch the transport; the provider request is reachable only through
+  the explicit confirmed action.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:

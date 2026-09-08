@@ -165,6 +165,12 @@ from .client_core import (
     provider_status_message,
     resolve_backend_command,
     resolve_credential_host_command,
+    advisory_state_label,
+    advisory_unavailable_reason_label,
+    build_plan_advisory_request,
+    build_prepare_advisory_request,
+    format_advisory_disclosure,
+    format_advisory_result,
     twin_state_from_sync,
 )
 
@@ -669,6 +675,11 @@ class MainWindow(QMainWindow):
         self._draft_op_kinds: Dict[str, str] = {}
         self._draft_originals: Dict[str, str] = {}
         self._draft_unresolved: Dict[str, QPushButton] = {}
+        # Pending advisory confirmation state (P4.2b): the content-addressed
+        # token and the itemized disclosure shown to the user before the single
+        # confirmed request. Neither holds a credential, prompt or source text.
+        self._pending_advisory_token: Optional[str] = None
+        self._pending_advisory_disclosure: str = ""
         # Deferred exit intents resolved after a save completes: "edit" returns
         # to the read-only projection; "close" closes the window.
         self._leave_after_save: bool = False
@@ -1129,18 +1140,25 @@ class MainWindow(QMainWindow):
         self.compare_draft_button = QPushButton("Compare")
         self.generate_draft_button = QPushButton("Generate")
         self.plan_proposal_button = QPushButton("Plan proposal")
+        self.advisory_button = QPushButton("Advisory plan")
         self.save_draft_button.setAccessibleName("Save Code Map draft")
         self.discard_draft_button.setAccessibleName("Discard Code Map draft")
         self.reset_draft_button.setAccessibleName("Reset Code Map draft")
         self.compare_draft_button.setAccessibleName("Compare Code Map draft")
         self.generate_draft_button.setAccessibleName("Generate Intent Delta")
         self.plan_proposal_button.setAccessibleName("Plan proposal")
+        self.advisory_button.setAccessibleName("Advisory plan")
+        self.advisory_button.setToolTip(
+            "Prepare a disclosure and, after explicit confirmation, make one "
+            "low-budget DeepSeek advisory planning call."
+        )
         self.save_draft_button.clicked.connect(self._save_draft)
         self.discard_draft_button.clicked.connect(self._discard_draft)
         self.reset_draft_button.clicked.connect(self._reset_draft)
         self.compare_draft_button.clicked.connect(self._compare_draft)
         self.generate_draft_button.clicked.connect(self._generate_intent_delta)
         self.plan_proposal_button.clicked.connect(self._plan_proposal)
+        self.advisory_button.clicked.connect(self._prepare_advisory)
         for button in (
             self.save_draft_button,
             self.discard_draft_button,
@@ -1148,6 +1166,7 @@ class MainWindow(QMainWindow):
             self.compare_draft_button,
             self.generate_draft_button,
             self.plan_proposal_button,
+            self.advisory_button,
         ):
             actions_layout.addWidget(button)
         layout.addWidget(actions)
@@ -2793,6 +2812,90 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_RUNNING, "planning proposal")
         if not self._send(request, self._on_proposal_ready, self._on_draft_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
+
+    # -- Advisory hosted-planning flow (P4.2b) ----------------------------
+
+    def _prepare_advisory(self) -> None:
+        """Prepare the advisory disclosure for the current Intent Delta/proposal.
+
+        This first call only builds the itemized disclosure manifest offline; it
+        never contacts the provider. The single confirmed request happens in
+        :meth:`_send_advisory` after the user accepts the disclosure.
+        """
+        cid = contract.new_correlation_id()
+        request = build_prepare_advisory_request(cid)
+        self._set_status(STATE_RUNNING, "preparing advisory disclosure")
+        if not self._send(request, self._on_advisory_prepared, self._on_advisory_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_advisory_prepared(self, result: Dict[str, Any]) -> None:
+        """Show the disclosure confirmation, or an honest unavailability reason."""
+        if not result.get("advisory_available"):
+            reason = str(result.get("reason", "unknown"))
+            self._set_status(STATE_FAILED, advisory_unavailable_reason_label(reason))
+            self._show_draft_result(
+                "Advisory plan unavailable.\n\n"
+                f"{advisory_unavailable_reason_label(reason)}"
+            )
+            return
+        token = result.get("advisory_token")
+        disclosure = result.get("disclosure") or {}
+        if not token:
+            self._set_status(STATE_FAILED, "advisory disclosure is incomplete")
+            return
+        self._pending_advisory_token = token
+        self._pending_advisory_disclosure = format_advisory_disclosure(disclosure)
+        self._confirm_advisory()
+
+    def _confirm_advisory(self) -> None:
+        """Show the itemized disclosure and require explicit confirmation.
+
+        The default action is Cancel; cancelling (or closing the box) sends
+        nothing. Only an explicit Send proceeds to the single request.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle("Confirm advisory planning request")
+        box.setText("Send this disclosure to DeepSeek for one advisory planning call?")
+        box.setInformativeText(self._pending_advisory_disclosure)
+        box.setDetailedText(
+            "The source-derived items listed above will leave this machine and "
+            "be sent to the fixed provider endpoint. Exactly one request will be "
+            "made, with no retry or fallback. Cancelling sends nothing."
+        )
+        send_button = box.addButton("Send", QMessageBox.AcceptRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        if box.clickedButton() is not send_button:
+            self._pending_advisory_token = None
+            self._pending_advisory_disclosure = ""
+            self._set_status(STATE_SUCCESS, "advisory cancelled")
+            self._show_draft_result("Advisory request cancelled. Nothing was sent.")
+            return
+        self._send_advisory()
+
+    def _send_advisory(self) -> None:
+        """Send the single confirmed advisory request."""
+        token = self._pending_advisory_token
+        self._pending_advisory_token = None
+        self._pending_advisory_disclosure = ""
+        if not token:
+            return
+        cid = contract.new_correlation_id()
+        request = build_plan_advisory_request(cid, token, True)
+        self._set_status(STATE_RUNNING, "requesting advisory plan")
+        if not self._send(request, self._on_advisory_result, self._on_advisory_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_advisory_result(self, result: Dict[str, Any]) -> None:
+        """Render the versioned advisory result (deterministic vs suggested)."""
+        state = str(result.get("state", "unknown"))
+        self._show_draft_result(format_advisory_result(result))
+        self._set_status(STATE_SUCCESS, f"advisory {advisory_state_label(state)}")
+
+    def _on_advisory_error(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+        self._show_draft_result(f"Advisory plan unavailable.\n\nReason: {reason}")
 
     def _mark_draft_dirty(self, *_args: Any) -> None:
         self._draft_dirty = True
