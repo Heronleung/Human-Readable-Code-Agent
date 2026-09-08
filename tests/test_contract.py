@@ -35,7 +35,17 @@ from hrca.contract import (
     ADVISORY_ACTIONS,
     ACTION_GET_PACKAGE,
     ACTION_RUN_PACKAGE,
+    ACTION_DOCUMENT_CREATE,
+    ACTION_DOCUMENT_OPEN,
+    ACTION_DOCUMENT_SAVE,
+    ACTION_DOCUMENT_LIST,
+    ACTION_DOCUMENT_CREATE_CANDIDATE,
+    ACTION_DOCUMENT_GET_CANDIDATE,
+    ACTION_DOCUMENT_ADOPT,
+    ACTION_DOCUMENT_LIST_VERSIONS,
+    ACTION_DOCUMENT_RESTORE,
     PACKAGE_ACTIONS,
+    DOCUMENT_ACTIONS,
     ALLOWED_ACTIONS,
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
@@ -43,6 +53,7 @@ from hrca.contract import (
     DRAFT_ACTIONS,
     MAX_DOCUMENT_BYTES,
     MAX_DRAFT_BYTES,
+    MAX_WORKING_DOCUMENT_BYTES,
     MAX_MESSAGE_BYTES,
     MAX_TREE_DEPTH,
     MAX_TREE_ENTRIES,
@@ -73,7 +84,7 @@ _FORBIDDEN_ACTIONS = ("write", "git", "commit", "command", "exec", "network",
 
 class ContractVersionTests(unittest.TestCase):
     def test_contract_version_is_pinned(self):
-        self.assertEqual(CONTRACT_VERSION, "3.4.0")
+        self.assertEqual(CONTRACT_VERSION, "3.5.0")
 
     def test_serve_sentinel(self):
         self.assertEqual(SERVE_SENTINEL, "--serve")
@@ -106,7 +117,8 @@ class AllowedActionTests(unittest.TestCase):
             | CREDENTIAL_ACTIONS
             | PROFILE_ACTIONS
             | ADVISORY_ACTIONS
-            | PACKAGE_ACTIONS,
+            | PACKAGE_ACTIONS
+            | DOCUMENT_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -267,6 +279,40 @@ class AllowedActionTests(unittest.TestCase):
             self.assertNotIn(action, CREDENTIAL_ACTIONS)
             self.assertNotIn(action, PROFILE_ACTIONS)
             self.assertNotIn(action, ADVISORY_ACTIONS)
+
+    def test_document_actions_are_allowlisted(self):
+        self.assertEqual(
+            DOCUMENT_ACTIONS,
+            frozenset(
+                {
+                    ACTION_DOCUMENT_CREATE,
+                    ACTION_DOCUMENT_OPEN,
+                    ACTION_DOCUMENT_SAVE,
+                    ACTION_DOCUMENT_LIST,
+                    ACTION_DOCUMENT_CREATE_CANDIDATE,
+                    ACTION_DOCUMENT_GET_CANDIDATE,
+                    ACTION_DOCUMENT_ADOPT,
+                    ACTION_DOCUMENT_LIST_VERSIONS,
+                    ACTION_DOCUMENT_RESTORE,
+                }
+            ),
+        )
+
+    def test_document_actions_are_read_only(self):
+        # Document/version actions write only the per-document version store —
+        # never source, Git, a command, a provider or a package execution.
+        for action in DOCUMENT_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, WORKSPACE_ACTIONS)
+            self.assertNotIn(action, TWIN_ACTIONS)
+            self.assertNotIn(action, DRAFT_ACTIONS)
+            self.assertNotIn(action, PROPOSAL_ACTIONS)
+            self.assertNotIn(action, READINESS_ACTIONS)
+            self.assertNotIn(action, CREDENTIAL_ACTIONS)
+            self.assertNotIn(action, PROFILE_ACTIONS)
+            self.assertNotIn(action, ADVISORY_ACTIONS)
+            self.assertNotIn(action, PACKAGE_ACTIONS)
 
     def test_task_actions_exclude_mutators(self):
         self.assertTrue(READ_ONLY_TASK_ACTIONS <= ALLOWED_ACTIONS)

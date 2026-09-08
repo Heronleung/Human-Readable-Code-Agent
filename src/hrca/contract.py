@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional
 # The version of the desktop-to-core contract. A boundary rejects any request
 # whose ``contract_version`` differs from this constant with a bounded
 # ``unknown_contract_version`` error.
-CONTRACT_VERSION = "3.4.0"
+CONTRACT_VERSION = "3.5.0"
 
 # Correlation identifier: a client-generated opaque string that the boundary
 # echoes verbatim so a client can match each response to its in-flight request.
@@ -88,6 +88,22 @@ ACTION_PLAN_ADVISORY = "plan_advisory"
 # carries a credential, a command, a mount, an environment variable or code.
 ACTION_GET_PACKAGE = "get_package"
 ACTION_RUN_PACKAGE = "run_package"
+# The P4.4 document/version-authority protocol. It owns the user-authored
+# Working Document (create/open/save/list), the deterministic candidate
+# (create/get), explicit adoption, and accepted-version listing/restore. Every
+# action writes only the per-document version store — never source, Git state,
+# a command, a provider call, or a package execution. Saving a document appends
+# an immutable revision and updates the Working Document only; it never touches
+# candidate or accepted state.
+ACTION_DOCUMENT_CREATE = "create_document"
+ACTION_DOCUMENT_OPEN = "open_document"
+ACTION_DOCUMENT_SAVE = "save_document"
+ACTION_DOCUMENT_LIST = "list_documents"
+ACTION_DOCUMENT_CREATE_CANDIDATE = "create_candidate"
+ACTION_DOCUMENT_GET_CANDIDATE = "get_candidate"
+ACTION_DOCUMENT_ADOPT = "adopt_candidate"
+ACTION_DOCUMENT_LIST_VERSIONS = "list_versions"
+ACTION_DOCUMENT_RESTORE = "restore_version"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -155,6 +171,23 @@ ADVISORY_ACTIONS = frozenset({ACTION_PREPARE_ADVISORY, ACTION_PLAN_ADVISORY})
 # and offline; ``run_package`` executes through the isolated runner only after
 # the runner's fail-closed availability/isolation preflight.
 PACKAGE_ACTIONS = frozenset({ACTION_GET_PACKAGE, ACTION_RUN_PACKAGE})
+# The P4.4 document/version-authority protocol: the user-authored Working
+# Document, the deterministic fixture-bound candidate, explicit adoption, and
+# accepted-version listing/restore. No action here touches source, Git state, a
+# command, a provider, the network or a package execution.
+DOCUMENT_ACTIONS = frozenset(
+    {
+        ACTION_DOCUMENT_CREATE,
+        ACTION_DOCUMENT_OPEN,
+        ACTION_DOCUMENT_SAVE,
+        ACTION_DOCUMENT_LIST,
+        ACTION_DOCUMENT_CREATE_CANDIDATE,
+        ACTION_DOCUMENT_GET_CANDIDATE,
+        ACTION_DOCUMENT_ADOPT,
+        ACTION_DOCUMENT_LIST_VERSIONS,
+        ACTION_DOCUMENT_RESTORE,
+    }
+)
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -166,6 +199,7 @@ ALLOWED_ACTIONS = (
     | PROFILE_ACTIONS
     | ADVISORY_ACTIONS
     | PACKAGE_ACTIONS
+    | DOCUMENT_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -197,6 +231,12 @@ MAX_DOCUMENT_BYTES = 64 * 1024  # 64 KiB
 # Maximum inbound Twin Draft size, in UTF-8 bytes, enforced by the boundary so
 # an oversized draft is rejected with a bounded error before any validation.
 MAX_DRAFT_BYTES = 64 * 1024  # 64 KiB
+
+# Maximum Working Document text size, in UTF-8 bytes, enforced by the boundary
+# before a save so an oversized document is rejected with a bounded error. It is
+# kept equal to ``MAX_DOCUMENT_BYTES`` so the editable document surface is
+# bounded the same way the read-only preview surface is.
+MAX_WORKING_DOCUMENT_BYTES = 64 * 1024  # 64 KiB
 
 # Argument sentinel that turns the unified entry executable into the headless
 # boundary. A frozen build launches ``[sys.executable, "--serve"]``; a source
@@ -251,6 +291,22 @@ _ERROR_MESSAGES = {
     # App-package errors (P4.3). Messages are fixed and never interpolate a
     # package id, path or input value.
     "package_not_found": "the named app package does not exist",
+    # Document/version-authority errors (P4.4). Messages are fixed and never
+    # interpolate a document id, name, revision, fingerprint, candidate id or
+    # user prose, so caller text cannot leak into a protocol error.
+    "document_not_found": "the document does not exist",
+    "document_name_invalid": "the document name is invalid",
+    "document_oversized": "the document exceeds the maximum allowed size",
+    "document_stale": "the document changed since it was loaded",
+    "document_persist_failed": "the document could not be saved",
+    "document_not_saved": "the document has no saved revision",
+    "candidate_not_found": "the candidate does not exist",
+    "candidate_stale": "the candidate is stale against the current document",
+    "candidate_invalid": "the candidate record is invalid",
+    "adopt_not_allowed": "adoption is not allowed for this candidate",
+    "already_adopted": "the candidate has already been adopted",
+    "version_not_found": "the accepted version does not exist",
+    "restore_not_allowed": "the version cannot be restored",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)
@@ -402,6 +458,15 @@ __all__ = [
     "ACTION_PLAN_ADVISORY",
     "ACTION_GET_PACKAGE",
     "ACTION_RUN_PACKAGE",
+    "ACTION_DOCUMENT_CREATE",
+    "ACTION_DOCUMENT_OPEN",
+    "ACTION_DOCUMENT_SAVE",
+    "ACTION_DOCUMENT_LIST",
+    "ACTION_DOCUMENT_CREATE_CANDIDATE",
+    "ACTION_DOCUMENT_GET_CANDIDATE",
+    "ACTION_DOCUMENT_ADOPT",
+    "ACTION_DOCUMENT_LIST_VERSIONS",
+    "ACTION_DOCUMENT_RESTORE",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
@@ -412,6 +477,7 @@ __all__ = [
     "PROFILE_ACTIONS",
     "ADVISORY_ACTIONS",
     "PACKAGE_ACTIONS",
+    "DOCUMENT_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",
@@ -419,6 +485,7 @@ __all__ = [
     "MAX_TREE_DEPTH",
     "MAX_DOCUMENT_BYTES",
     "MAX_DRAFT_BYTES",
+    "MAX_WORKING_DOCUMENT_BYTES",
     "SERVE_SENTINEL",
     "CREDENTIAL_SENTINEL",
     "ERROR_CODES",

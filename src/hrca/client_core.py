@@ -1314,6 +1314,234 @@ def format_run_result(result: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# -- Document/version-authority client vocabulary (P4.4) -------------------
+#
+# The Working Document, Candidate and Accepted Version identities and the bounded
+# failure messages are held here as literals so the client never imports the
+# document/version domain or store (which it must not import). Unknown values
+# fall back to their raw token.
+
+DOCUMENT_KIND_LABELS = {
+    "md": "Markdown",
+    "txt": "Plain text",
+}
+
+# Bounded failure messages for the document/version protocol error codes. Each
+# maps a bounded boundary code to a safe sentence — never a document id, name,
+# fingerprint, candidate id or user prose.
+DOCUMENT_FAILURE_MESSAGES = {
+    "document_not_found": "That document no longer exists.",
+    "document_name_invalid": "Use a name ending in .md or .txt.",
+    "document_oversized": "The document is too large to save.",
+    "document_stale": "The document changed since it was opened.",
+    "document_persist_failed": "The document could not be saved.",
+    "document_not_saved": "Save the document before creating a candidate.",
+    "candidate_not_found": "That candidate no longer exists.",
+    "candidate_stale": "The candidate is stale against the current document.",
+    "candidate_invalid": "The candidate record is invalid.",
+    "adopt_not_allowed": "Adoption is not allowed for this candidate.",
+    "already_adopted": "This candidate has already been adopted.",
+    "version_not_found": "That accepted version no longer exists.",
+    "restore_not_allowed": "The version cannot be restored.",
+}
+
+
+def document_kind_label(kind: str) -> str:
+    """Return the human label for a document ``kind`` (md/txt)."""
+    return DOCUMENT_KIND_LABELS.get(kind, kind)
+
+
+def document_failure_message(code: str) -> str:
+    """Return the user-facing message for a bounded document failure ``code``."""
+    return DOCUMENT_FAILURE_MESSAGES.get(code, "The operation could not be completed.")
+
+
+def build_create_document_request(correlation_id: str, name: str) -> Dict[str, Any]:
+    """Build a ``create_document`` request for a validated md/txt name."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DOCUMENT_CREATE,
+        "name": name,
+    }
+
+
+def build_open_document_request(correlation_id: str, document_id: str) -> Dict[str, Any]:
+    """Build an ``open_document`` request (reopen one Working Document)."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DOCUMENT_OPEN,
+        "document_id": document_id,
+    }
+
+
+def build_save_document_request(
+    correlation_id: str, document_id: str, content: str, base_revision_id: Optional[str]
+) -> Dict[str, Any]:
+    """Build a ``save_document`` request appending an immutable revision.
+
+    ``base_revision_id`` is the head the client loaded; the boundary refuses the
+    save when it no longer matches (external change).
+    """
+    request = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DOCUMENT_SAVE,
+        "document_id": document_id,
+        "content": content,
+    }
+    if base_revision_id is not None:
+        request["base_revision_id"] = base_revision_id
+    return request
+
+
+def build_list_documents_request(correlation_id: str) -> Dict[str, Any]:
+    """Build a ``list_documents`` request (summaries of every document)."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DOCUMENT_LIST,
+    }
+
+
+def build_create_candidate_request(correlation_id: str, document_id: str) -> Dict[str, Any]:
+    """Build a ``create_candidate`` request bound to the current head revision."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DOCUMENT_CREATE_CANDIDATE,
+        "document_id": document_id,
+    }
+
+
+def build_get_candidate_request(
+    correlation_id: str, document_id: str, candidate_id: str
+) -> Dict[str, Any]:
+    """Build a ``get_candidate`` request for one candidate's state."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DOCUMENT_GET_CANDIDATE,
+        "document_id": document_id,
+        "candidate_id": candidate_id,
+    }
+
+
+def build_adopt_candidate_request(
+    correlation_id: str, document_id: str, candidate_id: str
+) -> Dict[str, Any]:
+    """Build an ``adopt_candidate`` request (explicit, revalidated adoption)."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DOCUMENT_ADOPT,
+        "document_id": document_id,
+        "candidate_id": candidate_id,
+    }
+
+
+def build_list_versions_request(correlation_id: str, document_id: str) -> Dict[str, Any]:
+    """Build a ``list_versions`` request (accepted-version history)."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DOCUMENT_LIST_VERSIONS,
+        "document_id": document_id,
+    }
+
+
+def build_restore_version_request(
+    correlation_id: str, document_id: str, version_id: str
+) -> Dict[str, Any]:
+    """Build a ``restore_version`` request re-pointing the Accepted Version."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DOCUMENT_RESTORE,
+        "document_id": document_id,
+        "version_id": version_id,
+    }
+
+
+def format_document_state(result: Dict[str, Any]) -> str:
+    """Render the document/version state as deterministic plain text (P4.4).
+
+    The Working Document, Candidate and Accepted Version are shown as distinct,
+    labelled sections; the candidate's fixed non-interpretation limitation is
+    always printed so it is never conflated with generated behavior.
+    """
+    if not result:
+        return ""
+    doc = result.get("document") or {}
+    head = result.get("head_revision") or {}
+    candidate = result.get("candidate")
+    accepted = result.get("accepted")
+
+    lines = [
+        "Working Document",
+        f"Name: {doc.get('name', 'unknown')}",
+        f"Kind: {document_kind_label(str(doc.get('kind', 'unknown')))}",
+        f"Revision: {doc.get('head_revision_number', 0)}",
+    ]
+    fingerprint = head.get("content_fingerprint")
+    if fingerprint:
+        lines.append(f"Fingerprint: {fingerprint}")
+
+    lines.append("")
+    if candidate:
+        lines.append("Candidate (not accepted behavior)")
+        lines.append(f"Candidate: {candidate.get('candidate_id', 'unknown')}")
+        lines.append(f"Bound to revision: {candidate.get('document_revision_id', 'unknown')}")
+        lines.append(f"Source: {candidate.get('generation_source', 'unknown')}")
+        lines.append(f"Adopted: {'yes' if candidate.get('adopted') else 'no'}")
+        lines.append(f"Note: {candidate.get('limitation', '')}")
+    else:
+        lines.append("Candidate: none")
+
+    lines.append("")
+    if accepted:
+        lines.append("Accepted Version")
+        lines.append(f"Version: {accepted.get('version_id', 'unknown')}")
+        lines.append(f"Accepted at: {accepted.get('accepted_at', 'unknown')}")
+        lines.append(f"Restore of: {accepted.get('restore_of') or 'n/a (original adoption)'}")
+    else:
+        lines.append("Accepted Version: none")
+
+    return "\n".join(lines)
+
+
+def format_candidate(candidate: Dict[str, Any]) -> str:
+    """Render one candidate with its current/adopted status."""
+    if not candidate:
+        return ""
+    lines = [
+        "Candidate (not accepted behavior)",
+        f"Candidate: {candidate.get('candidate_id', 'unknown')}",
+        f"Current: {'yes' if candidate.get('current') else 'no'}",
+        f"Adopted: {'yes' if candidate.get('adopted') else 'no'}",
+        f"Bound to revision: {candidate.get('document_revision_id', 'unknown')}",
+        f"Package: {candidate.get('package_id', 'unknown')}",
+        f"Runtime: {candidate.get('runtime_identity', 'unknown')}",
+        f"Source: {candidate.get('generation_source', 'unknown')}",
+        f"Note: {candidate.get('limitation', '')}",
+    ]
+    return "\n".join(lines)
+
+
+def format_version_list(versions: List[Dict[str, Any]], current_id: Optional[str]) -> str:
+    """Render the accepted-version history with the current pointer marked."""
+    if not versions:
+        return "No accepted versions."
+    lines: List[str] = []
+    for version in versions:
+        version_id = str(version.get("version_id", "unknown"))
+        marker = " (current)" if version_id == current_id else ""
+        restored = " (restored)" if version.get("restore_of") else ""
+        lines.append(f"{version_id}{marker}{restored}")
+    return "\n".join(lines)
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -1413,6 +1641,22 @@ __all__ = [
     "build_get_package_request",
     "build_run_package_request",
     "format_run_result",
+    "DOCUMENT_KIND_LABELS",
+    "DOCUMENT_FAILURE_MESSAGES",
+    "document_kind_label",
+    "document_failure_message",
+    "build_create_document_request",
+    "build_open_document_request",
+    "build_save_document_request",
+    "build_list_documents_request",
+    "build_create_candidate_request",
+    "build_get_candidate_request",
+    "build_adopt_candidate_request",
+    "build_list_versions_request",
+    "build_restore_version_request",
+    "format_document_state",
+    "format_candidate",
+    "format_version_list",
     "default_fixture_root",
     "resolve_backend_command",
     "resolve_credential_host_command",

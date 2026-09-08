@@ -177,6 +177,18 @@ from .client_core import (
     format_run_result,
     run_state_label,
     twin_state_from_sync,
+    build_create_document_request,
+    build_open_document_request,
+    build_save_document_request,
+    build_list_documents_request,
+    build_create_candidate_request,
+    build_adopt_candidate_request,
+    build_list_versions_request,
+    build_restore_version_request,
+    document_failure_message,
+    document_kind_label,
+    format_document_state,
+    format_version_list,
 )
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -264,7 +276,7 @@ _SETTINGS_SECTION_LABELS = {
 # first key ("chat") maps to the Agent Chat surface; the remaining five map to
 # the read-only secondary surfaces populated by the scan pipeline. The keys are
 # the single source of truth for the ``selected_tab`` state.
-_BOTTOM_TAB_KEYS = ("chat", "plan", "diff", "problems", "tests", "evidence", "builder")
+_BOTTOM_TAB_KEYS = ("chat", "plan", "diff", "problems", "tests", "evidence", "builder", "document")
 
 # Human-readable tab labels (one per key, same order).
 _BOTTOM_TAB_LABELS = {
@@ -275,6 +287,7 @@ _BOTTOM_TAB_LABELS = {
     "tests": "Tests",
     "evidence": "Evidence",
     "builder": "Builder",
+    "document": "Document",
 }
 
 _PY_KEYWORDS = (
@@ -690,6 +703,28 @@ class MainWindow(QMainWindow):
         # been loaded, and the form-field widget map keyed by field name.
         self._builder_loaded: bool = False
         self._builder_fields: Dict[str, QWidget] = {}
+        # Document/version-authority surface state (P4.4): the list of documents,
+        # the currently open document's identity and base revision, the dirty
+        # flag, the accepted-version list, and the mounted widgets.
+        self._documents: List[Dict[str, Any]] = []
+        self._document_id: Optional[str] = None
+        self._document_base_revision_id: Optional[str] = None
+        self._document_dirty: bool = False
+        self._document_loading: bool = False
+        self._document_versions: List[Dict[str, Any]] = []
+        self._current_accepted_version_id: Optional[str] = None
+        self._document_candidate_id: Optional[str] = None
+        self._document_combo: Optional[QComboBox] = None
+        self._document_status_label: Optional[QLabel] = None
+        self._document_editor: Optional[QPlainTextEdit] = None
+        self._document_result: Optional[QPlainTextEdit] = None
+        self._document_versions_combo: Optional[QComboBox] = None
+        self._document_new_button: Optional[QPushButton] = None
+        self._document_open_button: Optional[QPushButton] = None
+        self._document_save_button: Optional[QPushButton] = None
+        self._document_candidate_button: Optional[QPushButton] = None
+        self._document_adopt_button: Optional[QPushButton] = None
+        self._document_restore_button: Optional[QPushButton] = None
         # Deferred exit intents resolved after a save completes: "edit" returns
         # to the read-only projection; "close" closes the window.
         self._leave_after_save: bool = False
@@ -1216,7 +1251,8 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self._disclosure_button)
         layout.addWidget(header)
 
-        # Body: one stacked widget with six pages (Agent Chat + five surfaces).
+        # Body: one stacked widget with one page per bottom tab (Agent Chat, the
+        # five read-only surfaces, the Builder and the Document surfaces).
         self._bottom_body = QStackedWidget()
         self._bottom_body.setObjectName("bottomPanelBody")
         self._bottom_body.setMinimumHeight(style.BOTTOM_PANEL_BODY_MIN_HEIGHT)
@@ -1227,6 +1263,10 @@ class MainWindow(QMainWindow):
             if key == "builder":
                 self._builder_page = self._build_builder_page()
                 self._bottom_body.addWidget(self._builder_page)
+                continue
+            if key == "document":
+                self._document_page = self._build_document_page()
+                self._bottom_body.addWidget(self._document_page)
                 continue
             view = CodeView(self._bottom_body, palette=self._palette)
             self._views[key] = view
@@ -1331,6 +1371,106 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return body
 
+    def _build_document_page(self) -> QWidget:
+        """Build the document-first Working Document surface (P4.4).
+
+        Presents the document list, an editable UTF-8 md/txt editor with a dirty
+        indicator, and the distinct Working Document / Candidate / Accepted
+        Version state. Save appends an immutable revision; Create Candidate binds
+        the deterministic quotation fixture; Adopt is an explicit, revalidated
+        step; Restore re-points the accepted version without discarding content.
+        """
+        body = QWidget()
+        body.setObjectName("documentPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        selector = QWidget()
+        selector_layout = QHBoxLayout(selector)
+        selector_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        selector_layout.setSpacing(style.GAP_TIGHT)
+        self._document_combo = QComboBox()
+        self._document_combo.setAccessibleName("Working Document")
+        selector_layout.addWidget(self._document_combo, stretch=1)
+        self._document_new_button = QPushButton("New")
+        self._document_new_button.setAccessibleName("New document")
+        self._document_new_button.clicked.connect(self._new_document)
+        self._document_open_button = QPushButton("Open")
+        self._document_open_button.setAccessibleName("Open document")
+        self._document_open_button.clicked.connect(self._open_working_document)
+        selector_layout.addWidget(self._document_new_button)
+        selector_layout.addWidget(self._document_open_button)
+        layout.addWidget(selector)
+
+        self._document_status_label = QLabel("")
+        self._document_status_label.setObjectName("documentStatus")
+        self._document_status_label.setAccessibleName("Document status")
+        self._document_status_label.setStyleSheet(
+            style.status_label_style(self._palette)
+        )
+        layout.addWidget(self._document_status_label)
+
+        self._document_editor = QPlainTextEdit()
+        self._document_editor.setObjectName("documentEditor")
+        self._document_editor.setAccessibleName("Working Document editor")
+        self._document_editor.textChanged.connect(self._mark_document_dirty)
+        layout.addWidget(self._document_editor, stretch=1)
+
+        actions = QWidget()
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        actions_layout.setSpacing(style.GAP_TIGHT)
+        self._document_save_button = QPushButton("Save")
+        self._document_candidate_button = QPushButton("Create candidate")
+        self._document_adopt_button = QPushButton("Adopt")
+        self._document_restore_button = QPushButton("Restore")
+        self._document_save_button.setAccessibleName("Save document")
+        self._document_candidate_button.setAccessibleName("Create candidate")
+        self._document_adopt_button.setAccessibleName("Adopt candidate")
+        self._document_restore_button.setAccessibleName("Restore accepted version")
+        self._document_save_button.clicked.connect(self._save_document)
+        self._document_candidate_button.clicked.connect(self._create_candidate)
+        self._document_adopt_button.clicked.connect(self._adopt_candidate)
+        self._document_restore_button.clicked.connect(self._restore_version)
+        for button in (
+            self._document_save_button,
+            self._document_candidate_button,
+            self._document_adopt_button,
+            self._document_restore_button,
+        ):
+            actions_layout.addWidget(button)
+        layout.addWidget(actions)
+
+        versions_row = QWidget()
+        versions_layout = QHBoxLayout(versions_row)
+        versions_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        versions_layout.setSpacing(style.GAP_TIGHT)
+        versions_label = QLabel("Accepted versions")
+        versions_label.setStyleSheet(style.secondary_text_style(self._palette))
+        self._document_versions_combo = QComboBox()
+        self._document_versions_combo.setAccessibleName("Accepted versions")
+        versions_layout.addWidget(versions_label)
+        versions_layout.addWidget(self._document_versions_combo, stretch=1)
+        layout.addWidget(versions_row)
+
+        self._document_result = QPlainTextEdit()
+        self._document_result.setObjectName("documentResult")
+        self._document_result.setReadOnly(True)
+        self._document_result.setAccessibleName("Document state")
+        layout.addWidget(self._document_result)
+
+        self._set_document_actions_enabled(False)
+        return body
+
     def _build_status_bar(self) -> QWidget:
         bar = QWidget()
         bar.setObjectName("statusBar")
@@ -1396,10 +1536,12 @@ class MainWindow(QMainWindow):
     def _on_bottom_tab_changed(self, index: int) -> None:
         if 0 <= index < len(_BOTTOM_TAB_KEYS):
             self._selected_tab = _BOTTOM_TAB_KEYS[index]
+            self._bottom_body.setCurrentIndex(index)
         if self._selected_tab == "builder" and not self._builder_loaded:
             self._builder_loaded = True
             self._load_builder_package()
-            self._bottom_body.setCurrentIndex(index)
+        elif self._selected_tab == "document":
+            self._refresh_documents()
 
     def _toggle_expanded(self) -> None:
         self._set_expanded(not self._is_expanded)
@@ -3035,6 +3177,233 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_FAILED, reason)
         self._builder_result.setPlainText(f"Package run unavailable.\n\nReason: {reason}")
         self._builder_result.setVisible(True)
+
+    # -- Document/version-authority flow (P4.4) ---------------------------
+
+    def _set_document_actions_enabled(self, enabled: bool) -> None:
+        for button in (
+            self._document_save_button,
+            self._document_candidate_button,
+            self._document_adopt_button,
+            self._document_restore_button,
+        ):
+            if button is not None:
+                button.setEnabled(enabled)
+
+    def _update_document_status(self) -> None:
+        if self._document_status_label is None:
+            return
+        if self._document_id is None:
+            self._document_status_label.setText("No document open.")
+        elif self._document_dirty:
+            self._document_status_label.setText("Working Document — unsaved changes.")
+        else:
+            self._document_status_label.setText("Working Document — saved.")
+
+    def _mark_document_dirty(self, *_args: Any) -> None:
+        if self._document_loading:
+            return
+        self._document_dirty = True
+        self._update_document_status()
+
+    def _refresh_documents(self) -> None:
+        cid = contract.new_correlation_id()
+        request = build_list_documents_request(cid)
+        self._set_status(STATE_RUNNING, "listing documents")
+        if not self._send(request, self._on_documents_loaded, self._on_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_documents_loaded(self, result: Dict[str, Any]) -> None:
+        self._documents = list(result.get("documents") or [])
+        combo = self._document_combo
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        combo.clear()
+        for doc in self._documents:
+            label = f"{doc.get('name')} (rev {doc.get('head_revision_number', 0)})"
+            combo.addItem(label, doc.get("document_id"))
+        combo.blockSignals(False)
+        self._set_status(STATE_SUCCESS, f"{len(self._documents)} document(s)")
+
+    def _new_document(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, "New document", "Document name (.md or .txt):"
+        )
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        cid = contract.new_correlation_id()
+        request = build_create_document_request(cid, name)
+        self._set_status(STATE_RUNNING, "creating document")
+        if not self._send(request, self._on_document_created, self._on_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_document_created(self, result: Dict[str, Any]) -> None:
+        doc = result.get("document") or {}
+        self._document_id = doc.get("document_id")
+        self._apply_document_state(result)
+        self._refresh_documents()
+        self._set_status(STATE_SUCCESS, "document created")
+
+    def _open_working_document(self) -> None:
+        combo = self._document_combo
+        if combo is None or combo.currentIndex() < 0:
+            return
+        document_id = combo.currentData()
+        if not document_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_open_document_request(cid, document_id)
+        self._set_status(STATE_RUNNING, "opening document")
+        if not self._send(
+            request, self._on_working_document_opened, self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_working_document_opened(self, result: Dict[str, Any]) -> None:
+        self._apply_document_state(result)
+        self._set_status(STATE_SUCCESS, "document opened")
+
+    def _apply_document_state(self, result: Dict[str, Any]) -> None:
+        """Load the full document state into the editor and the state area."""
+        head = result.get("head_revision") or {}
+        self._document_loading = True
+        try:
+            self._document_editor.setPlainText(head.get("content", ""))
+        finally:
+            self._document_loading = False
+        self._document_base_revision_id = head.get("revision_id")
+        self._document_dirty = False
+        self._refresh_document_meta(result)
+
+    def _refresh_document_meta(self, result: Dict[str, Any]) -> None:
+        """Refresh candidate/accepted/version metadata without touching the editor.
+
+        Used after candidate/adopt/restore so any unsaved editor text is never
+        silently discarded.
+        """
+        candidate = result.get("candidate")
+        self._document_candidate_id = (
+            candidate.get("candidate_id") if candidate else None
+        )
+        self._document_versions = list(result.get("versions") or [])
+        self._current_accepted_version_id = result.get("current_accepted_version_id")
+        self._populate_versions_combo()
+        self._document_result.setPlainText(format_document_state(result))
+        self._update_document_status()
+        self._set_document_actions_enabled(self._document_id is not None)
+
+    def _populate_versions_combo(self) -> None:
+        combo = self._document_versions_combo
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        combo.clear()
+        for version in self._document_versions:
+            version_id = version.get("version_id")
+            label = str(version_id)
+            if version_id == self._current_accepted_version_id:
+                label += " (current)"
+            if version.get("restore_of"):
+                label += " (restored)"
+            combo.addItem(label, version_id)
+        combo.blockSignals(False)
+        if self._document_restore_button is not None:
+            self._document_restore_button.setEnabled(combo.count() > 0)
+
+    def _save_document(self) -> None:
+        if not self._document_id:
+            return
+        content = self._document_editor.toPlainText()
+        cid = contract.new_correlation_id()
+        request = build_save_document_request(
+            cid, self._document_id, content, self._document_base_revision_id
+        )
+        self._set_status(STATE_RUNNING, "saving document")
+        if not self._send(request, self._on_document_saved, self._on_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_document_saved(self, result: Dict[str, Any]) -> None:
+        revision = result.get("revision") or {}
+        self._document_base_revision_id = revision.get("revision_id")
+        self._document_dirty = False
+        self._update_document_status()
+        self._set_status(
+            STATE_SUCCESS, f"document saved (rev {result.get('head_revision_number')})"
+        )
+        self._refresh_documents()
+
+    def _create_candidate(self) -> None:
+        if not self._document_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_create_candidate_request(cid, self._document_id)
+        self._set_status(STATE_RUNNING, "creating candidate")
+        if not self._send(request, self._on_candidate_ready, self._on_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_candidate_ready(self, result: Dict[str, Any]) -> None:
+        self._refresh_document_meta(result)
+        self._refresh_documents()
+        self._set_status(STATE_SUCCESS, "candidate created")
+
+    def _adopt_candidate(self) -> None:
+        if not self._document_id or not self._document_candidate_id:
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Adopt candidate")
+        box.setText("Adopt this candidate as the Accepted Version?")
+        box.setInformativeText(
+            "The candidate is bound to the hand-written quotation fixture, not "
+            "generated from the document. Adoption revalidates it first."
+        )
+        adopt_button = box.addButton("Adopt", QMessageBox.AcceptRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        if box.clickedButton() is not adopt_button:
+            return
+        cid = contract.new_correlation_id()
+        request = build_adopt_candidate_request(
+            cid, self._document_id, self._document_candidate_id
+        )
+        self._set_status(STATE_RUNNING, "adopting candidate")
+        if not self._send(request, self._on_candidate_adopted, self._on_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_candidate_adopted(self, result: Dict[str, Any]) -> None:
+        self._refresh_document_meta(result)
+        self._refresh_documents()
+        self._set_status(STATE_SUCCESS, "candidate adopted")
+
+    def _restore_version(self) -> None:
+        if not self._document_id:
+            return
+        combo = self._document_versions_combo
+        if combo is None or combo.currentIndex() < 0:
+            return
+        version_id = combo.currentData()
+        if not version_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_restore_version_request(cid, self._document_id, version_id)
+        self._set_status(STATE_RUNNING, "restoring accepted version")
+        if not self._send(request, self._on_version_restored, self._on_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_version_restored(self, result: Dict[str, Any]) -> None:
+        self._refresh_document_meta(result)
+        self._set_status(STATE_SUCCESS, "accepted version restored")
+
+    def _on_document_error(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, document_failure_message(reason))
+        if self._document_result is not None:
+            self._document_result.setPlainText(
+                f"Operation unavailable.\n\n{document_failure_message(reason)}"
+            )
 
     def _mark_draft_dirty(self, *_args: Any) -> None:
         self._draft_dirty = True

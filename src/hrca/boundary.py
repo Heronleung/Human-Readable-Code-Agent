@@ -42,11 +42,13 @@ from . import (
     contract,
     credential_store,
     deepseek,
+    document,
     proposal,
     provider,
     provider_config,
     twin,
     twin_store,
+    version_store,
     workspace,
 )
 from .planning import TaskValidationError, build_plan, validate_task
@@ -275,6 +277,24 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _get_package_result(request, session)
     elif action == contract.ACTION_RUN_PACKAGE:
         result = _run_package_result(request, session)
+    elif action == contract.ACTION_DOCUMENT_CREATE:
+        result = _create_document_result(request, session)
+    elif action == contract.ACTION_DOCUMENT_OPEN:
+        result = _open_document_result(request, session)
+    elif action == contract.ACTION_DOCUMENT_SAVE:
+        result = _save_document_result(request, session)
+    elif action == contract.ACTION_DOCUMENT_LIST:
+        result = _list_documents_result(request, session)
+    elif action == contract.ACTION_DOCUMENT_CREATE_CANDIDATE:
+        result = _create_candidate_result(request, session)
+    elif action == contract.ACTION_DOCUMENT_GET_CANDIDATE:
+        result = _get_candidate_result(request, session)
+    elif action == contract.ACTION_DOCUMENT_ADOPT:
+        result = _adopt_candidate_result(request, session)
+    elif action == contract.ACTION_DOCUMENT_LIST_VERSIONS:
+        result = _list_versions_result(request, session)
+    elif action == contract.ACTION_DOCUMENT_RESTORE:
+        result = _restore_version_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -1489,6 +1509,226 @@ def _run_package_result(request: Dict[str, Any], session: WorkspaceSession) -> D
     from . import runner_broker
 
     return runner_broker.run_package(package, form_input, session.runner)
+
+
+# -- Document/version-authority handlers (P4.4) ----------------------------
+#
+# The Working Document is user intent; a Candidate is a deterministic,
+# fixture-bound record that is *not* accepted behavior; an Accepted Version is a
+# version-bound record produced only by explicit, revalidated adoption. Saving a
+# document appends an immutable revision and updates the Working Document only —
+# it never calls a provider, inspects/sends project context, executes a package,
+# or alters Candidate/Accepted state. Adoption revalidates the candidate against
+# the current store before atomically moving the accepted pointer.
+
+
+def _document_id(request: Dict[str, Any]) -> str:
+    """Return and validate the opaque ``document_id`` from ``request``."""
+    document_id = request.get("document_id")
+    if not isinstance(document_id, str) or not document_id.strip():
+        raise contract.ContractError("invalid_request")
+    return document_id
+
+
+def _load_document_store(session: WorkspaceSession, document_id: str) -> Dict[str, Any]:
+    """Load a document store, raising ``document_not_found`` when absent/corrupt."""
+    store, err = version_store.load(session.store_base, document_id)
+    if err is not None or store is None:
+        raise contract.ContractError("document_not_found")
+    return store
+
+
+def _persist_document(session: WorkspaceSession, document_id: str, store: Dict[str, Any]) -> None:
+    """Persist a document store atomically, raising ``document_persist_failed``."""
+    if version_store.save(session.store_base, document_id, store) is not None:
+        raise contract.ContractError("document_persist_failed")
+
+
+def _create_document_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Create an empty Working Document from a validated md/txt name.
+
+    Performs no provider, package or runner access. The returned state has no
+    revision and no candidate; the first save creates revision 1.
+    """
+    name = request.get("name")
+    if not document.valid_name(name):
+        raise contract.ContractError("document_name_invalid")
+    document_id = document.new_document_id()
+    store = document.new_document_store(
+        document_id, name.strip(), document.kind_for_name(name), _now_iso()
+    )
+    _persist_document(session, document_id, store)
+    return document.document_state(store)
+
+
+def _open_document_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the reopenable state of one Working Document."""
+    document_id = _document_id(request)
+    store = _load_document_store(session, document_id)
+    return document.document_state(store)
+
+
+def _save_document_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Append an immutable revision and update the Working Document only.
+
+    The content is validated as bounded UTF-8 text; the caller's ``base_revision_id``
+    must match the current head or the save is refused with ``document_stale``
+    (an external change happened between load and save). This handler performs no
+    provider, package, runner, project-context or candidate/accepted mutation.
+    """
+    document_id = _document_id(request)
+    content = request.get("content")
+    if not isinstance(content, str):
+        raise contract.ContractError("invalid_request")
+    if len(content.encode("utf-8")) > contract.MAX_WORKING_DOCUMENT_BYTES:
+        raise contract.ContractError("document_oversized")
+
+    store = _load_document_store(session, document_id)
+    base_revision_id = request.get("base_revision_id")
+    if base_revision_id is not None and not isinstance(base_revision_id, str):
+        raise contract.ContractError("invalid_request")
+
+    new_store, revision = document.save_revision(store, content, base_revision_id, _now_iso())
+    if new_store is None:
+        # Only a stale base maps to ``document_stale``; other domain refusals are
+        # guarded above (invalid content is already bounded as ``invalid_request``).
+        raise contract.ContractError("document_stale")
+
+    _persist_document(session, document_id, new_store)
+    return {
+        "revision": revision,
+        "head_revision_number": revision["revision_number"],
+        "content_fingerprint": revision["content_fingerprint"],
+    }
+
+
+def _list_documents_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the bounded summary of every readable document store."""
+    return {"documents": version_store.list_documents(session.store_base)}
+
+
+def _create_candidate_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Create a deterministic candidate bound to the current head revision.
+
+    The candidate is bound to the hand-written quotation fixture (the code-owned
+    reference package), its runtime identity and the fixed validation identity. It
+    is never generated from the document prose.
+    """
+    document_id = _document_id(request)
+    store = _load_document_store(session, document_id)
+    package = _known_package("quotation-rules")
+    candidate, err = document.build_candidate(
+        store, package, app_package.RUNNER_IDENTITY, document.VALIDATION_IDENTITY, _now_iso()
+    )
+    if err is not None:
+        raise contract.ContractError("document_not_saved")
+
+    # Idempotent: an existing, not-yet-adopted candidate with the same
+    # deterministic id is returned rather than appended twice.
+    existing = next(
+        (c for c in store.get("candidates", []) if c.get("candidate_id") == candidate["candidate_id"]),
+        None,
+    )
+    if existing is None:
+        new_store = _copy_store(store)
+        new_store["candidates"].append(candidate)
+        _persist_document(session, document_id, new_store)
+        store = new_store
+    return document.document_state(store)
+
+
+def _copy_store(store: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a deep copy of ``store`` (via the domain's deterministic dumps)."""
+    import json as _json
+
+    return _json.loads(document.dumps(store))
+
+
+def _get_candidate_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return one candidate's state plus its current/adopted status."""
+    document_id = _document_id(request)
+    candidate_id = request.get("candidate_id")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        raise contract.ContractError("invalid_request")
+    store = _load_document_store(session, document_id)
+    state = document.candidate_state(store, candidate_id)
+    if state is None:
+        raise contract.ContractError("candidate_not_found")
+    return {"candidate": state}
+
+
+def _adopt_candidate_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Explicitly adopt a candidate into an Accepted Version, after revalidation.
+
+    The candidate is revalidated against the *current* store (document head,
+    package/runtime/validation identities, accepted predecessor) before the
+    pointer moves. A stale candidate, changed document, missing/failed evidence,
+    corrupt manifest, unexpected baseline or repeated/concurrent adoption is a
+    bounded refusal that leaves the previous Accepted Version intact. This handler
+    performs no runner or provider access.
+    """
+    document_id = _document_id(request)
+    candidate_id = request.get("candidate_id")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        raise contract.ContractError("invalid_request")
+    store = _load_document_store(session, document_id)
+    package = _known_package("quotation-rules")
+    new_store, version = document.adopt_candidate(
+        store, candidate_id, package, app_package.RUNNER_IDENTITY,
+        document.VALIDATION_IDENTITY, _now_iso(),
+    )
+    if new_store is None:
+        raise contract.ContractError(_adopt_error_code(version))
+    _persist_document(session, document_id, new_store)
+    result = document.document_state(new_store)
+    result["state"] = "adopted"
+    result["accepted_version"] = version
+    return result
+
+
+def _adopt_error_code(reason: Optional[str]) -> str:
+    """Map a bounded adoption refusal to its contract error code."""
+    if reason == document.REASON_CANDIDATE_NOT_FOUND:
+        return "candidate_not_found"
+    if reason == document.REASON_ALREADY_ADOPTED:
+        return "already_adopted"
+    if reason == document.REASON_CORRUPT:
+        return "candidate_invalid"
+    if reason == document.REASON_CANDIDATE_STALE:
+        return "candidate_stale"
+    # evidence_failed / baseline_mismatch → bounded, safe refusal
+    return "adopt_not_allowed"
+
+
+def _list_versions_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the accepted-version history and the current pointer."""
+    document_id = _document_id(request)
+    store = _load_document_store(session, document_id)
+    return {
+        "versions": [v for v in store.get("accepted_versions", []) if isinstance(v, dict)],
+        "current_accepted_version_id": store.get("current_accepted_version_id"),
+    }
+
+
+def _restore_version_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Re-point the Accepted Version to a prior accepted snapshot.
+
+    The Working Document (head revision and history) and every non-adopted
+    candidate are preserved. Restoring the current version is a no-op.
+    """
+    document_id = _document_id(request)
+    version_id = request.get("version_id")
+    if not isinstance(version_id, str) or not version_id.strip():
+        raise contract.ContractError("invalid_request")
+    store = _load_document_store(session, document_id)
+    new_store, version = document.restore_version(store, version_id, _now_iso())
+    if new_store is None:
+        raise contract.ContractError("version_not_found")
+    _persist_document(session, document_id, new_store)
+    result = document.document_state(new_store)
+    result["state"] = "restored"
+    result["accepted_version"] = version
+    return result
 
 
 if __name__ == "__main__":

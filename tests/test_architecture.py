@@ -59,6 +59,11 @@ _PROVIDER_SEAM = frozenset(
 # HTTP and socket code.
 _NETWORK_MODULES = frozenset({"http", "socket", "urllib", "ssl", "requests"})
 
+# P4.4 document/version-authority seam modules. A client must never import
+# these: they own the Working Document domain and its persistence, which the
+# desktop shell reaches only through the NDJSON boundary.
+_DOCUMENT_SEAM = frozenset({"document", "version_store"})
+
 
 def _imported_top_level_names(path: str) -> set:
     with open(path, "r", encoding="utf-8") as fh:
@@ -175,6 +180,32 @@ class ClientArchitectureTests(unittest.TestCase):
                     f"{module} imports network primitives: "
                     f"{sorted(imported & _NETWORK_MODULES)}",
                 )
+
+    def test_client_modules_do_not_import_document_seam(self):
+        # The desktop shell renders the Working Document / Candidate / Accepted
+        # Version through its own presentation vocabulary in ``client_core``;
+        # importing the document domain or store would couple the client to the
+        # deterministic core (mirroring the proposal/workspace rules).
+        for module, path in _CLIENT_MODULES.items():
+            with self.subTest(module=module):
+                imported = _imported_top_level_names(path)
+                self.assertTrue(
+                    imported.isdisjoint(_DOCUMENT_SEAM),
+                    f"{module} imports the document/version seam: "
+                    f"{sorted(imported & _DOCUMENT_SEAM)}",
+                )
+
+    def test_document_modules_do_not_import_network(self):
+        # The document domain and its store are offline: they never open a
+        # socket, so a frozen save/adopt loop stays network-free.
+        for name in ("document", "version_store"):
+            path = os.path.join(_SRC, name + ".py")
+            imported = _imported_top_level_names(path)
+            self.assertTrue(
+                imported.isdisjoint(_NETWORK_MODULES),
+                f"hrca.{name} imports network primitives: "
+                f"{sorted(imported & _NETWORK_MODULES)}",
+            )
 
     def test_boundary_imports_transport_lazily(self):
         # ``deepseek_transport`` (the only socket-opening module) must be
