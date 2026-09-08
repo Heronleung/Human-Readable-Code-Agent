@@ -203,6 +203,32 @@ class RunTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(error, app_package.STATE_INPUT_INVALID)
 
+    def test_staged_input_directory_is_traversable_by_non_root(self):
+        # ``tempfile.mkdtemp`` creates a 0700 directory, which the container's
+        # non-root user could not read; the runner must widen only the staged
+        # input directory to 0755 so the reviewed handler can read its input.
+        observed = {}
+
+        def spawn(argv, **kw):
+            output_dir = _output_dir_from_argv(argv)
+            for i, arg in enumerate(argv):
+                if arg == "--mount" and "dst=/in" in argv[i + 1]:
+                    for part in argv[i + 1].split(","):
+                        if part.startswith("src="):
+                            observed["input_mode"] = os.stat(part[4:]).st_mode & 0o777
+            with open(os.path.join(output_dir, "output.json"), "w", encoding="utf-8") as fh:
+                json.dump({"result": {"total": "1.00"}}, fh)
+            return _Result(returncode=0)
+
+        runner = container_runner.ContainerRunner(
+            which=lambda name: "docker", spawn=spawn
+        )
+        result, error = runner.run(
+            handler="quotation_rules.evaluate", input_payload={"subtotal": "1.00"}
+        )
+        self.assertIsNone(error)
+        self.assertEqual(observed["input_mode"], 0o755)
+
 
 class OutputBoundsTests(unittest.TestCase):
     def setUp(self):

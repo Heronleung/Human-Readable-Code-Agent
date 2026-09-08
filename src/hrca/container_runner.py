@@ -198,6 +198,12 @@ class ContainerRunner:
         container_name = "hrca-run-" + uuid.uuid4().hex
         try:
             self._stage_input(input_dir, handler, input_payload)
+            # The staged input directory must be traversable by the container's
+            # non-root user (``tempfile.mkdtemp`` creates a 0700 directory, which
+            # ``nobody`` could not read). The staged input file is world-readable;
+            # widening only the fresh, dedicated input directory never exposes the
+            # host.
+            os.chmod(input_dir, 0o755)
             # The output directory must be writable by the non-root container
             # user; it is a fresh, dedicated directory only.
             os.chmod(output_dir, 0o777)
