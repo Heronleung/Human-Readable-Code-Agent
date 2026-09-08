@@ -71,6 +71,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -171,6 +172,10 @@ from .client_core import (
     build_prepare_advisory_request,
     format_advisory_disclosure,
     format_advisory_result,
+    build_get_package_request,
+    build_run_package_request,
+    format_run_result,
+    run_state_label,
     twin_state_from_sync,
 )
 
@@ -259,7 +264,7 @@ _SETTINGS_SECTION_LABELS = {
 # first key ("chat") maps to the Agent Chat surface; the remaining five map to
 # the read-only secondary surfaces populated by the scan pipeline. The keys are
 # the single source of truth for the ``selected_tab`` state.
-_BOTTOM_TAB_KEYS = ("chat", "plan", "diff", "problems", "tests", "evidence")
+_BOTTOM_TAB_KEYS = ("chat", "plan", "diff", "problems", "tests", "evidence", "builder")
 
 # Human-readable tab labels (one per key, same order).
 _BOTTOM_TAB_LABELS = {
@@ -269,6 +274,7 @@ _BOTTOM_TAB_LABELS = {
     "problems": "Problems",
     "tests": "Tests",
     "evidence": "Evidence",
+    "builder": "Builder",
 }
 
 _PY_KEYWORDS = (
@@ -680,6 +686,10 @@ class MainWindow(QMainWindow):
         # confirmed request. Neither holds a credential, prompt or source text.
         self._pending_advisory_token: Optional[str] = None
         self._pending_advisory_disclosure: str = ""
+        # Builder surface state (P4.3): whether the reference package schema has
+        # been loaded, and the form-field widget map keyed by field name.
+        self._builder_loaded: bool = False
+        self._builder_fields: Dict[str, QWidget] = {}
         # Deferred exit intents resolved after a save completes: "edit" returns
         # to the read-only projection; "close" closes the window.
         self._leave_after_save: bool = False
@@ -1214,6 +1224,10 @@ class MainWindow(QMainWindow):
         self._bottom_body.addWidget(self._build_chat_page())
         self._views: Dict[str, CodeView] = {}
         for key in _BOTTOM_TAB_KEYS[1:]:
+            if key == "builder":
+                self._builder_page = self._build_builder_page()
+                self._bottom_body.addWidget(self._builder_page)
+                continue
             view = CodeView(self._bottom_body, palette=self._palette)
             self._views[key] = view
             self._bottom_body.addWidget(view)
@@ -1270,6 +1284,51 @@ class MainWindow(QMainWindow):
         notice.setAccessibleName("Chat availability")
         layout.addWidget(notice)
 
+        return body
+
+    def _build_builder_page(self) -> QWidget:
+        """Build the document-driven Builder surface (P4.3).
+
+        Presents the fixed reference-package form, a Run action, and a bounded
+        result area. The package schema and the form input are validated by the
+        backend; this surface only renders the fixed form and the bounded result
+        and never holds a credential or runs package code directly.
+        """
+        body = QWidget()
+        body.setObjectName("builderPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self._builder_title = QLabel("Quotation rules")
+        self._builder_title.setObjectName("builderTitle")
+        self._builder_title.setAccessibleName("Package title")
+        layout.addWidget(self._builder_title)
+
+        self._builder_form = QWidget()
+        self._builder_form_layout = QVBoxLayout(self._builder_form)
+        self._builder_form_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._builder_form_layout.setSpacing(style.GAP_TIGHT)
+        layout.addWidget(self._builder_form)
+
+        self._builder_run = QPushButton("Run")
+        self._builder_run.setAccessibleName("Run package")
+        self._builder_run.setEnabled(False)
+        self._builder_run.clicked.connect(self._run_package)
+        layout.addWidget(self._builder_run)
+
+        self._builder_result = QPlainTextEdit()
+        self._builder_result.setObjectName("builderResult")
+        self._builder_result.setReadOnly(True)
+        self._builder_result.setAccessibleName("Package result")
+        self._builder_result.setVisible(False)
+        layout.addWidget(self._builder_result)
+
+        layout.addStretch(1)
         return body
 
     def _build_status_bar(self) -> QWidget:
@@ -1337,6 +1396,9 @@ class MainWindow(QMainWindow):
     def _on_bottom_tab_changed(self, index: int) -> None:
         if 0 <= index < len(_BOTTOM_TAB_KEYS):
             self._selected_tab = _BOTTOM_TAB_KEYS[index]
+        if self._selected_tab == "builder" and not self._builder_loaded:
+            self._builder_loaded = True
+            self._load_builder_package()
             self._bottom_body.setCurrentIndex(index)
 
     def _toggle_expanded(self) -> None:
@@ -2896,6 +2958,83 @@ class MainWindow(QMainWindow):
     def _on_advisory_error(self, reason: str) -> None:
         self._set_status(STATE_FAILED, reason)
         self._show_draft_result(f"Advisory plan unavailable.\n\nReason: {reason}")
+
+    # -- Document-driven Builder flow (P4.3) ------------------------------
+
+    def _load_builder_package(self) -> None:
+        """Load the reference package schema (offline, read-only)."""
+        cid = contract.new_correlation_id()
+        request = build_get_package_request(cid)
+        self._set_status(STATE_RUNNING, "loading package")
+        if not self._send(request, self._on_builder_package, self._on_package_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_builder_package(self, result: Dict[str, Any]) -> None:
+        """Populate the fixed form from the validated package schema."""
+        self._populate_builder_form(result.get("package") or {})
+        self._set_status(STATE_SUCCESS, "package ready")
+
+    def _populate_builder_form(self, package: Dict[str, Any]) -> None:
+        """Render the package form fields (validated schema from the backend)."""
+        while self._builder_form_layout.count():
+            item = self._builder_form_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._builder_fields = {}
+        self._builder_title.setText(str(package.get("title") or "Package"))
+        for field in package.get("form") or []:
+            name = field.get("name")
+            ftype = field.get("type")
+            if not isinstance(name, str) or not name:
+                continue
+            label = QLabel(str(name))
+            label.setObjectName("builderFieldLabel")
+            label.setAccessibleName(f"{name} field")
+            self._builder_form_layout.addWidget(label)
+            if ftype == "boolean":
+                widget: QWidget = QCheckBox()
+            elif ftype == "choice":
+                combo = QComboBox()
+                for option in field.get("options") or []:
+                    combo.addItem(str(option))
+                widget = combo
+            else:
+                widget = QLineEdit()
+            widget.setAccessibleName(f"{name} input")
+            self._builder_form_layout.addWidget(widget)
+            self._builder_fields[name] = widget
+        self._builder_run.setEnabled(bool(self._builder_fields))
+
+    def _collect_form_input(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {}
+        for name, widget in self._builder_fields.items():
+            if isinstance(widget, QCheckBox):
+                data[name] = widget.isChecked()
+            elif isinstance(widget, QComboBox):
+                data[name] = widget.currentText()
+            else:
+                data[name] = widget.text().strip()
+        return data
+
+    def _run_package(self) -> None:
+        cid = contract.new_correlation_id()
+        request = build_run_package_request(cid, "quotation-rules", self._collect_form_input())
+        self._set_status(STATE_RUNNING, "running package")
+        if not self._send(request, self._on_package_run, self._on_package_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_package_run(self, result: Dict[str, Any]) -> None:
+        text = format_run_result(result)
+        self._builder_result.setPlainText(text)
+        self._builder_result.setVisible(bool(text))
+        state = str(result.get("state", "unknown"))
+        self._set_status(STATE_SUCCESS, f"package {run_state_label(state)}")
+
+    def _on_package_error(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+        self._builder_result.setPlainText(f"Package run unavailable.\n\nReason: {reason}")
+        self._builder_result.setVisible(True)
 
     def _mark_draft_dirty(self, *_args: Any) -> None:
         self._draft_dirty = True

@@ -259,6 +259,35 @@ it never generates or applies source changes.
   import or touch the transport; the provider request is reachable only through
   the explicit confirmed action.
 
+## Document-driven Builder foundation (P4.3)
+
+The first executable foundation for Specification 2.0: a hand-written
+**quotation-rules** reference package is validated, rendered through a fixed
+form UI, and run only through an isolated container runner.
+
+- **Versioned package contract** (`hrca.app_package`). A package is data only:
+  it declares approved form/result fields, a fixed runtime identity, and a
+  named handler resolved from a code-owned allowlist. It cannot carry a script,
+  HTML, command, mount, environment or dependency-install field — those are
+  rejected as unknown keys before any runner starts.
+- **Hand-written fixture** (`hrca.runtime_handlers`). Member discount, free
+  shipping at/above the 100.00 threshold, per-region fee, non-negative subtotal,
+  and half-up two-decimal rounding — proven by acceptance examples.
+- **Isolated runner** (`hrca.container_runner`). Executes the trusted handler
+  inside a reviewed Linux container only after a fail-closed
+  availability/isolation preflight: no network, non-root,
+  `no-new-privileges`, `--cap-drop ALL`, read-only rootfs, bounded
+  CPU/memory/PID/wall-time, staged input only, and validated output collection.
+  No host home, credential, repository or Docker socket is ever mounted, and
+  there is no host-Python fallback.
+- **Boundary + Builder tab** (`get_package` / `run_package`). The desktop
+  renders the fixed form, runs the named package, and shows bounded results or
+  an understandable blocked/failed state. A missing runtime reports
+  `runtime_unavailable` rather than falling back to the host.
+
+The container image is defined (but not built here) at `packaging/runner/`;
+building it requires a running Docker daemon.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:

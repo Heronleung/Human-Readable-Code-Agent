@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, TextIO, Sequence
 
 from . import (
     advisory,
+    app_package,
     codemap,
     codemap_draft,
     contract,
@@ -74,6 +75,7 @@ class WorkspaceSession:
         credential_store: Any = None,
         credential_prompt: Any = None,
         advisory_transport: Any = None,
+        runner: Any = None,
     ) -> None:
         self.root: Optional[str] = None
         self.store_base: str = store_base or twin_store.app_data_dir()
@@ -89,6 +91,10 @@ class WorkspaceSession:
         # Provider double). When absent the confirmed plan-advisory handler
         # constructs the real DeepSeek transport lazily.
         self.advisory_transport = advisory_transport
+        # Backend-owned isolated runner, injected for tests (a deterministic
+        # runner double). When absent the run-package handler constructs the
+        # real container runner lazily.
+        self.runner = runner
 
     def open(self, root: str) -> None:
         self.root = root
@@ -265,6 +271,10 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _prepare_advisory_result(request, session)
     elif action == contract.ACTION_PLAN_ADVISORY:
         result = _plan_advisory_result(request, session)
+    elif action == contract.ACTION_GET_PACKAGE:
+        result = _get_package_result(request, session)
+    elif action == contract.ACTION_RUN_PACKAGE:
+        result = _run_package_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -1428,6 +1438,57 @@ def _plan_advisory_result(
         usage=usage,
         limitations=[],
     )
+
+
+# -- Document-driven app-package handlers (P4.3) --------------------------
+
+
+def _known_package(package_id: str):
+    """Return the code-owned reference package for ``package_id``, or ``None``."""
+    if package_id == "quotation-rules":
+        return app_package.quotation_reference_package()
+    return None
+
+
+def _get_package_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the validated reference package (its form/result schema).
+
+    Performs no runner or network access. The default package id is the single
+    hand-written quotation-rules fixture.
+    """
+    task = request.get("task")
+    package_id = task.get("package_id") if isinstance(task, dict) else None
+    if package_id is None:
+        package_id = "quotation-rules"
+    if not isinstance(package_id, str) or not package_id:
+        raise contract.ContractError("invalid_request")
+    package = _known_package(package_id)
+    if package is None:
+        raise contract.ContractError("package_not_found")
+    return {"package": package}
+
+
+def _run_package_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Execute one named package against one form input through the runner.
+
+    The package manifest and the form input are untrusted; the broker validates
+    both before the isolated runner starts, and the runner never executes on the
+    host. The broker (and its container runner) is imported lazily so the frozen
+    scan/serve/readiness loop never pulls in the runner subprocess.
+    """
+    task = request.get("task")
+    if not isinstance(task, dict):
+        raise contract.ContractError("invalid_request")
+    package_id = task.get("package_id")
+    if not isinstance(package_id, str) or not package_id:
+        raise contract.ContractError("invalid_request")
+    package = _known_package(package_id)
+    if package is None:
+        raise contract.ContractError("package_not_found")
+    form_input = task.get("input")
+    from . import runner_broker
+
+    return runner_broker.run_package(package, form_input, session.runner)
 
 
 if __name__ == "__main__":

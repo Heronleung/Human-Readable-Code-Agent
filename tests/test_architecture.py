@@ -50,7 +50,8 @@ _FORBIDDEN_TOP_LEVEL = frozenset(
 _PROVIDER_SEAM = frozenset(
     {"deepseek", "credential_store", "credential_store_win",
      "credential_sheet_win", "provider_config", "provider_cli", "credential_host",
-     "deepseek_transport", "advisory"}
+     "deepseek_transport", "advisory",
+     "app_package", "runner_broker", "container_runner", "runtime_handlers"}
 )
 
 # Network primitives a client must never import: only the backend transport may

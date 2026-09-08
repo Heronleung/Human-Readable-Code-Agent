@@ -33,6 +33,9 @@ from hrca.contract import (
     ACTION_PREPARE_ADVISORY,
     ACTION_PLAN_ADVISORY,
     ADVISORY_ACTIONS,
+    ACTION_GET_PACKAGE,
+    ACTION_RUN_PACKAGE,
+    PACKAGE_ACTIONS,
     ALLOWED_ACTIONS,
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
@@ -102,7 +105,8 @@ class AllowedActionTests(unittest.TestCase):
             | READINESS_ACTIONS
             | CREDENTIAL_ACTIONS
             | PROFILE_ACTIONS
-            | ADVISORY_ACTIONS,
+            | ADVISORY_ACTIONS
+            | PACKAGE_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -241,6 +245,28 @@ class AllowedActionTests(unittest.TestCase):
             self.assertNotIn(action, READINESS_ACTIONS)
             self.assertNotIn(action, CREDENTIAL_ACTIONS)
             self.assertNotIn(action, PROFILE_ACTIONS)
+
+    def test_package_actions_are_allowlisted(self):
+        self.assertEqual(
+            PACKAGE_ACTIONS,
+            frozenset({ACTION_GET_PACKAGE, ACTION_RUN_PACKAGE}),
+        )
+
+    def test_package_actions_are_read_only(self):
+        # App-package actions run through the isolated runner; they never touch
+        # source, Git, a command, a credential or the repository directly, and
+        # their names are distinct from every other action family.
+        for action in PACKAGE_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, WORKSPACE_ACTIONS)
+            self.assertNotIn(action, TWIN_ACTIONS)
+            self.assertNotIn(action, DRAFT_ACTIONS)
+            self.assertNotIn(action, PROPOSAL_ACTIONS)
+            self.assertNotIn(action, READINESS_ACTIONS)
+            self.assertNotIn(action, CREDENTIAL_ACTIONS)
+            self.assertNotIn(action, PROFILE_ACTIONS)
+            self.assertNotIn(action, ADVISORY_ACTIONS)
 
     def test_task_actions_exclude_mutators(self):
         self.assertTrue(READ_ONLY_TASK_ACTIONS <= ALLOWED_ACTIONS)

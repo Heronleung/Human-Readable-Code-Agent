@@ -82,6 +82,12 @@ ACTION_SET_ACTIVE_PROFILE = "set_active_profile"
 # repository-write action.
 ACTION_PREPARE_ADVISORY = "prepare_advisory"
 ACTION_PLAN_ADVISORY = "plan_advisory"
+# The P4.3 document-driven app-package protocol. ``get_package`` returns the
+# validated reference package (form/result schema); ``run_package`` executes it
+# through the isolated runner and returns a normalized result. Neither action
+# carries a credential, a command, a mount, an environment variable or code.
+ACTION_GET_PACKAGE = "get_package"
+ACTION_RUN_PACKAGE = "run_package"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -145,6 +151,10 @@ PROFILE_ACTIONS = frozenset(
 # must call ``prepare_advisory`` first and then ``plan_advisory`` with an
 # explicit ``confirmed: true``.
 ADVISORY_ACTIONS = frozenset({ACTION_PREPARE_ADVISORY, ACTION_PLAN_ADVISORY})
+# The P4.3 document-driven app-package protocol. ``get_package`` is read-only
+# and offline; ``run_package`` executes through the isolated runner only after
+# the runner's fail-closed availability/isolation preflight.
+PACKAGE_ACTIONS = frozenset({ACTION_GET_PACKAGE, ACTION_RUN_PACKAGE})
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -155,6 +165,7 @@ ALLOWED_ACTIONS = (
     | CREDENTIAL_ACTIONS
     | PROFILE_ACTIONS
     | ADVISORY_ACTIONS
+    | PACKAGE_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -237,6 +248,9 @@ _ERROR_MESSAGES = {
     "profile_name_invalid": "the credential profile name is invalid",
     "profile_credential_missing": "the credential for this profile is not present",
     "profile_persist_failed": "the credential profile could not be saved",
+    # App-package errors (P4.3). Messages are fixed and never interpolate a
+    # package id, path or input value.
+    "package_not_found": "the named app package does not exist",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)
@@ -386,6 +400,8 @@ __all__ = [
     "ACTION_SET_ACTIVE_PROFILE",
     "ACTION_PREPARE_ADVISORY",
     "ACTION_PLAN_ADVISORY",
+    "ACTION_GET_PACKAGE",
+    "ACTION_RUN_PACKAGE",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
@@ -395,6 +411,7 @@ __all__ = [
     "CREDENTIAL_ACTIONS",
     "PROFILE_ACTIONS",
     "ADVISORY_ACTIONS",
+    "PACKAGE_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",

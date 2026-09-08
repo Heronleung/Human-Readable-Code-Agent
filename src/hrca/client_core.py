@@ -1234,6 +1234,86 @@ def format_advisory_result(result: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# -- Document-driven app-package client vocabulary (P4.3) -----------------
+#
+# The normalized run-result states are held here as literals so the client never
+# imports the package/runner/broker domain (which it must not import). Unknown
+# values fall back to their raw token.
+
+RUN_STATE_LABELS = {
+    "ok": "Completed",
+    "input_invalid": "Input invalid",
+    "package_invalid": "Package invalid",
+    "runtime_unavailable": "Runtime unavailable",
+    "runtime_blocked": "Runtime blocked",
+    "timeout": "Timed out",
+    "output_invalid": "Output invalid",
+    "runner_failed": "Runner failed",
+}
+
+
+def run_state_label(state: str) -> str:
+    """Return the human label for a package run ``state``."""
+    return RUN_STATE_LABELS.get(state, state)
+
+
+def build_get_package_request(
+    correlation_id: str, package_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Build a ``get_package`` request for one reference package schema."""
+    task: Dict[str, Any] = {}
+    if package_id is not None:
+        task["package_id"] = package_id
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_GET_PACKAGE,
+        "task": task,
+    }
+
+
+def build_run_package_request(
+    correlation_id: str, package_id: str, form_input: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Build a ``run_package`` request executing one package on one form input."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_RUN_PACKAGE,
+        "task": {"package_id": package_id, "input": form_input},
+    }
+
+
+def format_run_result(result: Dict[str, Any]) -> str:
+    """Render a normalized package run result as deterministic plain text.
+
+    The bounded result fields are shown in sorted key order; limitations (a
+    bounded reason) and the state label make blocked/failed outcomes legible.
+    No secret, path, command or runner protocol detail is ever rendered.
+    """
+    if not result:
+        return ""
+    state = run_state_label(str(result.get("state", "unknown")))
+    lines = [
+        "Package run",
+        f"State: {state}",
+        f"Package: {result.get('package_id', 'unknown')}",
+    ]
+    data = result.get("result")
+    if data:
+        lines.append("")
+        lines.append("Result:")
+        for key in sorted(data):
+            lines.append(f"  {key}: {data[key]}")
+    limitations = result.get("limitations") or []
+    if limitations:
+        lines.append("")
+        lines.append("Limitations:")
+        for limitation in limitations:
+            lines.append(f"  - {limitation}")
+    return "\n".join(lines)
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -1328,6 +1408,11 @@ __all__ = [
     "build_plan_advisory_request",
     "format_advisory_disclosure",
     "format_advisory_result",
+    "RUN_STATE_LABELS",
+    "run_state_label",
+    "build_get_package_request",
+    "build_run_package_request",
+    "format_run_result",
     "default_fixture_root",
     "resolve_backend_command",
     "resolve_credential_host_command",
