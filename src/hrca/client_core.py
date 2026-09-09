@@ -1331,7 +1331,8 @@ DOCUMENT_KIND_LABELS = {
 # fingerprint, candidate id or user prose.
 DOCUMENT_FAILURE_MESSAGES = {
     "document_not_found": "That document no longer exists.",
-    "document_name_invalid": "Use a name ending in .md or .txt.",
+    "document_name_invalid": "Use a valid .md or .txt name without path characters.",
+    "document_name_in_use": "A document with this name already exists. Choose another name.",
     "document_oversized": "The document is too large to save.",
     "document_stale": "The document changed since it was opened.",
     "document_persist_failed": "The document could not be saved.",

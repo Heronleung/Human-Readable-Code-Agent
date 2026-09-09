@@ -73,6 +73,48 @@ class NameKindTests(unittest.TestCase):
         self.assertFalse(document.valid_name("x" * (document.MAX_DOCUMENT_NAME_CHARS + 1) + ".md"))
 
 
+class NormalizeNameTests(unittest.TestCase):
+    """P4.5a: the Windows-safe, case-insensitive name policy."""
+
+    def test_trims_surrounding_whitespace(self):
+        self.assertEqual(document.normalize_name("  notes.txt  "), "notes.txt")
+        self.assertEqual(document.normalize_name("req.md"), "req.md")
+
+    def test_rejects_blank(self):
+        self.assertIsNone(document.normalize_name(""))
+        self.assertIsNone(document.normalize_name("   "))
+        self.assertIsNone(document.normalize_name(None))
+
+    def test_rejects_unsupported_extension(self):
+        self.assertIsNone(document.normalize_name("notes.py"))
+        self.assertIsNone(document.normalize_name("notes"))
+
+    def test_rejects_path_separators(self):
+        self.assertIsNone(document.normalize_name("dir/notes.md"))
+        self.assertIsNone(document.normalize_name("dir\\notes.txt"))
+
+    def test_rejects_traversal(self):
+        self.assertIsNone(document.normalize_name(".."))
+        self.assertIsNone(document.normalize_name("."))
+
+    def test_rejects_reserved_windows_names(self):
+        for name in ("CON.md", "con.txt", "LPT1.md", "nul.txt", "aux.md"):
+            with self.subTest(name=name):
+                self.assertIsNone(document.normalize_name(name))
+
+    def test_rejects_overlong(self):
+        self.assertIsNone(document.normalize_name("x" * 121 + ".md"))
+
+    def test_name_key_is_case_insensitive(self):
+        self.assertEqual(document.name_key("Requirement.md"), "requirement.md")
+        self.assertEqual(document.name_key("requirement.MD"), "requirement.md")
+        self.assertEqual(document.name_key("  Requirement.md  "), "requirement.md")
+
+    def test_name_key_none_for_invalid(self):
+        self.assertIsNone(document.name_key(""))
+        self.assertIsNone(document.name_key(None))
+
+
 class SaveRevisionTests(unittest.TestCase):
     def test_exact_content_round_trips(self):
         store = document.new_document_store("doc:d1", "requirements.md", "md", _NOW)

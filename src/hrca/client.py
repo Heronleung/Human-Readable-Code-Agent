@@ -761,6 +761,10 @@ class MainWindow(QMainWindow):
         self._document_versions: List[Dict[str, Any]] = []
         self._current_accepted_version_id: Optional[str] = None
         self._document_candidate_id: Optional[str] = None
+        # P4.5a: candidate request in flight (blocks a duplicate Create preview)
+        # and the last requested name (used for the name-conflict message).
+        self._document_candidate_pending: bool = False
+        self._pending_document_name: Optional[str] = None
         self._document_combo: Optional[QComboBox] = None
         self._document_status_label: Optional[QLabel] = None
         self._document_editor: Optional[QPlainTextEdit] = None
@@ -1621,11 +1625,15 @@ class MainWindow(QMainWindow):
         actions_layout.setSpacing(style.GAP_TIGHT)
         self._document_save_button = QPushButton("Save")
         self._document_save_button.setObjectName("primaryButton")
-        self._document_candidate_button = QPushButton("Create candidate")
+        self._document_candidate_button = QPushButton("Create preview")
         self._document_review_button = QPushButton("Review candidate")
         self._document_adopt_button = QPushButton("Adopt")
         self._document_save_button.setAccessibleName("Save document")
-        self._document_candidate_button.setAccessibleName("Create candidate")
+        self._document_candidate_button.setAccessibleName("Create preview")
+        self._document_candidate_button.setToolTip(
+            "Create a demonstration preview bound to the hand-written quotation "
+            "fixture. It does not interpret your document or generate code."
+        )
         self._document_review_button.setAccessibleName("Review candidate")
         self._document_adopt_button.setAccessibleName("Adopt candidate")
         self._document_save_button.clicked.connect(self._save_document)
@@ -3370,10 +3378,10 @@ class MainWindow(QMainWindow):
     def _update_document_actions(self) -> None:
         """Show candidate actions only in their meaningful states.
 
-        Save is always the primary action. Create candidate appears only after a
-        saved (clean) document is current; Review candidate appears only when a
-        candidate exists; Adopt appears only when that candidate's evidence is
-        current.
+        Save is always the primary action. Create preview appears only after a
+        saved (clean) document is current, and is disabled while a candidate
+        request is in flight; Review candidate appears only when a candidate
+        exists; Adopt appears only when that candidate's evidence is current.
         """
         has_doc = self._document_id is not None
         has_revision = bool((self._document_head or {}).get("revision_id"))
@@ -3384,6 +3392,9 @@ class MainWindow(QMainWindow):
         if self._document_candidate_button is not None:
             self._document_candidate_button.setVisible(
                 has_doc and has_revision and not self._document_dirty
+            )
+            self._document_candidate_button.setEnabled(
+                not self._document_candidate_pending
             )
         if self._document_review_button is not None:
             self._document_review_button.setVisible(has_candidate)
@@ -3418,13 +3429,15 @@ class MainWindow(QMainWindow):
         if not self._send(request, self._on_documents_loaded, self._on_document_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
-    def _on_documents_loaded(self, result: Dict[str, Any]) -> None:
-        self._documents = list(result.get("documents") or [])
+    def _repopulate_document_selector(self) -> None:
+        """Rebuild the selector from ``_documents``, preserving the open id.
+
+        Selection is keyed by the opaque ``document_id``, never list index, title,
+        creation order or revision number.
+        """
         combo = self._document_combo
         if combo is None:
             return
-        # Preserve the open document by its opaque id, never list index, title,
-        # creation order or revision number.
         selected_id = self._document_id
         if selected_id is None and combo.count():
             selected_id = combo.currentData()
@@ -3441,6 +3454,33 @@ class MainWindow(QMainWindow):
         if index >= 0:
             combo.setCurrentIndex(index)
         combo.blockSignals(False)
+
+    def _upsert_document_summary(self, summary: Dict[str, Any]) -> None:
+        """Add/update one document summary in memory and repopulate the selector.
+
+        Used after create/save so the selector reflects the change immediately,
+        keyed by the opaque document_id, without a second list round-trip that
+        could conflict with an in-flight preview request.
+        """
+        document_id = summary.get("document_id")
+        if not document_id:
+            return
+        for index, existing in enumerate(self._documents):
+            if existing.get("document_id") == document_id:
+                self._documents[index] = summary
+                break
+        else:
+            self._documents.append(summary)
+        self._documents.sort(
+            key=lambda s: (str(s.get("name") or ""), str(s.get("document_id") or ""))
+        )
+        self._repopulate_document_selector()
+
+    def _on_documents_loaded(self, result: Dict[str, Any]) -> None:
+        self._documents = list(result.get("documents") or [])
+        if self._document_combo is None:
+            return
+        self._repopulate_document_selector()
 
         # Bounded external-change handling: only an externally deleted/corrupt
         # document (no longer listed) clears the open selection, with a clear
@@ -3462,18 +3502,48 @@ class MainWindow(QMainWindow):
         name = name.strip()
         if not name:
             return
+        self._pending_document_name = name
         cid = contract.new_correlation_id()
         request = build_create_document_request(cid, name)
         self._set_status(STATE_RUNNING, "creating document")
-        if not self._send(request, self._on_document_created, self._on_document_error):
+        if not self._send(request, self._on_document_created, self._on_create_document_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
     def _on_document_created(self, result: Dict[str, Any]) -> None:
         doc = result.get("document") or {}
         self._document_id = doc.get("document_id")
         self._apply_document_state(result)
-        self._refresh_documents()
+        # Make the new document visible and selected immediately, in the same
+        # UI cycle, without a second list round-trip that could conflict with
+        # the preview refresh fired by _apply_document_state.
+        self._upsert_document_summary(
+            {
+                "document_id": doc.get("document_id"),
+                "name": doc.get("name"),
+                "kind": doc.get("kind"),
+                "head_revision_number": doc.get("head_revision_number", 0),
+                "revision_count": doc.get("revision_count", 0),
+            }
+        )
         self._set_status(STATE_SUCCESS, "document created")
+
+    def _on_create_document_error(self, reason: str) -> None:
+        """Handle a create-document failure, naming the requested name on a conflict.
+
+        A name conflict identifies the requested (user-facing) name and asks for
+        another name, without exposing internal ids or paths. Every other create
+        failure falls through to the shared bounded error handler.
+        """
+        if reason == "document_name_in_use":
+            name = self._pending_document_name or ""
+            message = f'The name "{name}" is already in use. Choose another name.'
+            self._set_status(STATE_FAILED, message)
+            if self._document_result is not None:
+                self._document_result.setPlainText(
+                    f"New document unavailable.\n\n{message}"
+                )
+        else:
+            self._on_document_error(reason)
 
     def _open_working_document(self) -> None:
         combo = self._document_combo
@@ -3629,26 +3699,41 @@ class MainWindow(QMainWindow):
     def _on_document_saved(self, result: Dict[str, Any]) -> None:
         revision = result.get("revision") or {}
         self._document_base_revision_id = revision.get("revision_id")
+        self._document_head = revision
         self._document_dirty = False
         self._update_document_status()
+        self._update_document_actions()
         self._set_status(
             STATE_SUCCESS, f"document saved (rev {result.get('head_revision_number')})"
         )
-        self._refresh_documents()
+        # Update the selector's revision label in memory (no conflicting round-trip).
+        for index, doc in enumerate(self._documents):
+            if doc.get("document_id") == self._document_id:
+                updated = dict(doc)
+                updated["head_revision_number"] = result.get(
+                    "head_revision_number", doc.get("head_revision_number", 0)
+                )
+                self._documents[index] = updated
+                self._repopulate_document_selector()
+                break
         self._refresh_preview()
 
     def _create_candidate(self) -> None:
-        if not self._document_id:
+        if not self._document_id or self._document_candidate_pending:
             return
+        self._document_candidate_pending = True
+        self._update_document_actions()
         cid = contract.new_correlation_id()
         request = build_create_candidate_request(cid, self._document_id)
         self._set_status(STATE_RUNNING, "creating candidate")
         if not self._send(request, self._on_candidate_ready, self._on_document_error):
+            self._document_candidate_pending = False
+            self._update_document_actions()
             self._set_status(STATE_FAILED, "a request is already in progress")
 
     def _on_candidate_ready(self, result: Dict[str, Any]) -> None:
+        self._document_candidate_pending = False
         self._refresh_document_meta(result)
-        self._refresh_documents()
         self._set_status(STATE_SUCCESS, "candidate created")
 
     def _adopt_candidate(self) -> None:
@@ -3677,7 +3762,6 @@ class MainWindow(QMainWindow):
 
     def _on_candidate_adopted(self, result: Dict[str, Any]) -> None:
         self._refresh_document_meta(result)
-        self._refresh_documents()
         self._set_status(STATE_SUCCESS, "candidate adopted")
 
     def _restore_version(self, version_id: str) -> None:
@@ -3694,6 +3778,8 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_SUCCESS, "accepted version restored")
 
     def _on_document_error(self, reason: str) -> None:
+        self._document_candidate_pending = False
+        self._update_document_actions()
         self._set_status(STATE_FAILED, document_failure_message(reason))
         if self._document_result is not None:
             self._document_result.setPlainText(

@@ -302,6 +302,7 @@ _ERROR_MESSAGES = {
     # user prose, so caller text cannot leak into a protocol error.
     "document_not_found": "the document does not exist",
     "document_name_invalid": "the document name is invalid",
+    "document_name_in_use": "a document with this name already exists",
     "document_oversized": "the document exceeds the maximum allowed size",
     "document_stale": "the document changed since it was loaded",
     "document_persist_failed": "the document could not be saved",

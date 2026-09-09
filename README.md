@@ -130,6 +130,15 @@ and a validation-evidence summary with its limits. The interactive Run button is
 removed; Preview never executes a package or presents example output as a live
 result.
 
+As of **P4.5a**, document entry is repaired: a newly created document appears in
+the selector and is selected immediately (no destination switch or manual
+refresh); document names are normalized (surrounding whitespace trimmed,
+compared case-insensitively) and uniqueness is enforced at the store boundary,
+with blank/path/traversal/reserved-Windows names rejected and a collision refused
+by name; and after a successful save a single contextual **Create preview**
+action appears (hidden while dirty or pending) that runs only the existing
+deterministic candidate path.
+
 All visual values live in the desktop-only design system `hrca/style.py` —
 light and dark palettes (auto-selected from the operating-system appearance),
 a 4 px spacing scale, corner radii, typography, component geometry, and a Qt

@@ -342,5 +342,87 @@ class PreviewSurfaceTests(unittest.TestCase):
         self.assertIn("No document", self.window._preview_state_label.text())
 
 
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class DocumentLifecycleTests(unittest.TestCase):
+    """P4.5a: immediate create/selection, save -> Create preview, name conflict."""
+
+    def setUp(self):
+        _app()
+        self.window = MainWindow()
+
+    def tearDown(self):
+        self.window._supervisor.terminate()
+        self.window._credential_supervisor.terminate()
+        self.window.close()
+        self.window.deleteLater()
+
+    def _created(self, document_id="doc:new", name="new.md"):
+        return {
+            "document": {"document_id": document_id, "name": name, "kind": "md",
+                          "head_revision_number": 0, "revision_count": 0},
+            "head_revision": None,
+            "candidate": None,
+            "accepted": None,
+            "current_accepted_version_id": None,
+            "versions": [],
+        }
+
+    def test_created_document_is_immediately_selected(self):
+        self.window._send = _FakeSend()
+        self.window._on_document_created(self._created())
+        self.assertEqual(self.window._document_id, "doc:new")
+        self.assertEqual(self.window._document_combo.count(), 1)
+        self.assertEqual(self.window._document_combo.currentData(), "doc:new")
+
+    def test_created_document_needs_no_list_round_trip(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._on_document_created(self._created())
+        actions = [r["action"] for r in fake.requests]
+        self.assertNotIn(contract.ACTION_DOCUMENT_LIST, actions)
+
+    def test_save_enables_create_preview(self):
+        self.window._send = _FakeSend()
+        self.window._apply_document_state(_sample_state())
+        self.assertFalse(self.window._document_candidate_button.isHidden())
+        # Editing hides it (dirty).
+        self.window._document_editor.setPlainText("edited")
+        self.assertTrue(self.window._document_candidate_button.isHidden())
+        # Saving re-enables it and binds the new head.
+        self.window._on_document_saved(
+            {"revision": {"revision_id": "rev:2", "revision_number": 2,
+                           "content_fingerprint": "f" * 64},
+             "head_revision_number": 2}
+        )
+        self.assertFalse(self.window._document_candidate_button.isHidden())
+        self.assertTrue(self.window._document_candidate_button.isEnabled())
+        self.assertEqual(self.window._document_head.get("revision_id"), "rev:2")
+
+    def test_create_preview_disabled_while_pending(self):
+        self.window._send = _FakeSend()
+        self.window._apply_document_state(_sample_state())
+        self.window._create_candidate()
+        self.assertTrue(self.window._document_candidate_pending)
+        self.assertFalse(self.window._document_candidate_button.isEnabled())
+        # A second click is a no-op (pending guard).
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._create_candidate()
+        self.assertEqual(len(fake.requests), 0)
+        # Completing resets the pending flag.
+        self.window._on_candidate_ready(
+            {"candidate": None, "accepted": None,
+             "current_accepted_version_id": None, "versions": []}
+        )
+        self.assertFalse(self.window._document_candidate_pending)
+
+    def test_name_conflict_message_names_the_request(self):
+        self.window._pending_document_name = "requirements.md"
+        self.window._on_create_document_error("document_name_in_use")
+        result_text = self.window._document_result.toPlainText()
+        self.assertIn("requirements.md", result_text)
+        self.assertIn("already in use", result_text)
+
+
 if __name__ == "__main__":
     unittest.main()

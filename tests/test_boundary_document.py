@@ -74,6 +74,33 @@ class BoundaryDocumentTests(unittest.TestCase):
         self.assertFalse(env["ok"])
         self.assertEqual(env["error"]["code"], "document_name_invalid")
 
+    def test_create_duplicate_name_rejected_case_insensitive(self):
+        self._create("requirements.md")
+        env = self._create("REQUIREMENTS.MD")
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "document_name_in_use")
+
+    def test_create_duplicate_name_rejected_after_trim(self):
+        self._create("requirements.md")
+        env = self._create("  requirements.md  ")
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "document_name_in_use")
+
+    def test_create_invalid_names_rejected(self):
+        for name in ("", "notes.py", "dir/notes.md", "CON.md", "..", "nul.txt"):
+            with self.subTest(name=name):
+                env = self._create(name=name)
+                self.assertFalse(env["ok"])
+                self.assertEqual(env["error"]["code"], "document_name_invalid")
+
+    def test_create_collision_leaves_existing_unchanged(self):
+        self._create("requirements.md")
+        self._create("REQUIREMENTS.md")
+        env = self._do(contract.ACTION_DOCUMENT_LIST)
+        self.assertTrue(env["ok"])
+        names = [d["name"] for d in env["result"]["documents"]]
+        self.assertEqual(names, ["requirements.md"])
+
     def test_open_absent_document(self):
         env = self._do(contract.ACTION_DOCUMENT_OPEN, document_id="doc:missing")
         self.assertFalse(env["ok"])

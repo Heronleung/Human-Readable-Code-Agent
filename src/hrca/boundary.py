@@ -1547,17 +1547,24 @@ def _persist_document(session: WorkspaceSession, document_id: str, store: Dict[s
 
 
 def _create_document_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
-    """Create an empty Working Document from a validated md/txt name.
+    """Create an empty Working Document from a validated, unique md/txt name.
 
-    Performs no provider, package or runner access. The returned state has no
-    revision and no candidate; the first save creates revision 1.
+    The name is normalized (trimmed, case-insensitively compared) and must not
+    collide with any existing document; a collision is refused with a bounded
+    error and the existing document is left unchanged. Performs no provider,
+    package or runner access. The returned state has no revision and no
+    candidate; the first save creates revision 1.
     """
-    name = request.get("name")
-    if not document.valid_name(name):
+    name = document.normalize_name(request.get("name"))
+    if name is None:
         raise contract.ContractError("document_name_invalid")
+    key = document.name_key(name)
+    for summary in version_store.list_documents(session.store_base):
+        if document.name_key(summary.get("name")) == key:
+            raise contract.ContractError("document_name_in_use")
     document_id = document.new_document_id()
     store = document.new_document_store(
-        document_id, name.strip(), document.kind_for_name(name), _now_iso()
+        document_id, name, document.kind_for_name(name), _now_iso()
     )
     _persist_document(session, document_id, store)
     return document.document_state(store)

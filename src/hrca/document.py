@@ -197,12 +197,62 @@ def kind_for_name(name: str) -> Optional[str]:
 
 def valid_name(name: Any) -> bool:
     """Return True when ``name`` is a valid, bounded md/txt document name."""
-    return (
-        isinstance(name, str)
-        and bool(name.strip())
-        and len(name) <= MAX_DOCUMENT_NAME_CHARS
-        and kind_for_name(name) is not None
-    )
+    return normalize_name(name) is not None
+
+
+# Windows-oriented namespace safety (P4.5a). A document name is user-visible and
+# must be safe for a local Windows-oriented namespace, so the base name (before
+# the ``.md``/``.txt`` suffix) may not be a reserved Windows device name. These
+# are the case-insensitive reserved device names; the directory that owns each
+# store is keyed by the opaque document id, but the name itself is still kept
+# from ever being an unsafe filename.
+_WINDOWS_RESERVED_BASE_NAMES = frozenset(
+    {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    }
+)
+
+
+def normalize_name(name: Any) -> Optional[str]:
+    """Return the trimmed, valid document name, or ``None`` when invalid.
+
+    A valid name is non-blank, at most :data:`MAX_DOCUMENT_NAME_CHARS` after
+    trimming surrounding whitespace, ends in ``.md``/``.txt`` (case-insensitive),
+    contains no path separator or traversal component, and has a base name that
+    is not a reserved Windows device name. The original spelling/casing is
+    preserved; normalization only trims permitted surrounding whitespace.
+    """
+    if not isinstance(name, str):
+        return None
+    trimmed = name.strip()
+    if not trimmed:
+        return None
+    if len(trimmed) > MAX_DOCUMENT_NAME_CHARS:
+        return None
+    if kind_for_name(trimmed) is None:
+        return None
+    if "/" in trimmed or "\\" in trimmed:
+        return None
+    if trimmed in (".", ".."):
+        return None
+    if trimmed.rsplit(".", 1)[0].lower() in _WINDOWS_RESERVED_BASE_NAMES:
+        return None
+    return trimmed
+
+
+def name_key(name: Any) -> Optional[str]:
+    """Return the case-insensitive comparison key for ``name``, or ``None``.
+
+    Two names that normalize to the same trimmed, lower-cased text share a key,
+    so ``Requirement.md`` and ``requirement.MD`` collide even though their
+    stored spelling differs.
+    """
+    if not isinstance(name, str):
+        return None
+    trimmed = name.strip()
+    return trimmed.lower() if trimmed else None
 
 
 # -- store construction ---------------------------------------------------
@@ -764,6 +814,9 @@ __all__ = [
     "new_version_id",
     "kind_for_name",
     "valid_name",
+    "normalize_name",
+    "name_key",
+    "_WINDOWS_RESERVED_BASE_NAMES",
     "new_document_store",
     "save_revision",
     "build_candidate",
