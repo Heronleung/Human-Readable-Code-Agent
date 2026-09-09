@@ -44,6 +44,7 @@ from hrca.contract import (
     ACTION_DOCUMENT_ADOPT,
     ACTION_DOCUMENT_LIST_VERSIONS,
     ACTION_DOCUMENT_RESTORE,
+    ACTION_DOCUMENT_PREVIEW,
     PACKAGE_ACTIONS,
     DOCUMENT_ACTIONS,
     ALLOWED_ACTIONS,
@@ -294,6 +295,7 @@ class AllowedActionTests(unittest.TestCase):
                     ACTION_DOCUMENT_ADOPT,
                     ACTION_DOCUMENT_LIST_VERSIONS,
                     ACTION_DOCUMENT_RESTORE,
+                    ACTION_DOCUMENT_PREVIEW,
                 }
             ),
         )

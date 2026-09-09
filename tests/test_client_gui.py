@@ -2028,8 +2028,9 @@ class NavigationRailTests(unittest.TestCase):
         window._select_destination("document")
         self.assertEqual(sent[-1]["action"], contract.ACTION_DOCUMENT_LIST)
 
-    def test_preview_selection_loads_package_once(self):
+    def test_preview_selection_refreshes_preview(self):
         window = MainWindow()
+        window._document_id = "doc:d1"
         sent = []
 
         def fake_send(request, on_success, on_error):
@@ -2038,10 +2039,10 @@ class NavigationRailTests(unittest.TestCase):
 
         window._send = fake_send
         window._select_destination("preview")
-        window._select_destination("document")
-        window._select_destination("preview")
-        package_requests = [r for r in sent if r["action"] == contract.ACTION_GET_PACKAGE]
-        self.assertEqual(len(package_requests), 1)
+        preview_requests = [
+            r for r in sent if r["action"] == contract.ACTION_DOCUMENT_PREVIEW
+        ]
+        self.assertEqual(len(preview_requests), 1)
 
     def test_advanced_group_selection_expands_disclosure(self):
         window = MainWindow()

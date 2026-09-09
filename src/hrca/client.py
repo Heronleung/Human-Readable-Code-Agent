@@ -21,9 +21,10 @@ Layout (presentation only, no semantics invented):
 * **Document workspace** — the primary full-height Working Document editor with
   a document header (selector, New, Open, saved/unsaved state) and a footer
   where Save is the primary action and the candidate actions are contextual;
-* **Preview workspace** — the fixed quotation-rules form and its latest run
-  result plus a concise candidate/validation state, with an explicit notice that
-  the fixture is not generated from the document;
+* **Preview workspace** — a read-only, version-bound candidate review surface
+  (bound document revision, Candidate vs Accepted Version and its bounded state,
+  deterministic-fixture provenance, fixed quotation inputs/results, and a
+  validation-evidence summary); it never executes a package;
 * **Advanced** (collapsed by default) — Source & Code Map keeps the three-pane
   project view (Project Explorer, read-only Source Code, Code Map); Change
   Review keeps Agent Chat, Plan, Diff and the raw Candidate metadata;
@@ -76,7 +77,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -176,10 +176,6 @@ from .client_core import (
     build_prepare_advisory_request,
     format_advisory_disclosure,
     format_advisory_result,
-    build_get_package_request,
-    build_run_package_request,
-    format_run_result,
-    run_state_label,
     twin_state_from_sync,
     build_create_document_request,
     build_open_document_request,
@@ -193,6 +189,11 @@ from .client_core import (
     document_kind_label,
     format_document_state,
     format_version_list,
+    build_preview_request,
+    format_preview,
+    preview_kind_label,
+    preview_state_label,
+    preview_state_message,
 )
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -230,13 +231,16 @@ _DIFF_UNAVAILABLE = (
 # becomes a Twin Draft only — it never modifies source, Git state or files.
 _DRAFT_NOTICE = "Edits create a draft only. Source code is unchanged."
 
-# Fixed, honest notice on the Preview surface: the deterministic quotation
-# fixture shown there is never derived from, or an interpretation of, the
-# Working Document. It mirrors the candidate's own non-interpretation record.
-_FIXTURE_NOTICE = (
-    "This preview shows the fixed quotation rules. It is not generated from "
-    "your document."
-)
+# Preview state -> semantic colour token (P4.5). The badge always carries the
+# state word too, so colour is never the sole signal.
+_PREVIEW_STATE_TOKEN = {
+    "no_document": style.STATE_NEUTRAL,
+    "no_candidate": style.STATE_NEUTRAL,
+    "current": style.STATE_SUCCESS,
+    "stale": style.STATE_WARNING,
+    "invalid": style.STATE_ERROR,
+    "insufficient_evidence": style.STATE_WARNING,
+}
 
 # Fixed, honest unavailable messages for the document surface. Each ``reason``
 # is one of the workspace's bounded unavailable reasons; the banner never echoes
@@ -744,10 +748,6 @@ class MainWindow(QMainWindow):
         # confirmed request. Neither holds a credential, prompt or source text.
         self._pending_advisory_token: Optional[str] = None
         self._pending_advisory_disclosure: str = ""
-        # Builder surface state (P4.3): whether the reference package schema has
-        # been loaded, and the form-field widget map keyed by field name.
-        self._builder_loaded: bool = False
-        self._builder_fields: Dict[str, QWidget] = {}
         # Document/version-authority surface state (P4.4): the list of documents,
         # the currently open document's identity and base revision, the dirty
         # flag, the accepted-version list, and the mounted widgets.
@@ -774,7 +774,14 @@ class MainWindow(QMainWindow):
         self._versions_list: Optional[QWidget] = None
         self._versions_layout: Optional[QVBoxLayout] = None
         self._versions_empty_label: Optional[QLabel] = None
+        # P4.5 version-bound Preview surface: the state badge, the document
+        # binding line, the read-only body, and a monotonic generation that tags
+        # each preview request so a late response for a previous document is
+        # discarded rather than overwriting the current document's preview.
         self._preview_state_label: Optional[QLabel] = None
+        self._preview_document_label: Optional[QLabel] = None
+        self._preview_body: Optional[QPlainTextEdit] = None
+        self._preview_generation: int = 0
         # Deferred exit intents resolved after a save completes: "edit" returns
         # to the read-only projection; "close" closes the window.
         self._leave_after_save: bool = False
@@ -1459,13 +1466,13 @@ class MainWindow(QMainWindow):
         return body
 
     def _build_preview_workspace(self) -> QWidget:
-        """Build the Preview workspace (P4.4a), the primary candidate-tool surface.
+        """Build the read-only Preview workspace (P4.5).
 
-        Shows the fixed quotation-rules input form, the latest permitted run
-        result and a concise candidate/validation state — with an explicit,
-        always-visible notice that the fixture is not generated from the Working
-        Document. It only relocates the existing Builder surface; it does not add
-        or broaden runner execution.
+        Presents the version-bound candidate/version preview derived by the
+        boundary: a state badge, the bound document revision, and a read-only
+        body listing the Candidate/Accepted binding, provenance, the fixed
+        quotation form/result fields, the business rules and the validation-
+        evidence summary. It has no Run action and never executes a package.
         """
         body = QWidget()
         body.setObjectName("previewPanel")
@@ -1475,54 +1482,39 @@ class MainWindow(QMainWindow):
         )
         layout.setSpacing(style.GAP_TIGHT)
 
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        header_layout.setSpacing(style.GAP_TIGHT)
         title = QLabel("Preview")
         title.setFont(style.panel_header_font())
         title.setStyleSheet(style.secondary_text_style(self._palette))
-        layout.addWidget(title)
-
-        notice = QLabel(_FIXTURE_NOTICE)
-        notice.setObjectName("secondary")
-        notice.setWordWrap(True)
-        notice.setStyleSheet(style.secondary_text_style(self._palette))
-        notice.setAccessibleName("Preview fixture notice")
-        layout.addWidget(notice)
-
-        self._builder_title = QLabel("Quotation rules")
-        self._builder_title.setObjectName("builderTitle")
-        self._builder_title.setAccessibleName("Package title")
-        layout.addWidget(self._builder_title)
-
-        self._builder_form = QWidget()
-        self._builder_form_layout = QVBoxLayout(self._builder_form)
-        self._builder_form_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        self._builder_form_layout.setSpacing(style.GAP_TIGHT)
-        layout.addWidget(self._builder_form)
-
-        self._builder_run = QPushButton("Run")
-        self._builder_run.setAccessibleName("Run package")
-        self._builder_run.setEnabled(False)
-        self._builder_run.clicked.connect(self._run_package)
-        layout.addWidget(self._builder_run)
-
-        self._builder_result = QPlainTextEdit()
-        self._builder_result.setObjectName("builderResult")
-        self._builder_result.setReadOnly(True)
-        self._builder_result.setAccessibleName("Package result")
-        self._builder_result.setVisible(False)
-        layout.addWidget(self._builder_result)
+        header_layout.addWidget(title)
 
         self._preview_state_label = QLabel("")
         self._preview_state_label.setObjectName("previewState")
-        self._preview_state_label.setAccessibleName("Candidate state")
-        self._preview_state_label.setStyleSheet(
+        self._preview_state_label.setAccessibleName("Preview state")
+        header_layout.addWidget(self._preview_state_label)
+        header_layout.addStretch(1)
+        layout.addWidget(header)
+
+        self._preview_document_label = QLabel("")
+        self._preview_document_label.setObjectName("previewDocument")
+        self._preview_document_label.setAccessibleName("Preview document")
+        self._preview_document_label.setStyleSheet(
             style.status_label_style(self._palette)
         )
-        layout.addWidget(self._preview_state_label)
+        layout.addWidget(self._preview_document_label)
 
-        layout.addStretch(1)
-        self._update_preview_state()
+        self._preview_body = QPlainTextEdit()
+        self._preview_body.setObjectName("previewBody")
+        self._preview_body.setReadOnly(True)
+        self._preview_body.setAccessibleName("Preview content")
+        layout.addWidget(self._preview_body, stretch=1)
+
+        self._clear_preview()
         return body
 
     def _build_versions_page(self) -> QWidget:
@@ -1730,9 +1722,8 @@ class MainWindow(QMainWindow):
         self._content_stack.setCurrentIndex(_NAV_DESTINATION_INDEX[key])
         if key == "document":
             self._refresh_documents()
-        elif key == "preview" and not self._builder_loaded:
-            self._builder_loaded = True
-            self._load_builder_package()
+        elif key == "preview":
+            self._refresh_preview()
 
     def _on_advanced_toggled(self, checked: bool) -> None:
         """Show or hide the collapsed Advanced group."""
@@ -3253,82 +3244,91 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_FAILED, reason)
         self._show_draft_result(f"Advisory plan unavailable.\n\nReason: {reason}")
 
-    # -- Document-driven Builder flow (P4.3) ------------------------------
+    # -- Version-bound Preview flow (P4.5) --------------------------------
 
-    def _load_builder_package(self) -> None:
-        """Load the reference package schema (offline, read-only)."""
+    def _next_preview_generation(self) -> int:
+        """Advance the preview generation and return its new value.
+
+        Every preview request chain is tagged with the generation that started
+        it, so a late response for a previously selected document is discarded
+        instead of overwriting the current document's preview.
+        """
+        self._preview_generation += 1
+        return self._preview_generation
+
+    def _refresh_preview(self) -> None:
+        """Request the version-bound preview for the current document selection.
+
+        With no open document the surface is cleared; otherwise a bounded
+        ``preview_document`` request is sent and the response is discarded unless
+        its generation still matches.
+        """
+        if not self._document_id:
+            self._clear_preview()
+            return
+        generation = self._next_preview_generation()
         cid = contract.new_correlation_id()
-        request = build_get_package_request(cid)
-        self._set_status(STATE_RUNNING, "loading package")
-        if not self._send(request, self._on_builder_package, self._on_package_error):
+        request = build_preview_request(cid, self._document_id)
+        self._set_status(STATE_RUNNING, "loading preview")
+        if not self._send(
+            request, partial(self._on_preview_loaded, generation), self._on_preview_error
+        ):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
-    def _on_builder_package(self, result: Dict[str, Any]) -> None:
-        """Populate the fixed form from the validated package schema."""
-        self._populate_builder_form(result.get("package") or {})
-        self._set_status(STATE_SUCCESS, "package ready")
+    def _on_preview_loaded(self, generation: int, result: Dict[str, Any]) -> None:
+        """Render a loaded preview, discarding a late response for an old document."""
+        if generation != self._preview_generation:
+            return
+        self._render_preview(result)
+        self._set_status(STATE_SUCCESS, "preview ready")
 
-    def _populate_builder_form(self, package: Dict[str, Any]) -> None:
-        """Render the package form fields (validated schema from the backend)."""
-        while self._builder_form_layout.count():
-            item = self._builder_form_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._builder_fields = {}
-        self._builder_title.setText(str(package.get("title") or "Package"))
-        for field in package.get("form") or []:
-            name = field.get("name")
-            ftype = field.get("type")
-            if not isinstance(name, str) or not name:
-                continue
-            label = QLabel(str(name))
-            label.setObjectName("builderFieldLabel")
-            label.setAccessibleName(f"{name} field")
-            self._builder_form_layout.addWidget(label)
-            if ftype == "boolean":
-                widget: QWidget = QCheckBox()
-            elif ftype == "choice":
-                combo = QComboBox()
-                for option in field.get("options") or []:
-                    combo.addItem(str(option))
-                widget = combo
-            else:
-                widget = QLineEdit()
-            widget.setAccessibleName(f"{name} input")
-            self._builder_form_layout.addWidget(widget)
-            self._builder_fields[name] = widget
-        self._builder_run.setEnabled(bool(self._builder_fields))
+    def _on_preview_error(self, reason: str) -> None:
+        """A failed preview request shows a bounded safe state, never a stale preview."""
+        self._set_status(STATE_FAILED, document_failure_message(reason))
+        self._clear_preview()
 
-    def _collect_form_input(self) -> Dict[str, Any]:
-        data: Dict[str, Any] = {}
-        for name, widget in self._builder_fields.items():
-            if isinstance(widget, QCheckBox):
-                data[name] = widget.isChecked()
-            elif isinstance(widget, QComboBox):
-                data[name] = widget.currentText()
-            else:
-                data[name] = widget.text().strip()
-        return data
+    def _render_preview(self, preview: Dict[str, Any]) -> None:
+        """Populate the read-only Preview from the boundary's preview record."""
+        doc = preview.get("document") or {}
+        state = str(preview.get("state", "unknown"))
+        binding = preview.get("binding")
+        kind = binding.get("kind") if binding else None
 
-    def _run_package(self) -> None:
-        cid = contract.new_correlation_id()
-        request = build_run_package_request(cid, "quotation-rules", self._collect_form_input())
-        self._set_status(STATE_RUNNING, "running package")
-        if not self._send(request, self._on_package_run, self._on_package_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
+        if self._preview_document_label is not None:
+            name = doc.get("name") or "Untitled"
+            revision = doc.get("revision_number", 0)
+            self._preview_document_label.setText(f"{name} — revision {revision}")
 
-    def _on_package_run(self, result: Dict[str, Any]) -> None:
-        text = format_run_result(result)
-        self._builder_result.setPlainText(text)
-        self._builder_result.setVisible(bool(text))
-        state = str(result.get("state", "unknown"))
-        self._set_status(STATE_SUCCESS, f"package {run_state_label(state)}")
+        self._set_preview_state_badge(state, kind)
+        if self._preview_body is not None:
+            self._preview_body.setPlainText(format_preview(preview))
 
-    def _on_package_error(self, reason: str) -> None:
-        self._set_status(STATE_FAILED, reason)
-        self._builder_result.setPlainText(f"Package run unavailable.\n\nReason: {reason}")
-        self._builder_result.setVisible(True)
+    def _set_preview_state_badge(self, state: str, kind: Optional[str]) -> None:
+        """Set the Preview state badge word + semantic colour (never colour alone)."""
+        if self._preview_state_label is None:
+            return
+        kind_word = preview_kind_label(kind) if kind else ""
+        state_word = preview_state_label(state)
+        text = f"{kind_word} — {state_word}" if kind_word else state_word
+        self._preview_state_label.setText(text)
+        token = _PREVIEW_STATE_TOKEN.get(state, style.STATE_NEUTRAL)
+        self._preview_state_label.setStyleSheet(style.state_chip_style(self._palette, token))
+        self._preview_state_label.setToolTip(preview_state_message(state))
+
+    def _clear_preview(self) -> None:
+        """Reset the read-only Preview to the bounded no-document empty state."""
+        if self._preview_state_label is not None:
+            self._preview_state_label.setText(preview_state_label("no_document"))
+            self._preview_state_label.setStyleSheet(
+                style.state_chip_style(self._palette, style.STATE_NEUTRAL)
+            )
+            self._preview_state_label.setToolTip(preview_state_message("no_document"))
+        if self._preview_document_label is not None:
+            self._preview_document_label.setText("")
+        if self._preview_body is not None:
+            self._preview_body.setPlainText(
+                "No document open. Save a document to see a preview."
+            )
 
     # -- Document/version-authority flow (P4.4) ---------------------------
 
@@ -3389,22 +3389,6 @@ class MainWindow(QMainWindow):
             self._document_review_button.setVisible(has_candidate)
         if self._document_adopt_button is not None:
             self._document_adopt_button.setVisible(self._candidate_is_current())
-
-    def _update_preview_state(self) -> None:
-        """Write the concise candidate/validation state on the Preview surface."""
-        label = self._preview_state_label
-        if label is None:
-            return
-        if self._document_id is None:
-            label.setText("No document open.")
-        elif not self._document_candidate:
-            label.setText("No candidate yet — save the document and create one.")
-        elif self._document_candidate.get("adopted"):
-            label.setText("Candidate adopted as the Accepted Version.")
-        elif self._candidate_is_current():
-            label.setText("Candidate ready — bound to the current document.")
-        else:
-            label.setText("Candidate is stale against the current document.")
 
     def _review_candidate(self) -> None:
         """Open the Preview surface to review the current candidate."""
@@ -3557,7 +3541,7 @@ class MainWindow(QMainWindow):
         )
         self._update_document_status()
         self._update_document_actions()
-        self._update_preview_state()
+        self._refresh_preview()
         self._populate_versions_list()
 
     def _refresh_document_meta(self, result: Dict[str, Any]) -> None:
@@ -3577,7 +3561,7 @@ class MainWindow(QMainWindow):
         self._document_result.setPlainText(format_document_state(result))
         self._update_document_status()
         self._update_document_actions()
-        self._update_preview_state()
+        self._refresh_preview()
 
     def _populate_versions_list(self) -> None:
         """Rebuild the Versions drawer rows: one human label + Restore per version.
@@ -3651,6 +3635,7 @@ class MainWindow(QMainWindow):
             STATE_SUCCESS, f"document saved (rev {result.get('head_revision_number')})"
         )
         self._refresh_documents()
+        self._refresh_preview()
 
     def _create_candidate(self) -> None:
         if not self._document_id:

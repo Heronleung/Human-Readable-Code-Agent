@@ -116,9 +116,19 @@ metadata) and **Validation Evidence** (Problems, Tests, Evidence). The Working
 Document is promoted to a full-height primary workspace with a document header
 (file selector, New, Open, saved/unsaved state), a large editor and a footer
 where Save is the primary action and the candidate actions (Create candidate /
-Review candidate / Adopt) are contextual; **Preview** shows the fixed
-quotation-rules form and its latest run result with an explicit notice that the
-fixture is not generated from the document.
+Review candidate / Adopt) are contextual.
+
+As of **P4.5**, **Preview** is a read-only, version-bound candidate review
+surface fed by a new `preview_document` boundary read-model (no package
+execution, provider call or version-state change). It names the bound document
+and exact revision, labels the record **Candidate** or **Accepted Version** and
+its bounded state (current / stale / invalid / insufficient-evidence), states
+the deterministic-fixture provenance (never AI-generated from the prose), and
+lists the fixed quotation inputs (`subtotal`, `member`, `region`), result fields
+(`discount`, `shipping_fee`, `regional_fee`, `total`), a business-rule summary
+and a validation-evidence summary with its limits. The interactive Run button is
+removed; Preview never executes a package or presents example output as a live
+result.
 
 All visual values live in the desktop-only design system `hrca/style.py` —
 light and dark palettes (auto-selected from the operating-system appearance),

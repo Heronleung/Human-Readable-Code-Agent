@@ -270,6 +270,39 @@ class BoundaryDocumentTests(unittest.TestCase):
         names = [d["name"] for d in env["result"]["documents"]]
         self.assertEqual(names, ["alpha.md", "beta.txt"])
 
+    def test_preview_current_candidate(self):
+        doc_id = self._doc_id(self._create())
+        self._do(contract.ACTION_DOCUMENT_SAVE, document_id=doc_id, content="v1", base_revision_id=None)
+        self._do(contract.ACTION_DOCUMENT_CREATE_CANDIDATE, document_id=doc_id)
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=doc_id)
+        self.assertTrue(env["ok"])
+        preview = env["result"]
+        self.assertEqual(preview["state"], "current")
+        self.assertEqual(preview["binding"]["kind"], "candidate")
+        self.assertEqual(preview["document"]["revision_number"], 1)
+        self.assertIn("subtotal", [f["name"] for f in preview["package"]["form"]])
+
+    def test_preview_no_candidate(self):
+        doc_id = self._doc_id(self._create())
+        self._do(contract.ACTION_DOCUMENT_SAVE, document_id=doc_id, content="v1", base_revision_id=None)
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=doc_id)
+        self.assertTrue(env["ok"])
+        self.assertEqual(env["result"]["state"], "no_candidate")
+
+    def test_preview_missing_document(self):
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id="doc:missing")
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "document_not_found")
+
+    def test_preview_has_zero_side_effects(self):
+        doc_id = self._doc_id(self._create())
+        self._do(contract.ACTION_DOCUMENT_SAVE, document_id=doc_id, content="v1", base_revision_id=None)
+        self._do(contract.ACTION_DOCUMENT_CREATE_CANDIDATE, document_id=doc_id)
+        self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=doc_id)
+        self.assertEqual(self.session.runner.run_calls, 0)
+        self.assertEqual(self.session.runner.preflight_calls, 0)
+        self.assertEqual(self.session.advisory_transport.calls, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

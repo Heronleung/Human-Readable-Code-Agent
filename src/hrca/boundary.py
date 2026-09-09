@@ -295,6 +295,8 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _list_versions_result(request, session)
     elif action == contract.ACTION_DOCUMENT_RESTORE:
         result = _restore_version_result(request, session)
+    elif action == contract.ACTION_DOCUMENT_PREVIEW:
+        result = _preview_document_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -1729,6 +1731,21 @@ def _restore_version_result(request: Dict[str, Any], session: WorkspaceSession) 
     result["state"] = "restored"
     result["accepted_version"] = version
     return result
+
+
+def _preview_document_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the version-bound preview read-model for one Working Document.
+
+    The preview is derived from the stored document/version records and the
+    code-owned quotation package. It performs no package execution, provider
+    call, store write or candidate/accepted mutation.
+    """
+    document_id = _document_id(request)
+    store = _load_document_store(session, document_id)
+    package = _known_package("quotation-rules")
+    if package is None:  # pragma: no cover - the fixture is always present
+        raise contract.ContractError("package_not_found")
+    return document.preview_state(store, package)
 
 
 if __name__ == "__main__":

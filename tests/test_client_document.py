@@ -12,12 +12,16 @@ from hrca.client_core import (
     build_list_documents_request,
     build_list_versions_request,
     build_open_document_request,
+    build_preview_request,
     build_restore_version_request,
     build_save_document_request,
     document_failure_message,
     document_kind_label,
     format_document_state,
+    format_preview,
     format_version_list,
+    preview_kind_label,
+    preview_state_label,
 )
 
 
@@ -122,6 +126,67 @@ class FormatterTests(unittest.TestCase):
 
     def test_format_version_list_empty(self):
         self.assertEqual(format_version_list([], None), "No accepted versions.")
+
+
+class PreviewVocabularyTests(unittest.TestCase):
+    def test_build_preview_request(self):
+        req = build_preview_request("cid", "doc:d1")
+        self.assertEqual(req["action"], contract.ACTION_DOCUMENT_PREVIEW)
+        self.assertEqual(req["document_id"], "doc:d1")
+
+    def test_state_and_kind_labels(self):
+        self.assertEqual(preview_state_label("current"), "Current")
+        self.assertEqual(preview_state_label("stale"), "Stale")
+        self.assertEqual(preview_state_label("unknown"), "unknown")
+        self.assertEqual(preview_kind_label("candidate"), "Candidate")
+        self.assertEqual(preview_kind_label("accepted"), "Accepted Version")
+
+    def _preview(self):
+        return {
+            "document": {"document_id": "doc:d1", "name": "requirements.md",
+                          "kind": "md", "revision_number": 1},
+            "state": "current",
+            "binding": {"kind": "candidate", "record_id": "cand:c1", "adopted": False},
+            "provenance": "deterministic_fixture",
+            "limitation": "Bound to the hand-written quotation fixture only; "
+                          "no document-to-code interpretation occurred.",
+            "package": {
+                "package_id": "quotation-rules", "title": "Quotation rules",
+                "runtime_identity": "hrca-runner:v1", "schema_version": "1.0.0",
+                "form": [
+                    {"name": "subtotal", "type": "decimal", "min": 0},
+                    {"name": "member", "type": "boolean"},
+                    {"name": "region", "type": "choice", "options": ["west", "north"]},
+                ],
+                "result": [
+                    {"name": "discount", "type": "decimal"},
+                    {"name": "total", "type": "decimal"},
+                ],
+            },
+            "evidence": {
+                "package_validates": True, "package_matches": True,
+                "runtime_matches": True, "validation_matches": True,
+                "execution_performed": False,
+            },
+        }
+
+    def test_format_preview_shows_binding_fields_and_evidence(self):
+        text = format_preview(self._preview())
+        self.assertIn("requirements.md", text)
+        self.assertIn("revision 1", text)
+        self.assertIn("Candidate", text)
+        self.assertIn("Current", text)
+        self.assertIn("subtotal", text)
+        self.assertIn("discount", text)
+        self.assertIn("Package executed: no", text)
+        self.assertIn("no document-to-code", text)
+
+    def test_format_preview_never_shows_raw_id(self):
+        text = format_preview(self._preview())
+        self.assertNotIn("cand:c1", text)
+
+    def test_format_preview_empty(self):
+        self.assertEqual(format_preview({}), "")
 
 
 if __name__ == "__main__":

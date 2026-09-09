@@ -49,6 +49,32 @@ class _FakeSend:
         return True
 
 
+def _preview(state="current", name="requirements.md", kind="candidate"):
+    return {
+        "document": {"document_id": "doc:d1", "name": name, "kind": "md",
+                      "revision_number": 1, "revision_id": "rev:1"},
+        "state": state,
+        "binding": {"kind": kind, "record_id": "cand:c1",
+                     "adopted": kind == "accepted"},
+        "provenance": "deterministic_fixture",
+        "limitation": "Bound to the hand-written quotation fixture only; "
+                      "no document-to-code interpretation occurred.",
+        "package": {
+            "package_id": "quotation-rules", "title": "Quotation rules",
+            "runtime_identity": "hrca-runner:v1", "schema_version": "1.0.0",
+            "form": [
+                {"name": "subtotal", "type": "decimal", "min": 0},
+                {"name": "member", "type": "boolean"},
+                {"name": "region", "type": "choice", "options": ["west"]},
+            ],
+            "result": [{"name": "discount", "type": "decimal"}],
+        },
+        "evidence": {"package_validates": True, "package_matches": True,
+                     "runtime_matches": True, "validation_matches": True,
+                     "execution_performed": False},
+    }
+
+
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class DocumentSurfaceTests(unittest.TestCase):
     def setUp(self):
@@ -245,6 +271,75 @@ class DocumentSelectionTests(unittest.TestCase):
     def test_empty_refresh_with_no_selection_selects_first(self):
         self.window._on_documents_loaded({"documents": self._documents()})
         self.assertEqual(self.window._document_combo.currentData(), "doc:a")
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class PreviewSurfaceTests(unittest.TestCase):
+    """P4.5 read-only version-bound Preview surface."""
+
+    def setUp(self):
+        _app()
+        self.window = MainWindow()
+
+    def tearDown(self):
+        self.window._supervisor.terminate()
+        self.window._credential_supervisor.terminate()
+        self.window.close()
+        self.window.deleteLater()
+
+    def test_preview_is_read_only_without_run_button(self):
+        self.assertTrue(self.window._preview_body.isReadOnly())
+        self.assertFalse(hasattr(self.window, "_builder_run"))
+
+    def test_render_preview_populates_state_and_document(self):
+        self.window._render_preview(_preview(state="current", name="requirements.md"))
+        self.assertIn("requirements.md", self.window._preview_document_label.text())
+        self.assertIn("Candidate", self.window._preview_state_label.text())
+        self.assertIn("Current", self.window._preview_state_label.text())
+        body = self.window._preview_body.toPlainText()
+        self.assertIn("subtotal", body)
+        self.assertIn("discount", body)
+        self.assertIn("Package executed: no", body)
+        self.assertIn("no document-to-code", body)
+
+    def test_render_preview_distinguishes_accepted_version(self):
+        self.window._render_preview(_preview(state="current", kind="accepted"))
+        self.assertIn("Accepted Version", self.window._preview_state_label.text())
+
+    def test_refresh_preview_dispatches_for_open_document(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:d1"
+        self.window._refresh_preview()
+        self.assertEqual(len(fake.requests), 1)
+        self.assertEqual(fake.requests[0]["action"], contract.ACTION_DOCUMENT_PREVIEW)
+        self.assertEqual(fake.requests[0]["document_id"], "doc:d1")
+
+    def test_refresh_preview_no_document_clears(self):
+        self.window._document_id = None
+        self.window._refresh_preview()
+        self.assertEqual(self.window._preview_document_label.text(), "")
+        self.assertIn("No document", self.window._preview_state_label.text())
+
+    def test_late_preview_response_is_discarded(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:d1"
+        self.window._refresh_preview()  # generation 1
+        self.window._refresh_preview()  # generation 2
+        self.assertEqual(self.window._preview_generation, 2)
+        # A late response for generation 1 is discarded.
+        self.window._on_preview_loaded(1, _preview(name="old.md"))
+        self.assertEqual(self.window._preview_document_label.text(), "")
+        # The current generation's response renders.
+        self.window._on_preview_loaded(2, _preview(name="new.md"))
+        self.assertIn("new.md", self.window._preview_document_label.text())
+
+    def test_preview_error_clears_surface(self):
+        self.window._document_id = "doc:d1"
+        self.window._on_preview_error("document_not_found")
+        self.assertEqual(self.window._preview_document_label.text(), "")
+        self.assertIn("No document", self.window._preview_state_label.text())
 
 
 if __name__ == "__main__":

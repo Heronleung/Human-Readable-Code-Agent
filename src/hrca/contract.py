@@ -104,6 +104,11 @@ ACTION_DOCUMENT_GET_CANDIDATE = "get_candidate"
 ACTION_DOCUMENT_ADOPT = "adopt_candidate"
 ACTION_DOCUMENT_LIST_VERSIONS = "list_versions"
 ACTION_DOCUMENT_RESTORE = "restore_version"
+# The P4.5 read-only version-bound preview. It returns a bounded read-model that
+# connects the Working Document head, the latest Candidate or the current
+# Accepted Version, the fixed package schema and the validation evidence — it
+# never executes a package, changes version state or calls a provider.
+ACTION_DOCUMENT_PREVIEW = "preview_document"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -186,6 +191,7 @@ DOCUMENT_ACTIONS = frozenset(
         ACTION_DOCUMENT_ADOPT,
         ACTION_DOCUMENT_LIST_VERSIONS,
         ACTION_DOCUMENT_RESTORE,
+        ACTION_DOCUMENT_PREVIEW,
     }
 )
 ALLOWED_ACTIONS = (
@@ -467,6 +473,7 @@ __all__ = [
     "ACTION_DOCUMENT_ADOPT",
     "ACTION_DOCUMENT_LIST_VERSIONS",
     "ACTION_DOCUMENT_RESTORE",
+    "ACTION_DOCUMENT_PREVIEW",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",

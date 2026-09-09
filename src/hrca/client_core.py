@@ -1542,6 +1542,172 @@ def format_version_list(versions: List[Dict[str, Any]], current_id: Optional[str
     return "\n".join(lines)
 
 
+# -- Version-bound preview client vocabulary (P4.5) ------------------------
+#
+# The bounded preview states and binding kinds are held here as literals so the
+# client never imports the document/version domain. Unknown values fall back to
+# their raw token, so an unexpected token never surfaces raw protocol text.
+
+PREVIEW_STATE_LABELS = {
+    "no_document": "No document",
+    "no_candidate": "No candidate",
+    "current": "Current",
+    "stale": "Stale",
+    "invalid": "Invalid",
+    "insufficient_evidence": "Insufficient evidence",
+}
+
+PREVIEW_KIND_LABELS = {
+    "candidate": "Candidate",
+    "accepted": "Accepted Version",
+}
+
+# Bounded next-step messages for each preview state. These are the user-facing
+# sentences the Preview surface shows; none names an opaque id, raw reason or
+# protocol token.
+PREVIEW_STATE_MESSAGES = {
+    "no_document": "Save the document to see a preview.",
+    "no_candidate": "Save the document and create a candidate to see a preview.",
+    "current": "This preview is bound to the current document revision.",
+    "stale": "The document changed after this was created. Create a new candidate.",
+    "invalid": "The candidate record is invalid.",
+    "insufficient_evidence": "The candidate's evidence no longer matches the current package.",
+}
+
+
+def preview_state_label(state: str) -> str:
+    """Return the human label for a preview ``state``."""
+    return PREVIEW_STATE_LABELS.get(state, state)
+
+
+def preview_kind_label(kind: str) -> str:
+    """Return the human label for a preview binding ``kind``."""
+    return PREVIEW_KIND_LABELS.get(kind, kind)
+
+
+def preview_state_message(state: str) -> str:
+    """Return the user-facing next-step message for a preview ``state``."""
+    return PREVIEW_STATE_MESSAGES.get(state, "")
+
+
+def build_preview_request(correlation_id: str, document_id: str) -> Dict[str, Any]:
+    """Build a ``preview_document`` request for one Working Document."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_DOCUMENT_PREVIEW,
+        "document_id": document_id,
+    }
+
+
+def _preview_field_line(field: Dict[str, Any]) -> str:
+    """Render one fixed form/result field as a single bounded line."""
+    name = str(field.get("name", "?"))
+    ftype = str(field.get("type", "unknown"))
+    if ftype == "choice":
+        options = ", ".join(str(o) for o in field.get("options") or [])
+        return f"{name} (choice: {options})"
+    if ftype in ("decimal", "integer"):
+        lo = field.get("min")
+        hi = field.get("max")
+        if lo is not None and hi is not None:
+            return f"{name} ({ftype}, between {lo} and {hi})"
+        if lo is not None:
+            return f"{name} ({ftype}, minimum {lo})"
+        if hi is not None:
+            return f"{name} ({ftype}, maximum {hi})"
+    return f"{name} ({ftype})"
+
+
+def _preview_yes_no(value: Any) -> str:
+    """Return ``yes``/``no``/``n/a`` for a tri-state evidence flag."""
+    if value is None:
+        return "n/a"
+    return "yes" if value else "no"
+
+
+def format_preview(preview: Dict[str, Any]) -> str:
+    """Render a version-bound preview as deterministic plain text (P4.5).
+
+    Shows the document identity/revision, the Candidate/Accepted binding and its
+    state, the provenance, the fixed form/result fields, a fixed business-rule
+    summary, and the validation-evidence summary with its limits. It never shows
+    a raw candidate/version id or the document content, and never implies a
+    package was executed.
+    """
+    if not preview:
+        return ""
+    doc = preview.get("document") or {}
+    pkg = preview.get("package") or {}
+    binding = preview.get("binding")
+    evidence = preview.get("evidence") or {}
+    state = preview_state_label(str(preview.get("state", "unknown")))
+
+    lines: List[str] = [
+        f"Document: {doc.get('name') or 'Untitled'} — "
+        f"revision {doc.get('revision_number', 0)}",
+    ]
+
+    if binding:
+        kind = preview_kind_label(str(binding.get("kind", "unknown")))
+        lines.append(f"Binding: {kind} ({state})")
+    else:
+        lines.append(f"State: {state}")
+
+    if preview.get("provenance"):
+        lines.append("")
+        lines.append("Provenance: deterministic demonstration fixture.")
+
+    lines.append("")
+    lines.append(
+        f"{pkg.get('title') or 'Package'} — package {pkg.get('package_id', 'unknown')}, "
+        f"schema {pkg.get('schema_version', 'unknown')}, "
+        f"runtime {pkg.get('runtime_identity', 'unknown')}"
+    )
+
+    lines.append("")
+    lines.append("Inputs:")
+    for field in pkg.get("form") or []:
+        lines.append(f"  - {_preview_field_line(field)}")
+
+    lines.append("")
+    lines.append("Results:")
+    for field in pkg.get("result") or []:
+        lines.append(f"  - {_preview_field_line(field)}")
+
+    lines.append("")
+    lines.append(
+        "Business rules: 5% member discount, free shipping at or above 100.00, "
+        "a per-region fee, non-negative subtotal, and half-up rounding to two "
+        "decimal places."
+    )
+
+    lines.append("")
+    lines.append("Evidence:")
+    lines.append(
+        f"  - Package validates: {_preview_yes_no(evidence.get('package_validates'))}"
+    )
+    lines.append(
+        f"  - Package matches: {_preview_yes_no(evidence.get('package_matches'))}"
+    )
+    lines.append(
+        f"  - Runtime matches: {_preview_yes_no(evidence.get('runtime_matches'))}"
+    )
+    lines.append(
+        "  - Validation identity matches: "
+        f"{_preview_yes_no(evidence.get('validation_matches'))}"
+    )
+    lines.append("  - Package executed: no")
+
+    limitation = preview.get("limitation")
+    if limitation:
+        lines.append("")
+        lines.append("Limits:")
+        lines.append(f"  - {limitation}")
+        lines.append("  - Result fields are the declared schema, not live output.")
+    return "\n".join(lines)
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -1657,6 +1823,14 @@ __all__ = [
     "format_document_state",
     "format_candidate",
     "format_version_list",
+    "PREVIEW_STATE_LABELS",
+    "PREVIEW_KIND_LABELS",
+    "PREVIEW_STATE_MESSAGES",
+    "preview_state_label",
+    "preview_kind_label",
+    "preview_state_message",
+    "build_preview_request",
+    "format_preview",
     "default_fixture_root",
     "resolve_backend_command",
     "resolve_credential_host_command",

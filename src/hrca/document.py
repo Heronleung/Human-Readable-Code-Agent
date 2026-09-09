@@ -539,6 +539,196 @@ def candidate_state(store: Dict[str, Any], candidate_id: str) -> Optional[Dict[s
     return result
 
 
+# -- version-bound preview (P4.5) ------------------------------------------
+
+
+# Bounded preview states. ``preview_state`` derives exactly one of these from
+# the stored document/candidate/accepted records plus the code-owned package —
+# never from GUI guesses or global Builder state.
+PREVIEW_STATE_NO_DOCUMENT = "no_document"
+PREVIEW_STATE_NO_CANDIDATE = "no_candidate"
+PREVIEW_STATE_CURRENT = "current"
+PREVIEW_STATE_STALE = "stale"
+PREVIEW_STATE_INVALID = "invalid"
+PREVIEW_STATE_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+PREVIEW_STATES = frozenset(
+    {
+        PREVIEW_STATE_NO_DOCUMENT,
+        PREVIEW_STATE_NO_CANDIDATE,
+        PREVIEW_STATE_CURRENT,
+        PREVIEW_STATE_STALE,
+        PREVIEW_STATE_INVALID,
+        PREVIEW_STATE_INSUFFICIENT_EVIDENCE,
+    }
+)
+
+# Preview binding kinds: the latest non-adopted Candidate, or the current
+# Accepted Version. They are distinct and never conflated.
+PREVIEW_KIND_CANDIDATE = "candidate"
+PREVIEW_KIND_ACCEPTED = "accepted"
+PREVIEW_KINDS = frozenset({PREVIEW_KIND_CANDIDATE, PREVIEW_KIND_ACCEPTED})
+
+
+def preview_state(store: Dict[str, Any], package: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the bounded, version-bound preview for ``store`` against ``package``.
+
+    The preview is derived only from the stored document/version records and the
+    code-owned package: the Working Document head identity (name, revision,
+    fingerprint — never the document content), the latest non-adopted Candidate
+    (else the current Accepted Version), a bounded state, the fixed form/result
+    schema, and a validation-evidence summary. It performs no package execution,
+    provider call, store write or candidate/accepted mutation.
+    """
+    head = _revision(store, store.get("head_revision_id"))
+    revisions = [r for r in store.get("revisions", []) if isinstance(r, dict)]
+
+    document = {
+        "document_id": store.get("document_id"),
+        "name": store.get("name"),
+        "kind": store.get("kind"),
+        "created_at": store.get("created_at"),
+        "revision_id": head.get("revision_id") if head is not None else None,
+        "revision_number": head.get("revision_number") if head is not None else 0,
+        "revision_fingerprint": head.get("content_fingerprint") if head is not None else None,
+        "revision_count": len(revisions),
+    }
+
+    record: Optional[Dict[str, Any]] = None
+    kind: Optional[str] = None
+    if head is not None:
+        candidates = [c for c in store.get("candidates", []) if isinstance(c, dict)]
+        latest_candidate = candidates[-1] if candidates else None
+        current_accepted = _accepted(store, store.get("current_accepted_version_id"))
+        if latest_candidate is not None and not latest_candidate.get("adopted"):
+            record = latest_candidate
+            kind = PREVIEW_KIND_CANDIDATE
+        elif current_accepted is not None:
+            record = current_accepted
+            kind = PREVIEW_KIND_ACCEPTED
+
+    if head is None:
+        state = PREVIEW_STATE_NO_DOCUMENT
+    elif record is None:
+        state = PREVIEW_STATE_NO_CANDIDATE
+    else:
+        state = _record_preview_state(record, kind, head, package)
+
+    return {
+        "document": document,
+        "state": state,
+        "binding": _preview_binding(record, kind) if record is not None else None,
+        "provenance": SOURCE_DETERMINISTIC_FIXTURE if record is not None else None,
+        "limitation": CANDIDATE_LIMITATION if record is not None else None,
+        "package": _package_summary(package),
+        "evidence": _preview_evidence(record, package),
+        "timestamps": _preview_timestamps(head, record, kind),
+    }
+
+
+def _record_preview_state(
+    record: Dict[str, Any], kind: Optional[str], head: Dict[str, Any], package: Dict[str, Any]
+) -> str:
+    """Derive the bounded state for a candidate/accepted record against the head.
+
+    A corrupt candidate manifest (its deterministic id no longer matches its
+    binding fields) is ``invalid``; a record bound to a non-head revision or a
+    different fingerprint is ``stale``; a record whose package/runtime/validation
+    identity no longer matches the code-owned values has ``insufficient_evidence``;
+    otherwise it is ``current``.
+    """
+    if kind == PREVIEW_KIND_CANDIDATE and _candidate_id(record) != record.get("candidate_id"):
+        return PREVIEW_STATE_INVALID
+    if (
+        record.get("document_revision_id") != head.get("revision_id")
+        or record.get("document_fingerprint") != head.get("content_fingerprint")
+    ):
+        return PREVIEW_STATE_STALE
+    if not _record_evidence_matches(record, package):
+        return PREVIEW_STATE_INSUFFICIENT_EVIDENCE
+    return PREVIEW_STATE_CURRENT
+
+
+def _record_evidence_matches(record: Dict[str, Any], package: Dict[str, Any]) -> bool:
+    """True when the record's package/runtime/validation identity matches current."""
+    package_fingerprint = sha256_hex(dumps(package).encode("utf-8"))
+    return (
+        record.get("package_id") == package.get("package_id")
+        and record.get("package_fingerprint") == package_fingerprint
+        and record.get("runtime_identity") == app_package.RUNNER_IDENTITY
+        and record.get("validation_identity") == VALIDATION_IDENTITY
+    )
+
+
+def _package_summary(package: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the bounded package identity plus its fixed form/result schema."""
+    return {
+        "package_id": package.get("package_id"),
+        "title": package.get("title"),
+        "runtime_identity": package.get("runtime"),
+        "schema_version": package.get("schema_version"),
+        "form": [dict(f) for f in package.get("form") or []],
+        "result": [dict(f) for f in package.get("result") or []],
+    }
+
+
+def _preview_binding(record: Dict[str, Any], kind: Optional[str]) -> Dict[str, Any]:
+    """Return the bounded binding record (Candidate or Accepted Version)."""
+    return {
+        "kind": kind,
+        "record_id": (
+            record.get("candidate_id") if kind == PREVIEW_KIND_CANDIDATE
+            else record.get("version_id")
+        ),
+        "document_revision_id": record.get("document_revision_id"),
+        "document_fingerprint": record.get("document_fingerprint"),
+        "package_id": record.get("package_id"),
+        "adopted": kind == PREVIEW_KIND_ACCEPTED or bool(record.get("adopted")),
+    }
+
+
+def _preview_evidence(record: Optional[Dict[str, Any]], package: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the bounded validation-evidence summary for ``record``.
+
+    ``package_validates`` is always computed; the identity-match flags are
+    ``None`` when there is no binding to compare. ``execution_performed`` is
+    always ``False`` — a preview never executes the package.
+    """
+    evidence: Dict[str, Any] = {
+        "package_validates": app_package.validate_package(package) is None,
+        "package_matches": None,
+        "runtime_matches": None,
+        "validation_matches": None,
+        "execution_performed": False,
+    }
+    if record is not None:
+        package_fingerprint = sha256_hex(dumps(package).encode("utf-8"))
+        evidence["package_matches"] = (
+            record.get("package_id") == package.get("package_id")
+            and record.get("package_fingerprint") == package_fingerprint
+        )
+        evidence["runtime_matches"] = (
+            record.get("runtime_identity") == app_package.RUNNER_IDENTITY
+        )
+        evidence["validation_matches"] = (
+            record.get("validation_identity") == VALIDATION_IDENTITY
+        )
+    return evidence
+
+
+def _preview_timestamps(
+    head: Optional[Dict[str, Any]], record: Optional[Dict[str, Any]], kind: Optional[str]
+) -> Dict[str, Any]:
+    """Return the relevant revision/binding timestamps for the preview."""
+    return {
+        "revision_created_at": head.get("created_at") if head is not None else None,
+        "bound_at": (
+            record.get("accepted_at")
+            if kind == PREVIEW_KIND_ACCEPTED and record is not None
+            else (record.get("created_at") if record is not None else None)
+        ),
+    }
+
+
 __all__ = [
     "DOCUMENT_SCHEMA_VERSION",
     "DOCUMENT_GENERATOR",
@@ -581,4 +771,15 @@ __all__ = [
     "restore_version",
     "document_state",
     "candidate_state",
+    "PREVIEW_STATE_NO_DOCUMENT",
+    "PREVIEW_STATE_NO_CANDIDATE",
+    "PREVIEW_STATE_CURRENT",
+    "PREVIEW_STATE_STALE",
+    "PREVIEW_STATE_INVALID",
+    "PREVIEW_STATE_INSUFFICIENT_EVIDENCE",
+    "PREVIEW_STATES",
+    "PREVIEW_KIND_CANDIDATE",
+    "PREVIEW_KIND_ACCEPTED",
+    "PREVIEW_KINDS",
+    "preview_state",
 ]

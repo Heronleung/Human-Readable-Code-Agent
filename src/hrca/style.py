@@ -876,19 +876,28 @@ def project_root_label_style(palette: Palette) -> str:
     return f"color: {palette.text_secondary}; padding: {GAP_TIGHT}px {INSET}px;"
 
 
-def twin_chip_style(palette: Palette, state: str) -> str:
-    """Return the style sheet for the Twin state chip in ``state``.
+def state_chip_style(palette: Palette, token: str) -> str:
+    """Return the chip style for a semantic state ``token`` (info/success/…).
 
     The colour comes from the state's semantic token; the word is applied
-    separately by the caller so colour is never the sole signal.
+    separately by the caller so colour is never the sole signal. Used by the
+    Twin chip and the P4.5 preview state badge.
     """
-    token = TWIN_STATE_TOKEN.get(state, STATE_NEUTRAL)
     fg = palette.state_fg(token)
     bg = palette.state_bg(token)
     return (
         f"color: {fg}; background: {bg}; border-radius: {RADIUS_CHIP}px; "
         f"padding: 1px {GAP_TIGHT}px; font-size: {STATUS_FONT_SIZE}px;"
     )
+
+
+def twin_chip_style(palette: Palette, state: str) -> str:
+    """Return the style sheet for the Twin state chip in ``state``.
+
+    The colour comes from the state's semantic token; the word is applied
+    separately by the caller so colour is never the sole signal.
+    """
+    return state_chip_style(palette, TWIN_STATE_TOKEN.get(state, STATE_NEUTRAL))
 
 
 def preview_banner_style(palette: Palette) -> str:
@@ -1030,6 +1039,7 @@ __all__ = [
     "status_field_style",
     "project_root_label_style",
     "twin_chip_style",
+    "state_chip_style",
     "preview_banner_style",
     "unavailable_banner_style",
     "draft_notice_style",

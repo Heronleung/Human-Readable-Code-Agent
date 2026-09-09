@@ -272,5 +272,102 @@ class RestoreTests(unittest.TestCase):
         self.assertEqual(reason, document.REASON_VERSION_NOT_FOUND)
 
 
+class PreviewStateTests(unittest.TestCase):
+    """P4.5: the version-bound preview derivation is bounded and honest."""
+
+    def _preview(self, store):
+        return document.preview_state(store, _PACKAGE)
+
+    def _candidate_store(self):
+        store = _store_with_revision()
+        candidate, _ = document.build_candidate(
+            store, _PACKAGE, _RUNTIME, document.VALIDATION_IDENTITY, _NOW
+        )
+        store["candidates"].append(candidate)
+        return store, candidate
+
+    def test_empty_store_is_no_document(self):
+        store = document.new_document_store("doc:d1", "requirements.md", document.KIND_MARKDOWN, _NOW)
+        preview = self._preview(store)
+        self.assertEqual(preview["state"], document.PREVIEW_STATE_NO_DOCUMENT)
+        self.assertIsNone(preview["binding"])
+        self.assertIsNone(preview["provenance"])
+        self.assertIsNone(preview["limitation"])
+        self.assertIsNone(preview["document"]["revision_id"])
+
+    def test_saved_without_candidate_is_no_candidate(self):
+        preview = self._preview(_store_with_revision())
+        self.assertEqual(preview["state"], document.PREVIEW_STATE_NO_CANDIDATE)
+        self.assertIsNone(preview["binding"])
+
+    def test_current_candidate(self):
+        store, candidate = self._candidate_store()
+        preview = self._preview(store)
+        self.assertEqual(preview["state"], document.PREVIEW_STATE_CURRENT)
+        self.assertEqual(preview["binding"]["kind"], document.PREVIEW_KIND_CANDIDATE)
+        self.assertEqual(preview["binding"]["record_id"], candidate["candidate_id"])
+        self.assertEqual(preview["provenance"], document.SOURCE_DETERMINISTIC_FIXTURE)
+        self.assertIn("no document-to-code", preview["limitation"])
+
+    def test_stale_after_edit(self):
+        store, _ = self._candidate_store()
+        store, _ = document.save_revision(store, "changed", store["head_revision_id"], _NOW)
+        self.assertEqual(self._preview(store)["state"], document.PREVIEW_STATE_STALE)
+
+    def test_invalid_corrupt_candidate(self):
+        store, _ = self._candidate_store()
+        store["candidates"][-1]["document_fingerprint"] = "0" * 64
+        self.assertEqual(self._preview(store)["state"], document.PREVIEW_STATE_INVALID)
+
+    def test_insufficient_evidence_mismatched_package(self):
+        store, _ = self._candidate_store()
+        other_package = dict(_PACKAGE, package_id="other-package")
+        preview = document.preview_state(store, other_package)
+        self.assertEqual(preview["state"], document.PREVIEW_STATE_INSUFFICIENT_EVIDENCE)
+
+    def test_accepted_version_is_distinct(self):
+        store, candidate = self._candidate_store()
+        store, version = document.adopt_candidate(
+            store, candidate["candidate_id"], _PACKAGE, _RUNTIME,
+            document.VALIDATION_IDENTITY, _NOW,
+        )
+        preview = self._preview(store)
+        self.assertEqual(preview["binding"]["kind"], document.PREVIEW_KIND_ACCEPTED)
+        self.assertEqual(preview["binding"]["record_id"], version["version_id"])
+        self.assertTrue(preview["binding"]["adopted"])
+        self.assertEqual(preview["state"], document.PREVIEW_STATE_CURRENT)
+
+    def test_accepted_version_stale_after_edit(self):
+        store, candidate = self._candidate_store()
+        store, _ = document.adopt_candidate(
+            store, candidate["candidate_id"], _PACKAGE, _RUNTIME,
+            document.VALIDATION_IDENTITY, _NOW,
+        )
+        store, _ = document.save_revision(store, "changed again", store["head_revision_id"], _NOW)
+        preview = self._preview(store)
+        self.assertEqual(preview["binding"]["kind"], document.PREVIEW_KIND_ACCEPTED)
+        self.assertEqual(preview["state"], document.PREVIEW_STATE_STALE)
+
+    def test_preview_never_carries_document_content(self):
+        store, _ = self._candidate_store()
+        preview = self._preview(store)
+        self.assertNotIn("content", preview["document"])
+        self.assertNotIn(_MIXED, document.dumps(preview))
+
+    def test_package_form_and_result_are_bounded(self):
+        store, _ = self._candidate_store()
+        preview = self._preview(store)
+        self.assertEqual(
+            [f["name"] for f in preview["package"]["form"]],
+            ["subtotal", "member", "region"],
+        )
+        self.assertEqual(
+            [f["name"] for f in preview["package"]["result"]],
+            ["discount", "shipping_fee", "regional_fee", "total"],
+        )
+        self.assertTrue(preview["evidence"]["package_validates"])
+        self.assertFalse(preview["evidence"]["execution_performed"])
+
+
 if __name__ == "__main__":
     unittest.main()
