@@ -11,19 +11,24 @@ action is permitted — that decision belongs to the boundary.
 
 Layout (presentation only, no semantics invented):
 
-* **Command bar** — ``Open Project`` (primary) and ``Run read-only scan``
-  (secondary, disabled until a project is open);
-* **Primary workspace** — one horizontal splitter with exactly three children:
-  **Project Explorer** (collapsible tree, 240 px default), **Source Code**
-  (flat closable tabs over a read-only document view) and an independent
-  **Code Map** pane (never nested inside Source Code);
-* **Bottom utility panel** — one full-width surface directly beneath the three
-  panes: a flat six-tab bar (**Agent Chat | Plan | Diff | Problems | Tests |
-  Evidence**) plus a single disclosure control. Agent Chat keeps a message
-  area, a disabled composer and send action labelled provider-unavailable (no
-  provider, credential, network or inference call is ever made); the other five
-  tabs carry the read-only P3.1 plan / diff / problems / tests / evidence.
-  Diff is explicitly unavailable in this slice; nothing is ever written to disk;
+* **Command bar** — ``Open Project`` (primary), ``Run read-only scan``
+  (secondary, disabled until a project is open) and ``Settings``;
+* **Navigation rail** — a compact labelled column with **Document** and
+  **Preview** as the only always-visible primary destinations, then a divider,
+  **Versions** (the accepted-version drawer) and a collapsed **Advanced**
+  disclosure grouping the retained technical surfaces as **Source & Code Map**
+  / **Change Review** / **Validation Evidence**;
+* **Document workspace** — the primary full-height Working Document editor with
+  a document header (selector, New, Open, saved/unsaved state) and a footer
+  where Save is the primary action and the candidate actions are contextual;
+* **Preview workspace** — the fixed quotation-rules form and its latest run
+  result plus a concise candidate/validation state, with an explicit notice that
+  the fixture is not generated from the document;
+* **Advanced** (collapsed by default) — Source & Code Map keeps the three-pane
+  project view (Project Explorer, read-only Source Code, Code Map); Change
+  Review keeps Agent Chat, Plan, Diff and the raw Candidate metadata;
+  Validation Evidence keeps Problems, Tests and Evidence. Diff is explicitly
+  unavailable in this slice; nothing is ever written to disk;
 * **Status bar** — one row with a transient message and six right-aligned
   persistent fields.
 
@@ -91,7 +96,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QSplitterHandle,
     QStackedWidget,
-    QTabBar,
     QTabWidget,
     QTextEdit,
     QToolButton,
@@ -226,6 +230,14 @@ _DIFF_UNAVAILABLE = (
 # becomes a Twin Draft only — it never modifies source, Git state or files.
 _DRAFT_NOTICE = "Edits create a draft only. Source code is unchanged."
 
+# Fixed, honest notice on the Preview surface: the deterministic quotation
+# fixture shown there is never derived from, or an interpretation of, the
+# Working Document. It mirrors the candidate's own non-interpretation record.
+_FIXTURE_NOTICE = (
+    "This preview shows the fixed quotation rules. It is not generated from "
+    "your document."
+)
+
 # Fixed, honest unavailable messages for the document surface. Each ``reason``
 # is one of the workspace's bounded unavailable reasons; the banner never echoes
 # a requested path or file content.
@@ -272,23 +284,56 @@ _SETTINGS_SECTION_LABELS = {
     "about": "About",
 }
 
-# The six bottom-panel tabs, in the fixed order the tab bar presents them. The
-# first key ("chat") maps to the Agent Chat surface; the remaining five map to
-# the read-only secondary surfaces populated by the scan pipeline. The keys are
-# the single source of truth for the ``selected_tab`` state.
-_BOTTOM_TAB_KEYS = ("chat", "plan", "diff", "problems", "tests", "evidence", "builder", "document")
+# The six content destinations the labelled navigation rail pages. Document and
+# Preview are the only always-visible primary destinations; Versions opens the
+# accepted-version drawer; the Advanced group exposes the three secondary views
+# (Source & Code Map / Change Review / Validation Evidence) collapsed by default.
+_NAV_DESTINATIONS = (
+    "document",
+    "preview",
+    "versions",
+    "source_code_map",
+    "change_review",
+    "validation_evidence",
+)
 
-# Human-readable tab labels (one per key, same order).
-_BOTTOM_TAB_LABELS = {
-    "chat": "Agent Chat",
-    "plan": "Plan",
-    "diff": "Diff",
-    "problems": "Problems",
-    "tests": "Tests",
-    "evidence": "Evidence",
-    "builder": "Builder",
-    "document": "Document",
+# Content-stack page index for each destination; the pages are added in exactly
+# this order in ``_build_content_stack``.
+_NAV_DESTINATION_INDEX = {
+    key: index for index, key in enumerate(_NAV_DESTINATIONS)
 }
+
+# The three destinations grouped under the collapsed Advanced disclosure.
+_ADVANCED_DESTINATIONS = ("source_code_map", "change_review", "validation_evidence")
+
+# Human-readable rail labels (one per destination, same order as _NAV_DESTINATIONS).
+_NAV_LABELS = {
+    "document": "Document",
+    "preview": "Preview",
+    "versions": "Versions",
+    "source_code_map": "Source & Code Map",
+    "change_review": "Change Review",
+    "validation_evidence": "Validation Evidence",
+}
+
+# The Advanced disclosure label and its accessible expand/collapse names.
+_NAV_ADVANCED_LABEL = "Advanced"
+
+# The secondary sub-tabs inside the two Advanced groups. These are grouped views
+# under the Advanced disclosure, never permanent bottom tabs. The Candidate tab
+# holds the raw candidate/version metadata (never shown in the primary
+# Document/Preview workspaces).
+_CHANGE_REVIEW_TABS = (
+    ("chat", "Agent Chat"),
+    ("plan", "Plan"),
+    ("diff", "Diff"),
+    ("candidate", "Candidate"),
+)
+_VALIDATION_EVIDENCE_TABS = (
+    ("problems", "Problems"),
+    ("tests", "Tests"),
+    ("evidence", "Evidence"),
+)
 
 _PY_KEYWORDS = (
     "and", "as", "assert", "async", "await", "break", "class", "continue",
@@ -709,6 +754,8 @@ class MainWindow(QMainWindow):
         self._documents: List[Dict[str, Any]] = []
         self._document_id: Optional[str] = None
         self._document_base_revision_id: Optional[str] = None
+        self._document_head: Dict[str, Any] = {}
+        self._document_candidate: Optional[Dict[str, Any]] = None
         self._document_dirty: bool = False
         self._document_loading: bool = False
         self._document_versions: List[Dict[str, Any]] = []
@@ -718,23 +765,29 @@ class MainWindow(QMainWindow):
         self._document_status_label: Optional[QLabel] = None
         self._document_editor: Optional[QPlainTextEdit] = None
         self._document_result: Optional[QPlainTextEdit] = None
-        self._document_versions_combo: Optional[QComboBox] = None
         self._document_new_button: Optional[QPushButton] = None
         self._document_open_button: Optional[QPushButton] = None
         self._document_save_button: Optional[QPushButton] = None
         self._document_candidate_button: Optional[QPushButton] = None
+        self._document_review_button: Optional[QPushButton] = None
         self._document_adopt_button: Optional[QPushButton] = None
-        self._document_restore_button: Optional[QPushButton] = None
+        self._versions_list: Optional[QWidget] = None
+        self._versions_layout: Optional[QVBoxLayout] = None
+        self._versions_empty_label: Optional[QLabel] = None
+        self._preview_state_label: Optional[QLabel] = None
         # Deferred exit intents resolved after a save completes: "edit" returns
         # to the read-only projection; "close" closes the window.
         self._leave_after_save: bool = False
         self._close_after_save: bool = False
-        # Single bottom-panel state model (replaces the old drawer/chat booleans):
-        # the selected tab key, whether the panel body is visible, and the last
-        # usable expanded height to restore on the next expand.
-        self._selected_tab: str = "chat"
-        self._is_expanded: bool = True
-        self._last_expanded_height: int = style.BOTTOM_PANEL_DEFAULT_HEIGHT
+        # Primary navigation state (replaces the old bottom-panel tab model): the
+        # labelled rail's destination buttons keyed by destination, the current
+        # destination, the Advanced disclosure and its collapsed group, and the
+        # single content stack the destinations page.
+        self._nav_buttons: Dict[str, QPushButton] = {}
+        self._nav_destination: str = "document"
+        self._advanced_button: Optional[QPushButton] = None
+        self._nav_group_container: Optional[QWidget] = None
+        self._content_stack: Optional[QStackedWidget] = None
 
         self._supervisor = BackendSupervisor()
         self._supervisor.completed.connect(self._on_completed)
@@ -777,34 +830,19 @@ class MainWindow(QMainWindow):
         root.addWidget(self._build_command_bar())
         root.addWidget(self._build_provider_status_region())
 
-        self._vertical_splitter = HairlineSplitter(Qt.Vertical, self._palette)
-        self._vertical_splitter.setObjectName("verticalSplitter")
-
-        self._horizontal_splitter = HairlineSplitter(Qt.Horizontal, self._palette)
-        self._horizontal_splitter.setObjectName("primaryWorkspace")
-
-        self._explorer_panel = self._build_explorer()
-        self._source_panel = self._build_source()
-        self._twin_panel = self._build_twin()
-
-        self._horizontal_splitter.addWidget(self._explorer_panel)
-        self._horizontal_splitter.addWidget(self._source_panel)
-        self._horizontal_splitter.addWidget(self._twin_panel)
-        self._configure_primary_splitter()
-
-        self._bottom_panel = self._build_bottom_panel()
-
-        self._vertical_splitter.addWidget(self._horizontal_splitter)
-        self._vertical_splitter.addWidget(self._bottom_panel)
-        self._vertical_splitter.setStretchFactor(0, style.PRIMARY_WORKSPACE_STRETCH)
-        self._vertical_splitter.setStretchFactor(1, style.BOTTOM_PANEL_STRETCH)
-        self._vertical_splitter.setCollapsible(0, False)
-        self._vertical_splitter.setCollapsible(1, False)
-        self._vertical_splitter.setSizes(
-            [style.PRIMARY_WORKSPACE_INITIAL_HEIGHT, style.BOTTOM_PANEL_DEFAULT_HEIGHT]
+        # Main row: the compact labelled navigation rail beside the one content
+        # stack that pages Document, Preview, Versions and the Advanced group.
+        main_row = QWidget()
+        main_row.setObjectName("mainRow")
+        main_layout = QHBoxLayout(main_row)
+        main_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
         )
+        main_layout.setSpacing(style.SPACE_0)
+        main_layout.addWidget(self._build_nav_rail())
+        main_layout.addWidget(self._build_content_stack(), stretch=1)
+        root.addWidget(main_row, stretch=1)
 
-        root.addWidget(self._vertical_splitter, stretch=1)
         root.addWidget(self._build_status_bar())
 
     def _configure_primary_splitter(self) -> None:
@@ -1217,69 +1255,163 @@ class MainWindow(QMainWindow):
         layout.addWidget(actions)
         return surface
 
-    def _build_bottom_panel(self) -> QWidget:
-        panel = QWidget()
-        panel.setObjectName("bottomPanel")
-        layout = QVBoxLayout(panel)
+    def _build_nav_rail(self) -> QWidget:
+        """Build the compact labelled navigation rail.
+
+        Document and Preview are the only always-visible primary destinations;
+        a divider separates Versions (which opens the accepted-version drawer)
+        and the collapsed Advanced disclosure, whose three grouped destinations
+        (Source & Code Map / Change Review / Validation Evidence) stay hidden
+        until it is opened. Every destination is a keyboard-focusable labelled
+        button; no emoji or icon-pack glyphs are used.
+        """
+        rail = QWidget()
+        rail.setObjectName("navRail")
+        rail.setFixedWidth(style.NAV_RAIL_WIDTH)
+        layout = QVBoxLayout(rail)
+        layout.setContentsMargins(
+            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.GAP_TIGHT
+        )
+        layout.setSpacing(style.SPACE_4)
+
+        for key in ("document", "preview"):
+            layout.addWidget(self._nav_button(_NAV_LABELS[key], key))
+
+        divider = QFrame()
+        divider.setObjectName("navRailDivider")
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFixedHeight(style.BORDER_WIDTH)
+        layout.addWidget(divider)
+
+        layout.addWidget(self._nav_button(_NAV_LABELS["versions"], "versions"))
+
+        self._advanced_button = QPushButton(_NAV_ADVANCED_LABEL + " ▸")
+        self._advanced_button.setObjectName("navRailAdvancedButton")
+        self._advanced_button.setCheckable(True)
+        self._advanced_button.setAccessibleName("Show Advanced")
+        self._advanced_button.toggled.connect(self._on_advanced_toggled)
+        layout.addWidget(self._advanced_button)
+
+        self._nav_group_container = QWidget()
+        self._nav_group_container.setObjectName("navRailGroup")
+        group_layout = QVBoxLayout(self._nav_group_container)
+        group_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        group_layout.setSpacing(style.SPACE_4)
+        for key in _ADVANCED_DESTINATIONS:
+            group_layout.addWidget(self._nav_button(_NAV_LABELS[key], key, group=True))
+        self._nav_group_container.setVisible(False)
+        layout.addWidget(self._nav_group_container)
+
+        layout.addStretch(1)
+
+        # Initial state: Document is the selected primary destination.
+        self._nav_buttons["document"].setChecked(True)
+        return rail
+
+    def _nav_button(self, label: str, key: str, group: bool = False) -> QPushButton:
+        """Return one checkable rail button and register it by destination."""
+        button = QPushButton(label)
+        button.setObjectName("navRailGroupButton" if group else "navRailButton")
+        button.setCheckable(True)
+        button.setAccessibleName(label)
+        button.setToolTip(label)
+        button.clicked.connect(partial(self._select_destination, key))
+        self._nav_buttons[key] = button
+        return button
+
+    def _build_content_stack(self) -> QWidget:
+        """Build the single content stack that pages every destination.
+
+        Document and Preview are primary full-height workspaces; Versions is the
+        accepted-version drawer; the three Advanced pages group the retained
+        technical surfaces. Every page is built once and kept alive for the
+        window's lifetime, so no surface output is silently discarded.
+        """
+        stack = QStackedWidget()
+        stack.setObjectName("contentStack")
+
+        # Source & Code Map: the retained three-pane project view (explorer,
+        # read-only source tabs, Code Map). The explorer no longer permanently
+        # consumes space because this whole page lives behind Advanced.
+        self._horizontal_splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        self._horizontal_splitter.setObjectName("primaryWorkspace")
+        self._explorer_panel = self._build_explorer()
+        self._source_panel = self._build_source()
+        self._twin_panel = self._build_twin()
+        self._horizontal_splitter.addWidget(self._explorer_panel)
+        self._horizontal_splitter.addWidget(self._source_panel)
+        self._horizontal_splitter.addWidget(self._twin_panel)
+        self._configure_primary_splitter()
+
+        self._views: Dict[str, CodeView] = {}
+        self._document_page = self._build_document_workspace()
+        stack.addWidget(self._document_page)
+        stack.addWidget(self._build_preview_workspace())
+        stack.addWidget(self._build_versions_page())
+        stack.addWidget(self._horizontal_splitter)
+        stack.addWidget(self._build_change_review_page())
+        stack.addWidget(self._build_validation_evidence_page())
+
+        self._content_stack = stack
+        stack.setCurrentIndex(_NAV_DESTINATION_INDEX["document"])
+        return stack
+
+    def _build_change_review_page(self) -> QWidget:
+        """Build the Change Review group: Agent Chat, Plan and Diff.
+
+        These are grouped secondary views under the Advanced disclosure, never
+        permanent bottom tabs. The shared read-only CodeViews keep the P3.1
+        plan/diff output; Agent Chat keeps its disabled provider-unavailable
+        composer (no provider, credential, network or inference call).
+        """
+        page = QWidget()
+        page.setObjectName("changeReviewPage")
+        layout = QVBoxLayout(page)
         layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
         layout.setSpacing(style.SPACE_0)
 
-        # Header: the flat tab bar plus the single disclosure control at the
-        # far right. No separate chat/drawer collapse controls exist.
-        header = QWidget()
-        header.setObjectName("bottomPanelHeader")
-        header.setFixedHeight(style.BOTTOM_PANEL_HEADER_HEIGHT)
-        self._bottom_panel_header = header
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
-        header_layout.setSpacing(style.GAP_TIGHT)
-
-        self._bottom_tabs = QTabBar()
-        self._bottom_tabs.setObjectName("bottomPanelTabs")
-        self._bottom_tabs.setDrawBase(False)
-        self._bottom_tabs.setExpanding(False)
-        self._bottom_tabs.setUsesScrollButtons(True)
-        for key in _BOTTOM_TAB_KEYS:
-            self._bottom_tabs.addTab(_BOTTOM_TAB_LABELS[key])
-        self._bottom_tabs.currentChanged.connect(self._on_bottom_tab_changed)
-        header_layout.addWidget(self._bottom_tabs)
-        header_layout.addStretch(1)
-
-        self._disclosure_button = QToolButton()
-        self._disclosure_button.setObjectName("bottomPanelDisclosure")
-        self._disclosure_button.clicked.connect(self._toggle_expanded)
-        header_layout.addWidget(self._disclosure_button)
-        layout.addWidget(header)
-
-        # Body: one stacked widget with one page per bottom tab (Agent Chat, the
-        # five read-only surfaces, the Builder and the Document surfaces).
-        self._bottom_body = QStackedWidget()
-        self._bottom_body.setObjectName("bottomPanelBody")
-        self._bottom_body.setMinimumHeight(style.BOTTOM_PANEL_BODY_MIN_HEIGHT)
-
-        self._bottom_body.addWidget(self._build_chat_page())
-        self._views: Dict[str, CodeView] = {}
-        for key in _BOTTOM_TAB_KEYS[1:]:
-            if key == "builder":
-                self._builder_page = self._build_builder_page()
-                self._bottom_body.addWidget(self._builder_page)
-                continue
-            if key == "document":
-                self._document_page = self._build_document_page()
-                self._bottom_body.addWidget(self._document_page)
-                continue
-            view = CodeView(self._bottom_body, palette=self._palette)
-            self._views[key] = view
-            self._bottom_body.addWidget(view)
+        tabs = QTabWidget()
+        tabs.setObjectName("secondaryTabs")
+        tabs.setDocumentMode(True)
+        tabs.addTab(self._build_chat_page(), _CHANGE_REVIEW_TABS[0][1])
+        self._views["plan"] = CodeView(tabs, palette=self._palette)
+        self._views["diff"] = CodeView(tabs, palette=self._palette)
         self._views["diff"].setPlainText(_DIFF_UNAVAILABLE)
         self._views["diff"].setStyleSheet(style.secondary_text_style(self._palette))
+        tabs.addTab(self._views["plan"], _CHANGE_REVIEW_TABS[1][1])
+        tabs.addTab(self._views["diff"], _CHANGE_REVIEW_TABS[2][1])
 
-        layout.addWidget(self._bottom_body, stretch=1)
+        # Raw candidate/version metadata lives here, behind Advanced, never in
+        # the primary Document/Preview workspaces.
+        self._document_result = QPlainTextEdit()
+        self._document_result.setObjectName("documentResult")
+        self._document_result.setReadOnly(True)
+        self._document_result.setAccessibleName("Document state")
+        tabs.addTab(self._document_result, _CHANGE_REVIEW_TABS[3][1])
+        layout.addWidget(tabs)
+        return page
 
-        # Initial state: Agent Chat selected, panel expanded.
-        self._bottom_body.setCurrentIndex(0)
-        self._update_disclosure()
-        return panel
+    def _build_validation_evidence_page(self) -> QWidget:
+        """Build the Validation Evidence group: Problems, Tests and Evidence."""
+        page = QWidget()
+        page.setObjectName("validationEvidencePage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        layout.setSpacing(style.SPACE_0)
+
+        tabs = QTabWidget()
+        tabs.setObjectName("secondaryTabs")
+        tabs.setDocumentMode(True)
+        self._views["problems"] = CodeView(tabs, palette=self._palette)
+        self._views["tests"] = CodeView(tabs, palette=self._palette)
+        self._views["evidence"] = CodeView(tabs, palette=self._palette)
+        tabs.addTab(self._views["problems"], _VALIDATION_EVIDENCE_TABS[0][1])
+        tabs.addTab(self._views["tests"], _VALIDATION_EVIDENCE_TABS[1][1])
+        tabs.addTab(self._views["evidence"], _VALIDATION_EVIDENCE_TABS[2][1])
+        layout.addWidget(tabs)
+        return page
 
     def _build_chat_page(self) -> QWidget:
         body = QWidget()
@@ -1326,21 +1458,34 @@ class MainWindow(QMainWindow):
 
         return body
 
-    def _build_builder_page(self) -> QWidget:
-        """Build the document-driven Builder surface (P4.3).
+    def _build_preview_workspace(self) -> QWidget:
+        """Build the Preview workspace (P4.4a), the primary candidate-tool surface.
 
-        Presents the fixed reference-package form, a Run action, and a bounded
-        result area. The package schema and the form input are validated by the
-        backend; this surface only renders the fixed form and the bounded result
-        and never holds a credential or runs package code directly.
+        Shows the fixed quotation-rules input form, the latest permitted run
+        result and a concise candidate/validation state — with an explicit,
+        always-visible notice that the fixture is not generated from the Working
+        Document. It only relocates the existing Builder surface; it does not add
+        or broaden runner execution.
         """
         body = QWidget()
-        body.setObjectName("builderPanel")
+        body.setObjectName("previewPanel")
         layout = QVBoxLayout(body)
         layout.setContentsMargins(
             style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
         )
         layout.setSpacing(style.GAP_TIGHT)
+
+        title = QLabel("Preview")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(title)
+
+        notice = QLabel(_FIXTURE_NOTICE)
+        notice.setObjectName("secondary")
+        notice.setWordWrap(True)
+        notice.setStyleSheet(style.secondary_text_style(self._palette))
+        notice.setAccessibleName("Preview fixture notice")
+        layout.addWidget(notice)
 
         self._builder_title = QLabel("Quotation rules")
         self._builder_title.setObjectName("builderTitle")
@@ -1368,17 +1513,66 @@ class MainWindow(QMainWindow):
         self._builder_result.setVisible(False)
         layout.addWidget(self._builder_result)
 
+        self._preview_state_label = QLabel("")
+        self._preview_state_label.setObjectName("previewState")
+        self._preview_state_label.setAccessibleName("Candidate state")
+        self._preview_state_label.setStyleSheet(
+            style.status_label_style(self._palette)
+        )
+        layout.addWidget(self._preview_state_label)
+
         layout.addStretch(1)
+        self._update_preview_state()
         return body
 
-    def _build_document_page(self) -> QWidget:
-        """Build the document-first Working Document surface (P4.4).
+    def _build_versions_page(self) -> QWidget:
+        """Build the Versions drawer: the accepted-version history with Restore.
 
-        Presents the document list, an editable UTF-8 md/txt editor with a dirty
-        indicator, and the distinct Working Document / Candidate / Accepted
-        Version state. Save appends an immutable revision; Create Candidate binds
-        the deterministic quotation fixture; Adopt is an explicit, revalidated
-        step; Restore re-points the accepted version without discarding content.
+        Each accepted version is one row with a human label and a Restore action
+        beside it; the current version is marked. Restore re-points the Accepted
+        Version without discarding the Working Document or its history.
+        """
+        body = QWidget()
+        body.setObjectName("versionsPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        title = QLabel("Accepted Versions")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(title)
+
+        self._versions_list = QWidget()
+        self._versions_list.setObjectName("versionsList")
+        self._versions_layout = QVBoxLayout(self._versions_list)
+        self._versions_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._versions_layout.setSpacing(style.GAP_TIGHT)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("versionsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._versions_list)
+        layout.addWidget(scroll, stretch=1)
+
+        self._populate_versions_list()
+        return body
+
+    def _build_document_workspace(self) -> QWidget:
+        """Build the document-first Working Document workspace (P4.4a).
+
+        Promoted to the primary full-height workspace: a compact document header
+        (file selector, New, Open and saved/unsaved state), a large readable
+        editor, and an unobtrusive footer where Save is the primary action and
+        the candidate actions (Create candidate / Review candidate / Adopt) are
+        contextual rather than four equal buttons. Accepted versions and raw
+        candidate metadata live in the Versions drawer and the Advanced Change
+        Review group respectively, not here.
         """
         body = QWidget()
         body.setObjectName("documentPanel")
@@ -1388,24 +1582,29 @@ class MainWindow(QMainWindow):
         )
         layout.setSpacing(style.GAP_TIGHT)
 
-        selector = QWidget()
-        selector_layout = QHBoxLayout(selector)
-        selector_layout.setContentsMargins(
+        # Document header: selector plus New / Open and the saved/unsaved state.
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(
             style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
         )
-        selector_layout.setSpacing(style.GAP_TIGHT)
+        header_layout.setSpacing(style.GAP_TIGHT)
+        title = QLabel("Document")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        header_layout.addWidget(title)
         self._document_combo = QComboBox()
         self._document_combo.setAccessibleName("Working Document")
-        selector_layout.addWidget(self._document_combo, stretch=1)
+        header_layout.addWidget(self._document_combo, stretch=1)
         self._document_new_button = QPushButton("New")
         self._document_new_button.setAccessibleName("New document")
         self._document_new_button.clicked.connect(self._new_document)
         self._document_open_button = QPushButton("Open")
         self._document_open_button.setAccessibleName("Open document")
         self._document_open_button.clicked.connect(self._open_working_document)
-        selector_layout.addWidget(self._document_new_button)
-        selector_layout.addWidget(self._document_open_button)
-        layout.addWidget(selector)
+        header_layout.addWidget(self._document_new_button)
+        header_layout.addWidget(self._document_open_button)
+        layout.addWidget(header)
 
         self._document_status_label = QLabel("")
         self._document_status_label.setObjectName("documentStatus")
@@ -1421,6 +1620,7 @@ class MainWindow(QMainWindow):
         self._document_editor.textChanged.connect(self._mark_document_dirty)
         layout.addWidget(self._document_editor, stretch=1)
 
+        # Footer: Save is primary; the candidate actions are contextual.
         actions = QWidget()
         actions_layout = QHBoxLayout(actions)
         actions_layout.setContentsMargins(
@@ -1428,47 +1628,26 @@ class MainWindow(QMainWindow):
         )
         actions_layout.setSpacing(style.GAP_TIGHT)
         self._document_save_button = QPushButton("Save")
+        self._document_save_button.setObjectName("primaryButton")
         self._document_candidate_button = QPushButton("Create candidate")
+        self._document_review_button = QPushButton("Review candidate")
         self._document_adopt_button = QPushButton("Adopt")
-        self._document_restore_button = QPushButton("Restore")
         self._document_save_button.setAccessibleName("Save document")
         self._document_candidate_button.setAccessibleName("Create candidate")
+        self._document_review_button.setAccessibleName("Review candidate")
         self._document_adopt_button.setAccessibleName("Adopt candidate")
-        self._document_restore_button.setAccessibleName("Restore accepted version")
         self._document_save_button.clicked.connect(self._save_document)
         self._document_candidate_button.clicked.connect(self._create_candidate)
+        self._document_review_button.clicked.connect(self._review_candidate)
         self._document_adopt_button.clicked.connect(self._adopt_candidate)
-        self._document_restore_button.clicked.connect(self._restore_version)
-        for button in (
-            self._document_save_button,
-            self._document_candidate_button,
-            self._document_adopt_button,
-            self._document_restore_button,
-        ):
-            actions_layout.addWidget(button)
+        actions_layout.addWidget(self._document_save_button)
+        actions_layout.addWidget(self._document_candidate_button)
+        actions_layout.addWidget(self._document_review_button)
+        actions_layout.addWidget(self._document_adopt_button)
+        actions_layout.addStretch(1)
         layout.addWidget(actions)
 
-        versions_row = QWidget()
-        versions_layout = QHBoxLayout(versions_row)
-        versions_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        versions_layout.setSpacing(style.GAP_TIGHT)
-        versions_label = QLabel("Accepted versions")
-        versions_label.setStyleSheet(style.secondary_text_style(self._palette))
-        self._document_versions_combo = QComboBox()
-        self._document_versions_combo.setAccessibleName("Accepted versions")
-        versions_layout.addWidget(versions_label)
-        versions_layout.addWidget(self._document_versions_combo, stretch=1)
-        layout.addWidget(versions_row)
-
-        self._document_result = QPlainTextEdit()
-        self._document_result.setObjectName("documentResult")
-        self._document_result.setReadOnly(True)
-        self._document_result.setAccessibleName("Document state")
-        layout.addWidget(self._document_result)
-
-        self._set_document_actions_enabled(False)
+        self._update_document_actions()
         return body
 
     def _build_status_bar(self) -> QWidget:
@@ -1531,66 +1710,39 @@ class MainWindow(QMainWindow):
             label.setMaximumWidth(max_width)
         return label
 
-    # -- bottom panel tab selection and collapse ------------------------
+    # -- navigation rail destination selection --------------------------
 
-    def _on_bottom_tab_changed(self, index: int) -> None:
-        if 0 <= index < len(_BOTTOM_TAB_KEYS):
-            self._selected_tab = _BOTTOM_TAB_KEYS[index]
-            self._bottom_body.setCurrentIndex(index)
-        if self._selected_tab == "builder" and not self._builder_loaded:
+    def _select_destination(self, key: str) -> None:
+        """Switch the content stack to ``key`` and sync the rail's checked state.
+
+        Document and Preview are the two always-visible primary destinations;
+        Versions and the three Advanced destinations are secondary. Entering
+        Document refreshes the document list (cheap and selection-preserving);
+        entering Preview loads the reference package on first visit.
+        """
+        if key not in _NAV_DESTINATIONS:
+            return
+        self._nav_destination = key
+        for k, button in self._nav_buttons.items():
+            button.setChecked(k == key)
+        if key in _ADVANCED_DESTINATIONS and not self._advanced_button.isChecked():
+            self._advanced_button.setChecked(True)
+        self._content_stack.setCurrentIndex(_NAV_DESTINATION_INDEX[key])
+        if key == "document":
+            self._refresh_documents()
+        elif key == "preview" and not self._builder_loaded:
             self._builder_loaded = True
             self._load_builder_package()
-        elif self._selected_tab == "document":
-            self._refresh_documents()
 
-    def _toggle_expanded(self) -> None:
-        self._set_expanded(not self._is_expanded)
-
-    def _set_expanded(self, expanded: bool) -> None:
-        """Collapse or expand the bottom panel body.
-
-        Collapsing keeps only the tab/header row and returns the body height to
-        the primary workspace; expanding restores the last usable height. The
-        selected tab and its body visibility are independent of the collapsed
-        state, so switching tabs never creates a second panel.
-        """
-        if expanded == self._is_expanded:
-            self._update_disclosure()
-            return
-        if expanded:
-            self._is_expanded = True
-            self._bottom_body.setVisible(True)
-            self._bottom_panel.setMinimumHeight(style.BOTTOM_PANEL_MIN_HEIGHT)
-            self._bottom_panel.setMaximumHeight(style.BOTTOM_PANEL_MAX_HEIGHT)
-            total = sum(self._vertical_splitter.sizes())
-            # Restore the last usable height, clamped so the primary workspace
-            # always keeps a positive band even after a window shrink.
-            panel_height = min(
-                self._last_expanded_height, total - style.BOTTOM_PANEL_HEADER_HEIGHT
-            )
-            panel_height = max(style.BOTTOM_PANEL_MIN_HEIGHT, panel_height)
-            self._vertical_splitter.setSizes([total - panel_height, panel_height])
-        else:
-            self._last_expanded_height = self._vertical_splitter.sizes()[1]
-            self._is_expanded = False
-            self._bottom_body.setVisible(False)
-            header_height = style.BOTTOM_PANEL_HEADER_HEIGHT
-            self._bottom_panel.setMinimumHeight(header_height)
-            self._bottom_panel.setMaximumHeight(header_height)
-            total = sum(self._vertical_splitter.sizes())
-            self._vertical_splitter.setSizes([total - header_height, header_height])
-        self._update_disclosure()
-
-    def _update_disclosure(self) -> None:
-        """Sync the disclosure chevron, accessible name and tooltip to state."""
-        if self._is_expanded:
-            self._disclosure_button.setText("▾")
-            name = "Collapse bottom panel"
-        else:
-            self._disclosure_button.setText("▴")
-            name = "Expand bottom panel"
-        self._disclosure_button.setAccessibleName(name)
-        self._disclosure_button.setToolTip(name)
+    def _on_advanced_toggled(self, checked: bool) -> None:
+        """Show or hide the collapsed Advanced group."""
+        self._nav_group_container.setVisible(checked)
+        self._advanced_button.setText(
+            _NAV_ADVANCED_LABEL + (" ▾" if checked else " ▸")
+        )
+        self._advanced_button.setAccessibleName(
+            "Hide Advanced" if checked else "Show Advanced"
+        )
 
     # -- status helpers --------------------------------------------------
 
@@ -3180,15 +3332,83 @@ class MainWindow(QMainWindow):
 
     # -- Document/version-authority flow (P4.4) ---------------------------
 
-    def _set_document_actions_enabled(self, enabled: bool) -> None:
-        for button in (
-            self._document_save_button,
-            self._document_candidate_button,
-            self._document_adopt_button,
-            self._document_restore_button,
-        ):
-            if button is not None:
-                button.setEnabled(enabled)
+    def _sync_document_combo_selection(self) -> None:
+        """Point the document selector at the currently open document by id.
+
+        Selection is keyed by the opaque ``document_id``, never list index, title,
+        creation order or revision number, so a rename/display-order change cannot
+        silently retarget the open document.
+        """
+        combo = self._document_combo
+        if combo is None:
+            return
+        index = combo.findData(self._document_id) if self._document_id else -1
+        if index >= 0:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+
+    def _candidate_is_current(self) -> bool:
+        """True when the latest candidate is bound to the current document head.
+
+        The candidate is current only while it is not adopted, its bound revision
+        is still the head, its fingerprint matches the head's content and its
+        accepted predecessor is still the current accepted version.
+        """
+        candidate = self._document_candidate
+        head = self._document_head
+        if not candidate or not head:
+            return False
+        return (
+            not candidate.get("adopted")
+            and candidate.get("document_revision_id") == head.get("revision_id")
+            and candidate.get("document_fingerprint") == head.get("content_fingerprint")
+            and candidate.get("accepted_predecessor_id")
+            == self._current_accepted_version_id
+        )
+
+    def _update_document_actions(self) -> None:
+        """Show candidate actions only in their meaningful states.
+
+        Save is always the primary action. Create candidate appears only after a
+        saved (clean) document is current; Review candidate appears only when a
+        candidate exists; Adopt appears only when that candidate's evidence is
+        current.
+        """
+        has_doc = self._document_id is not None
+        has_revision = bool((self._document_head or {}).get("revision_id"))
+        has_candidate = bool(self._document_candidate)
+
+        if self._document_save_button is not None:
+            self._document_save_button.setEnabled(has_doc)
+        if self._document_candidate_button is not None:
+            self._document_candidate_button.setVisible(
+                has_doc and has_revision and not self._document_dirty
+            )
+        if self._document_review_button is not None:
+            self._document_review_button.setVisible(has_candidate)
+        if self._document_adopt_button is not None:
+            self._document_adopt_button.setVisible(self._candidate_is_current())
+
+    def _update_preview_state(self) -> None:
+        """Write the concise candidate/validation state on the Preview surface."""
+        label = self._preview_state_label
+        if label is None:
+            return
+        if self._document_id is None:
+            label.setText("No document open.")
+        elif not self._document_candidate:
+            label.setText("No candidate yet — save the document and create one.")
+        elif self._document_candidate.get("adopted"):
+            label.setText("Candidate adopted as the Accepted Version.")
+        elif self._candidate_is_current():
+            label.setText("Candidate ready — bound to the current document.")
+        else:
+            label.setText("Candidate is stale against the current document.")
+
+    def _review_candidate(self) -> None:
+        """Open the Preview surface to review the current candidate."""
+        self._select_destination("preview")
 
     def _update_document_status(self) -> None:
         if self._document_status_label is None:
@@ -3205,6 +3425,7 @@ class MainWindow(QMainWindow):
             return
         self._document_dirty = True
         self._update_document_status()
+        self._update_document_actions()
 
     def _refresh_documents(self) -> None:
         cid = contract.new_correlation_id()
@@ -3218,13 +3439,35 @@ class MainWindow(QMainWindow):
         combo = self._document_combo
         if combo is None:
             return
+        # Preserve the open document by its opaque id, never list index, title,
+        # creation order or revision number.
+        selected_id = self._document_id
+        if selected_id is None and combo.count():
+            selected_id = combo.currentData()
+
         combo.blockSignals(True)
         combo.clear()
         for doc in self._documents:
             label = f"{doc.get('name')} (rev {doc.get('head_revision_number', 0)})"
             combo.addItem(label, doc.get("document_id"))
+
+        index = combo.findData(selected_id) if selected_id else -1
+        if index < 0 and combo.count():
+            index = 0
+        if index >= 0:
+            combo.setCurrentIndex(index)
         combo.blockSignals(False)
-        self._set_status(STATE_SUCCESS, f"{len(self._documents)} document(s)")
+
+        # Bounded external-change handling: only an externally deleted/corrupt
+        # document (no longer listed) clears the open selection, with a clear
+        # message and a safe fallback to the first available document.
+        if self._document_id is not None and not any(
+            d.get("document_id") == self._document_id for d in self._documents
+        ):
+            self._clear_open_document()
+            self._set_status(STATE_SUCCESS, "the open document was removed")
+        else:
+            self._set_status(STATE_SUCCESS, f"{len(self._documents)} document(s)")
 
     def _new_document(self) -> None:
         name, ok = QInputDialog.getText(
@@ -3268,8 +3511,16 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_SUCCESS, "document opened")
 
     def _apply_document_state(self, result: Dict[str, Any]) -> None:
-        """Load the full document state into the editor and the state area."""
+        """Load the full document state into the editor and the state area.
+
+        The open document id is taken from the result (not the selector), so an
+        Open always binds the editor to the exact document the boundary returned,
+        and the selector is re-pointed at it by id.
+        """
+        document = result.get("document") or {}
+        self._document_id = document.get("document_id")
         head = result.get("head_revision") or {}
+        self._document_head = head
         self._document_loading = True
         try:
             self._document_editor.setPlainText(head.get("content", ""))
@@ -3277,7 +3528,37 @@ class MainWindow(QMainWindow):
             self._document_loading = False
         self._document_base_revision_id = head.get("revision_id")
         self._document_dirty = False
+        self._sync_document_combo_selection()
         self._refresh_document_meta(result)
+
+    def _clear_open_document(self) -> None:
+        """Clear the open document after an external delete/corrupt.
+
+        This is the only path that changes the open selection without an explicit
+        user action. The editor is emptied and actions/candidate state are reset;
+        a clear message is shown and the user can Open another document.
+        """
+        self._document_id = None
+        self._document_base_revision_id = None
+        self._document_head = {}
+        self._document_candidate = None
+        self._document_candidate_id = None
+        self._document_versions = []
+        self._current_accepted_version_id = None
+        self._document_loading = True
+        try:
+            self._document_editor.setPlainText("")
+        finally:
+            self._document_loading = False
+        self._document_dirty = False
+        self._document_result.setPlainText(
+            "The open document was removed or is no longer available.\n\n"
+            "Select another document and choose Open."
+        )
+        self._update_document_status()
+        self._update_document_actions()
+        self._update_preview_state()
+        self._populate_versions_list()
 
     def _refresh_document_meta(self, result: Dict[str, Any]) -> None:
         """Refresh candidate/accepted/version metadata without touching the editor.
@@ -3286,33 +3567,68 @@ class MainWindow(QMainWindow):
         silently discarded.
         """
         candidate = result.get("candidate")
+        self._document_candidate = candidate
         self._document_candidate_id = (
             candidate.get("candidate_id") if candidate else None
         )
         self._document_versions = list(result.get("versions") or [])
         self._current_accepted_version_id = result.get("current_accepted_version_id")
-        self._populate_versions_combo()
+        self._populate_versions_list()
         self._document_result.setPlainText(format_document_state(result))
         self._update_document_status()
-        self._set_document_actions_enabled(self._document_id is not None)
+        self._update_document_actions()
+        self._update_preview_state()
 
-    def _populate_versions_combo(self) -> None:
-        combo = self._document_versions_combo
-        if combo is None:
+    def _populate_versions_list(self) -> None:
+        """Rebuild the Versions drawer rows: one human label + Restore per version.
+
+        Versions are shown with 1-based human labels (never the opaque version id)
+        plus a ``current`` / ``restored`` marker, each with its own Restore action.
+        """
+        layout = self._versions_layout
+        if layout is None:
             return
-        combo.blockSignals(True)
-        combo.clear()
-        for version in self._document_versions:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        if not self._document_versions:
+            empty = QLabel("No accepted versions yet.")
+            empty.setObjectName("secondary")
+            empty.setStyleSheet(style.secondary_text_style(self._palette))
+            empty.setWordWrap(True)
+            layout.addWidget(empty)
+            layout.addStretch(1)
+            return
+
+        for index, version in enumerate(self._document_versions, start=1):
             version_id = version.get("version_id")
-            label = str(version_id)
+            label_text = f"Version {index}"
             if version_id == self._current_accepted_version_id:
-                label += " (current)"
+                label_text += " (current)"
             if version.get("restore_of"):
-                label += " (restored)"
-            combo.addItem(label, version_id)
-        combo.blockSignals(False)
-        if self._document_restore_button is not None:
-            self._document_restore_button.setEnabled(combo.count() > 0)
+                label_text += " (restored)"
+            label = QLabel(label_text)
+            label.setStyleSheet(style.status_label_style(self._palette))
+            label.setAccessibleName(label_text)
+
+            restore = QPushButton("Restore")
+            restore.setAccessibleName(f"Restore {label_text}")
+            restore.clicked.connect(partial(self._restore_version, version_id))
+
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(
+                style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+            )
+            row_layout.setSpacing(style.GAP_TIGHT)
+            row_layout.addWidget(label, stretch=1)
+            row_layout.addWidget(restore)
+            layout.addWidget(row)
+
+        layout.addStretch(1)
 
     def _save_document(self) -> None:
         if not self._document_id:
@@ -3379,14 +3695,8 @@ class MainWindow(QMainWindow):
         self._refresh_documents()
         self._set_status(STATE_SUCCESS, "candidate adopted")
 
-    def _restore_version(self) -> None:
-        if not self._document_id:
-            return
-        combo = self._document_versions_combo
-        if combo is None or combo.currentIndex() < 0:
-            return
-        version_id = combo.currentData()
-        if not version_id:
+    def _restore_version(self, version_id: str) -> None:
+        if not self._document_id or not version_id:
             return
         cid = contract.new_correlation_id()
         request = build_restore_version_request(cid, self._document_id, version_id)
@@ -3729,8 +4039,10 @@ def run_gui(argv: Optional[Sequence[str]] = None) -> int:
     window.show()
     # Automatic local readiness at startup: read saved profiles and redacted
     # credential presence through the local boundary so the fixed status strip
-    # is truthful without a manual command. Never a provider or network call.
+    # is truthful without a manual command, and populate the document selector
+    # for the primary Document workspace. Never a provider or network call.
     window._refresh_profiles()
+    window._refresh_documents()
     return app.exec()
 
 

@@ -106,6 +106,20 @@ semantics are invented):
 - **A single-row status bar** — a transient message plus six persistent fields
   (root, repository, file, Twin, provider, validation state).
 
+As of **P4.4a** the shell is document-first rather than IDE-shaped. A compact
+labelled navigation rail presents **Document** and **Preview** as the only
+always-visible primary destinations, then **Versions** (the accepted-version
+history with per-version Restore) and a collapsed **Advanced** disclosure that
+groups the retained technical surfaces as **Source & Code Map** (the three
+panes above), **Change Review** (Agent Chat, Plan, Diff and the raw candidate
+metadata) and **Validation Evidence** (Problems, Tests, Evidence). The Working
+Document is promoted to a full-height primary workspace with a document header
+(file selector, New, Open, saved/unsaved state), a large editor and a footer
+where Save is the primary action and the candidate actions (Create candidate /
+Review candidate / Adopt) are contextual; **Preview** shows the fixed
+quotation-rules form and its latest run result with an explicit notice that the
+fixture is not generated from the document.
+
 All visual values live in the desktop-only design system `hrca/style.py` —
 light and dark palettes (auto-selected from the operating-system appearance),
 a 4 px spacing scale, corner radii, typography, component geometry, and a Qt

@@ -8,7 +8,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QLabel
 
     from hrca import contract
     from hrca.client import MainWindow
@@ -130,7 +130,7 @@ class DocumentSurfaceTests(unittest.TestCase):
         self.assertEqual(fake.requests[0]["action"], contract.ACTION_DOCUMENT_CREATE_CANDIDATE)
         self.assertEqual(fake.requests[0]["document_id"], "doc:d1")
 
-    def test_versions_combo_marks_current(self):
+    def test_versions_list_marks_current(self):
         state = _sample_state()
         state["versions"] = [
             {"version_id": "ver:1", "restore_of": None},
@@ -138,13 +138,113 @@ class DocumentSurfaceTests(unittest.TestCase):
         ]
         state["current_accepted_version_id"] = "ver:2"
         self._open_state(state)
-        self.assertEqual(self.window._document_versions_combo.count(), 2)
-        self.assertIn("(current)", self.window._document_versions_combo.itemText(1))
+        labels = [l.text() for l in self.window._versions_list.findChildren(QLabel)]
+        self.assertIn("Version 1", labels)
+        self.assertIn("Version 2 (current) (restored)", labels)
 
     def test_failure_maps_to_bounded_message(self):
         self.window._document_id = "doc:d1"
         self.window._on_document_error("document_stale")
         self.assertIn("changed since it was opened", self.window._document_result.toPlainText())
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class DocumentSelectionTests(unittest.TestCase):
+    """Regression tests for the P4.4a selector-reset correction.
+
+    Selection must be preserved by the opaque document_id across list/model
+    refreshes, and only an external delete/corrupt may clear it (with a bounded
+    message and a safe fallback).
+    """
+
+    def setUp(self):
+        _app()
+        self.window = MainWindow()
+
+    def tearDown(self):
+        self.window._supervisor.terminate()
+        self.window._credential_supervisor.terminate()
+        self.window.close()
+        self.window.deleteLater()
+
+    def _documents(self):
+        return [
+            {"document_id": "doc:a", "name": "a.md", "head_revision_number": 1},
+            {"document_id": "doc:b", "name": "b.md", "head_revision_number": 2},
+            {"document_id": "doc:c", "name": "c.md", "head_revision_number": 1},
+        ]
+
+    def _open(self, document_id, revision_id="rev:1"):
+        self.window._apply_document_state(
+            {
+                "document": {"document_id": document_id, "name": f"{document_id}.md", "kind": "md"},
+                "head_revision": {"revision_id": revision_id, "content": "x"},
+                "candidate": None,
+                "accepted": None,
+                "current_accepted_version_id": None,
+                "versions": [],
+            }
+        )
+
+    def test_apply_state_sets_document_id(self):
+        # Opening an existing document must bind the editor/actions to the
+        # document the boundary returned (the id is taken from the result, not
+        # the selector), so Save is usable after an Open.
+        self.window._on_documents_loaded({"documents": self._documents()})
+        self.window._apply_document_state(
+            {
+                "document": {"document_id": "doc:b", "name": "b.md", "kind": "md"},
+                "head_revision": {"revision_id": "rev:2", "content": "bee"},
+                "candidate": None,
+                "accepted": None,
+                "current_accepted_version_id": None,
+                "versions": [],
+            }
+        )
+        self.assertEqual(self.window._document_id, "doc:b")
+        self.assertTrue(self.window._document_save_button.isEnabled())
+        self.assertEqual(self.window._document_combo.currentData(), "doc:b")
+
+    def test_refresh_preserves_selection_by_document_id(self):
+        self.window._on_documents_loaded({"documents": self._documents()})
+        self._open("doc:b", revision_id="rev:2")
+        self.assertEqual(self.window._document_combo.currentData(), "doc:b")
+        # A refresh (as after save) must keep doc:b selected, never jump to the
+        # first document.
+        self.window._on_documents_loaded({"documents": self._documents()})
+        self.assertEqual(self.window._document_combo.currentData(), "doc:b")
+        self.assertEqual(self.window._document_id, "doc:b")
+
+    def test_refresh_after_save_keeps_non_first_document(self):
+        # The full save handler refreshes the list; the saved document stays
+        # active rather than resetting to the first created document.
+        self.window._on_documents_loaded({"documents": self._documents()})
+        self._open("doc:c", revision_id="rev:3")
+        self.window._document_editor.setPlainText("edited")
+        self.window._on_document_saved(
+            {"revision": {"revision_id": "rev:4"}, "head_revision_number": 2}
+        )
+        self.window._on_documents_loaded({"documents": self._documents()})
+        self.assertEqual(self.window._document_combo.currentData(), "doc:c")
+        self.assertEqual(self.window._document_id, "doc:c")
+
+    def test_external_delete_clears_selection_with_fallback(self):
+        self.window._on_documents_loaded({"documents": self._documents()})
+        self._open("doc:b", revision_id="rev:2")
+        # doc:b is externally removed; the open selection is cleared, a message
+        # is shown, and the selector falls back to the first available document.
+        self.window._on_documents_loaded(
+            {"documents": [d for d in self._documents() if d["document_id"] != "doc:b"]}
+        )
+        self.assertIsNone(self.window._document_id)
+        self.assertEqual(self.window._document_editor.toPlainText(), "")
+        self.assertFalse(self.window._document_save_button.isEnabled())
+        self.assertEqual(self.window._document_combo.currentData(), "doc:a")
+        self.assertIn("removed", self.window._document_result.toPlainText())
+
+    def test_empty_refresh_with_no_selection_selects_first(self):
+        self.window._on_documents_loaded({"documents": self._documents()})
+        self.assertEqual(self.window._document_combo.currentData(), "doc:a")
 
 
 if __name__ == "__main__":

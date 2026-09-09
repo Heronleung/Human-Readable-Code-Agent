@@ -63,6 +63,8 @@ GAP_TIGHT = visual_tokens.GAP_TIGHT
 GAP_GROUP = visual_tokens.GAP_GROUP
 RADIUS_CONTAINER = visual_tokens.RADIUS_CONTAINER
 RADIUS_CHIP = visual_tokens.RADIUS_CHIP
+BORDER_WIDTH = visual_tokens.BORDER_WIDTH
+FOCUS_BORDER_WIDTH = visual_tokens.FOCUS_BORDER_WIDTH
 
 # Typography roles (px): body copy uses the platform UI font; status, evidence
 # and micro-headings use the platform fixed-width font; code uses fixed-width at
@@ -203,6 +205,11 @@ SETTINGS_DIALOG_MIN_HEIGHT = 500
 SETTINGS_DIALOG_DEFAULT_WIDTH = 760
 SETTINGS_DIALOG_DEFAULT_HEIGHT = 520
 SETTINGS_NAV_WIDTH = 160
+
+# Main-window navigation rail width (P4.4a). The compact labelled rail matches
+# the Settings left-nav column so Document/Preview/Versions/Advanced share one
+# coherent component grammar with the existing settings surface.
+NAV_RAIL_WIDTH = 160
 # Compact Settings left-navigation row height (P4.2a). The nav item's
 # hover/selected/focus rectangle is this fixed, centrally-owned height — never
 # the item's own padding — so the five sections stay visually separated and
@@ -761,6 +768,31 @@ QListWidget#settingsNav::item:selected { background: $accent; color: $on_accent;
 QListWidget#settingsNav::item:hover:!selected { background: $sunken; }
 QWidget#settingsPage { background: $window; }
 
+/* ---- main navigation rail (P4.4a) ---- */
+QWidget#navRail { background: $window; border-right: 1px solid $border; }
+QFrame#navRailDivider { background: $border; border: none; }
+QWidget#navRailGroup { background: transparent; }
+QPushButton#navRailButton, QPushButton#navRailGroupButton,
+QPushButton#navRailAdvancedButton {
+    background: transparent;
+    color: $text_secondary;
+    border: 1px solid transparent;
+    border-radius: $chip_radius;
+    padding: 6px 12px;
+    text-align: left;
+}
+QPushButton#navRailButton:hover, QPushButton#navRailGroupButton:hover,
+QPushButton#navRailAdvancedButton:hover { background: $sunken; color: $text; }
+QPushButton#navRailButton:checked, QPushButton#navRailGroupButton:checked {
+    background: $accent;
+    color: $on_accent;
+    font-weight: bold;
+}
+QPushButton#navRailButton:focus, QPushButton#navRailGroupButton:focus,
+QPushButton#navRailAdvancedButton:focus { border: 1px solid $focus; }
+QPushButton#navRailAdvancedButton { font-weight: bold; }
+QPushButton#navRailGroupButton { padding-left: 24px; }
+
 /* ---- credential-profile cards (P4.2a) ---- */
 QFrame#profileCard {
     background: $surface;
@@ -901,6 +933,8 @@ __all__ = [
     "GAP_GROUP",
     "RADIUS_CONTAINER",
     "RADIUS_CHIP",
+    "BORDER_WIDTH",
+    "FOCUS_BORDER_WIDTH",
     "UI_FONT_SIZE",
     "STATUS_FONT_SIZE",
     "PANEL_HEADER_FONT_SIZE",
@@ -963,6 +997,7 @@ __all__ = [
     "SETTINGS_DIALOG_DEFAULT_HEIGHT",
     "SETTINGS_NAV_WIDTH",
     "SETTINGS_NAV_ROW_HEIGHT",
+    "NAV_RAIL_WIDTH",
     "CONTRAST_BODY",
     "CONTRAST_LARGE",
     "STATE_INFO",

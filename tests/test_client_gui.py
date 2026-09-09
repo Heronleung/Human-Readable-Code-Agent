@@ -39,6 +39,7 @@ try:
         DocumentView,
         MainWindow,
         PythonHighlighter,
+        _NAV_LABELS,
         _SETTINGS_ACTIVE_LABEL,
         _SETTINGS_ADD_PROFILE,
         _SETTINGS_NO_PROFILES,
@@ -231,15 +232,18 @@ class MainWindowLayoutTests(unittest.TestCase):
 
     def _laid_out_sizes(self, window, width):
         window.resize(width, 840)
+        window._select_destination("source_code_map")
         window.show()
         QApplication.processEvents()
         return list(window._horizontal_splitter.sizes())
 
     def test_horizontal_splitter_stretch_factors(self):
         # PySide6 exposes only ``setStretchFactor``, not a getter, so the
-        # factors are verified by how the three panes share extra width.
+        # factors are verified by how the three panes share extra width. The
+        # narrow width is chosen above the rail+minimum-pane squeeze point so
+        # the Explorer (stretch 0) keeps its width and the 3:2 growth is clean.
         window = MainWindow()
-        narrow = self._laid_out_sizes(window, 1024)
+        narrow = self._laid_out_sizes(window, 1200)
         wide = self._laid_out_sizes(window, 1920)
         explorer_narrow, source_narrow, twin_narrow = narrow
         explorer_wide, source_wide, twin_wide = wide
@@ -263,7 +267,7 @@ class MainWindowLayoutTests(unittest.TestCase):
                     QApplication.processEvents()
                     self.assertIs(window._palette, palette)
                     self.assertEqual(window._horizontal_splitter.count(), 3)
-                    self.assertEqual(window._vertical_splitter.count(), 2)
+                    self.assertEqual(window._content_stack.count(), 6)
                     self.assertEqual(window._horizontal_splitter.widget(0), window._explorer_panel)
                     self.assertEqual(window._horizontal_splitter.widget(1), window._source_panel)
                     self.assertEqual(window._horizontal_splitter.widget(2), window._twin_panel)
@@ -348,33 +352,32 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertEqual(splitter.widget(1), window._source_panel)
         self.assertEqual(splitter.widget(2), window._twin_panel)
 
-    def test_bottom_panel_spans_full_width_beneath_panes(self):
+    def test_nav_rail_is_primary_navigation(self):
         window = MainWindow()
-        self.assertEqual(window._vertical_splitter.count(), 2)
-        # The bottom panel is the second (and only lower) child of the vertical
-        # splitter, directly beneath the primary workspace.
-        self.assertEqual(window._vertical_splitter.widget(1), window._bottom_panel)
-        self.assertEqual(window._bottom_tabs.count(), 6)
-        # The body is visible by default (not explicitly hidden).
-        self.assertFalse(window._bottom_body.isHidden())
+        self.assertIsInstance(window._content_stack, QStackedWidget)
+        self.assertEqual(window._content_stack.count(), 6)
+        # Document is the default primary destination.
+        self.assertEqual(window._nav_destination, "document")
+        self.assertEqual(window._content_stack.currentIndex(), 0)
+        self.assertTrue(window._nav_buttons["document"].isChecked())
 
-    def test_bottom_panel_defaults_to_expanded_agent_chat(self):
+    def test_nav_rail_defaults_to_document_with_advanced_collapsed(self):
         window = MainWindow()
-        self.assertTrue(window._is_expanded)
-        self.assertEqual(window._selected_tab, "chat")
-        self.assertEqual(window._bottom_tabs.currentIndex(), 0)
-        self.assertEqual(window._bottom_body.currentIndex(), 0)
+        self.assertEqual(window._nav_destination, "document")
+        self.assertEqual(window._content_stack.currentIndex(), 0)
+        # Advanced is collapsed by default: its grouped destinations are hidden.
+        self.assertTrue(window._nav_group_container.isHidden())
 
-    def test_disclosure_toggles_collapse_and_expand(self):
+    def test_advanced_disclosure_toggles_group(self):
         window = MainWindow()
-        window._set_expanded(False)
-        self.assertFalse(window._is_expanded)
-        self.assertTrue(window._bottom_body.isHidden())
-        self.assertEqual(window._disclosure_button.text(), "▴")
-        window._set_expanded(True)
-        self.assertTrue(window._is_expanded)
-        self.assertFalse(window._bottom_body.isHidden())
-        self.assertEqual(window._disclosure_button.text(), "▾")
+        self.assertTrue(window._nav_group_container.isHidden())
+        self.assertIn("▸", window._advanced_button.text())
+        window._advanced_button.setChecked(True)
+        self.assertFalse(window._nav_group_container.isHidden())
+        self.assertIn("▾", window._advanced_button.text())
+        window._advanced_button.setChecked(False)
+        self.assertTrue(window._nav_group_container.isHidden())
+        self.assertIn("▸", window._advanced_button.text())
 
     def test_source_starts_on_empty_state(self):
         window = MainWindow()
@@ -445,49 +448,41 @@ class MainWindowLayoutTests(unittest.TestCase):
 
     def _assert_geometry(self, palette, width, height):
         window = self._laid_out_window(palette, width, height)
-        splitter = window._horizontal_splitter
-        sizes = splitter.sizes()
-        explorer_w, source_w, twin_w = sizes
 
-        # Explorer stays within its 180-420 px band (and is not collapsed).
+        # Primary Document workspace: a full-height, usable editor at each size.
+        self.assertEqual(window._content_stack.currentIndex(), 0)
+        self.assertGreater(window._document_editor.width(), 0)
+        self.assertGreater(window._document_editor.height(), 0)
+
+        # The nav rail's Document destination is laid out (a labelled column).
+        self.assertGreater(window._nav_buttons["document"].width(), 0)
+
+        # The status bar remains one fixed-height row at the bottom.
+        status_bar = window.findChild(QWidget, "statusBar")
+        self.assertIsNotNone(status_bar)
+        self.assertEqual(status_bar.height(), style.STATUS_BAR_HEIGHT)
+
+        # Source & Code Map retains the three-pane geometry once selected.
+        window._select_destination("source_code_map")
+        QApplication.processEvents()
+        splitter = window._horizontal_splitter
+        explorer_w, source_w, twin_w = splitter.sizes()
         self.assertGreaterEqual(explorer_w, style.EXPLORER_MIN_WIDTH)
         self.assertLessEqual(explorer_w, style.EXPLORER_MAX_WIDTH)
-        # Source and Twin meet their minimum widths.
         self.assertGreaterEqual(source_w, style.SOURCE_MIN_WIDTH)
         self.assertGreaterEqual(twin_w, style.TWIN_MIN_WIDTH)
 
-        # Every primary pane has a positive, visible rectangle.
         for pane in (window._explorer_panel, window._source_panel, window._twin_panel):
             self.assertGreater(pane.width(), 0)
             self.assertGreater(pane.height(), 0)
 
-        # No pair of primary panes overlaps: their geometries share the
-        # horizontal splitter's coordinate space, so compare them directly.
         explorer_rect = window._explorer_panel.geometry()
         source_rect = window._source_panel.geometry()
         twin_rect = window._twin_panel.geometry()
         self.assertLessEqual(explorer_rect.right(), source_rect.left())
         self.assertLessEqual(source_rect.right(), twin_rect.left())
 
-        # The bottom panel body spans the full primary-workspace width.
-        self.assertAlmostEqual(window._bottom_body.width(), splitter.width(), delta=1)
-
-        # The expanded bottom panel body has a positive, usable height.
-        self.assertGreater(window._bottom_body.height(), 0)
-
-        # The status bar is below the workspace/lower-area region and is one
-        # fixed-height row.
-        status_bar = window.findChild(QWidget, "statusBar")
-        self.assertIsNotNone(status_bar)
-        self.assertEqual(status_bar.height(), style.STATUS_BAR_HEIGHT)
-        self.assertGreaterEqual(
-            status_bar.geometry().top(),
-            window._vertical_splitter.geometry().bottom(),
-        )
-
-        # No large dead region: the horizontal splitter fully allocates its
-        # width to the three panes plus the two handles.
-        allocated = sum(sizes) + 2 * style.SPLITTER_HANDLE_WIDTH
+        allocated = sum(splitter.sizes()) + 2 * style.SPLITTER_HANDLE_WIDTH
         self.assertLessEqual(abs(allocated - splitter.width()), 2)
 
     def test_geometry_matrix_across_palettes_and_sizes(self):
@@ -1929,8 +1924,8 @@ class ExplorerTreeTests(unittest.TestCase):
              "kind": "source", "content": "print('hi')\n"},
         )
         tabs_before = window._source_tabs.count()
-        selected_before = window._selected_tab
-        expanded_before = window._is_expanded
+        destination_before = window._nav_destination
+        page_before = window._content_stack.currentIndex()
         sizes_before = list(window._horizontal_splitter.sizes())
 
         app_item = window._tree_model.item(0, 0)
@@ -1938,27 +1933,21 @@ class ExplorerTreeTests(unittest.TestCase):
         self._press(window._tree_view, index)  # expand a folder
 
         self.assertEqual(window._source_tabs.count(), tabs_before)
-        self.assertEqual(window._selected_tab, selected_before)
-        self.assertEqual(window._is_expanded, expanded_before)
+        self.assertEqual(window._nav_destination, destination_before)
+        self.assertEqual(window._content_stack.currentIndex(), page_before)
         self.assertEqual(list(window._horizontal_splitter.sizes()), sizes_before)
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class BottomPanelTests(unittest.TestCase):
-    """P3.2 single bottom utility panel + monochrome disclosure control.
+class NavigationRailTests(unittest.TestCase):
+    """P4.4a document-first navigation rail.
 
-    One bottom panel with one tab bar (six tabs, Agent Chat first) and one
-    disclosure chevron replaces the former Agent Chat / Review & Evidence
-    drawer pair. The primary workspace, the panel and the status bar must tile
-    the vertical content area continuously — no unowned blank band — at every
-    supported size in both palettes, in the expanded and collapsed states, and
-    after a splitter move. Tab switching must never move or resize the panel
-    or the workspace, and the disclosure glyphs are non-emoji text chevrons.
+    The six always-visible bottom tabs are replaced by a compact labelled rail:
+    Document and Preview are the only always-visible primary destinations, then
+    a divider, Versions, and a collapsed Advanced disclosure grouping
+    Source & Code Map / Change Review / Validation Evidence. Every retained
+    surface stays reachable and no output is silently discarded.
     """
-
-    SIZES = ((1024, 640), (1360, 840), (1920, 1080))
-    TAB_KEYS = ("chat", "plan", "diff", "problems", "tests", "evidence")
-    TAB_LABELS = ("Agent Chat", "Plan", "Diff", "Problems", "Tests", "Evidence")
 
     def setUp(self):
         _app()
@@ -1972,296 +1961,128 @@ class BottomPanelTests(unittest.TestCase):
 
     # -- widget hierarchy and legacy removal -----------------------------
 
-    def test_single_bottom_panel_hierarchy(self):
+    def test_nav_rail_hierarchy(self):
         window = MainWindow()
-        # The vertical splitter holds exactly the workspace and the one panel.
-        self.assertEqual(window._vertical_splitter.count(), 2)
-        self.assertEqual(window._vertical_splitter.widget(1), window._bottom_panel)
-        # One tab bar with six tabs, one disclosure, one stacked body.
-        self.assertIsInstance(window._bottom_tabs, QTabBar)
-        self.assertEqual(window._bottom_tabs.count(), 6)
-        self.assertIsInstance(window._disclosure_button, QToolButton)
-        self.assertIsInstance(window._bottom_body, QStackedWidget)
-        self.assertEqual(window._bottom_body.count(), 6)
-        # The header is a single fixed-height row.
+        self.assertIsInstance(window._content_stack, QStackedWidget)
+        self.assertEqual(window._content_stack.count(), 6)
         self.assertEqual(
-            window._bottom_panel_header.height(), style.BOTTOM_PANEL_HEADER_HEIGHT
+            set(window._nav_buttons),
+            {"document", "preview", "versions",
+             "source_code_map", "change_review", "validation_evidence"},
         )
+        self.assertIsInstance(window._advanced_button, QPushButton)
+        self.assertIsNotNone(window._nav_group_container)
 
-    def test_legacy_drawer_and_chat_controls_removed(self):
+    def test_legacy_bottom_panel_removed(self):
         window = MainWindow()
         for attr in (
-            "_lower_area",
-            "_chat_header",
-            "_chat_body",
-            "_chat_collapse_button",
-            "_drawer",
-            "_drawer_header",
-            "_drawer_body",
-            "_drawer_tabs",
-            "_drawer_toggle_button",
-            "_drawer_expanded",
+            "_bottom_panel",
+            "_bottom_tabs",
+            "_bottom_body",
+            "_bottom_panel_header",
+            "_disclosure_button",
+            "_vertical_splitter",
         ):
             self.assertFalse(hasattr(window, attr), f"legacy attribute {attr} remains")
         for method in (
-            "_build_lower_area",
-            "_build_chat_body",
-            "_build_drawer",
-            "_on_drawer_toggle",
-            "_set_drawer_expanded",
-            "_toggle_chat",
+            "_on_bottom_tab_changed",
+            "_toggle_expanded",
+            "_set_expanded",
+            "_update_disclosure",
         ):
             self.assertFalse(hasattr(window, method), f"legacy method {method} remains")
 
-    def test_required_tabs_in_order(self):
+    def test_only_document_and_preview_always_visible(self):
+        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
+        self.assertFalse(window._nav_buttons["document"].isHidden())
+        self.assertFalse(window._nav_buttons["preview"].isHidden())
+        self.assertTrue(window._nav_group_container.isHidden())
+
+    # -- destination selection -------------------------------------------
+
+    def test_destination_selection_switches_stack_and_checks_button(self):
         window = MainWindow()
-        labels = [
-            window._bottom_tabs.tabText(i) for i in range(window._bottom_tabs.count())
-        ]
-        self.assertEqual(labels, list(self.TAB_LABELS))
+        for key, index in (
+            ("document", 0),
+            ("preview", 1),
+            ("versions", 2),
+            ("source_code_map", 3),
+            ("change_review", 4),
+            ("validation_evidence", 5),
+        ):
+            with self.subTest(key=key):
+                window._select_destination(key)
+                self.assertEqual(window._nav_destination, key)
+                self.assertEqual(window._content_stack.currentIndex(), index)
+                self.assertTrue(window._nav_buttons[key].isChecked())
 
-    # -- tab selection ----------------------------------------------------
-
-    def test_tab_switch_selects_one_body_without_moving_panel(self):
-        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
-        panel = window._bottom_panel
-        panel_top = panel.mapTo(window, panel.rect().topLeft()).y()
-        panel_height = panel.height()
-        workspace_rect = window._horizontal_splitter.geometry()
-
-        for index, key in enumerate(self.TAB_KEYS):
-            with self.subTest(index=index, key=key):
-                window._bottom_tabs.setCurrentIndex(index)
-                QApplication.processEvents()
-
-                self.assertEqual(window._selected_tab, key)
-                self.assertEqual(window._bottom_tabs.currentIndex(), index)
-                self.assertEqual(window._bottom_body.currentIndex(), index)
-                self.assertIs(
-                    window._bottom_body.currentWidget(), window._bottom_body.widget(index)
-                )
-                # Exactly one body page is shown; every other is hidden.
-                for i in range(window._bottom_body.count()):
-                    self.assertEqual(
-                        window._bottom_body.widget(i).isHidden(), i != index
-                    )
-                # The panel and the workspace keep their geometry.
-                self.assertEqual(
-                    panel.mapTo(window, panel.rect().topLeft()).y(), panel_top
-                )
-                self.assertEqual(panel.height(), panel_height)
-                self.assertEqual(
-                    window._horizontal_splitter.geometry(), workspace_rect
-                )
-
-    def test_tab_switch_while_collapsed_stays_collapsed(self):
-        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
-        window._set_expanded(False)
-        QApplication.processEvents()
-        self.assertFalse(window._is_expanded)
-        self.assertEqual(window._bottom_panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT)
-
-        window._bottom_tabs.setCurrentIndex(2)  # Diff
-        QApplication.processEvents()
-
-        self.assertEqual(window._selected_tab, "diff")
-        self.assertEqual(window._bottom_body.currentIndex(), 2)
-        # Still collapsed: switching tabs must not resurrect the body.
-        self.assertFalse(window._is_expanded)
-        self.assertEqual(window._bottom_panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT)
-
-    # -- collapse / expand ------------------------------------------------
-
-    def test_collapse_and_expand_preserve_tab_and_height(self):
-        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
-        # Move to a non-default tab and give the panel a known taller height.
-        window._bottom_tabs.setCurrentIndex(4)  # Tests
-        QApplication.processEvents()
-        total = sum(window._vertical_splitter.sizes())
-        window._vertical_splitter.setSizes([total - 300, 300])
-        QApplication.processEvents()
-        expanded_height = window._bottom_panel.height()
-        self.assertGreaterEqual(expanded_height, style.BOTTOM_PANEL_MIN_HEIGHT)
-        workspace_expanded = window._horizontal_splitter.height()
-
-        # Collapse: only the header row remains; height returns to the workspace.
-        window._set_expanded(False)
-        QApplication.processEvents()
-        self.assertFalse(window._is_expanded)
-        self.assertTrue(window._bottom_body.isHidden())
-        self.assertEqual(
-            window._bottom_panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT
-        )
-        self.assertGreater(window._horizontal_splitter.height(), workspace_expanded)
-        # The selected tab survives the collapse.
-        self.assertEqual(window._selected_tab, "tests")
-        self.assertEqual(window._bottom_tabs.currentIndex(), 4)
-
-        # Expand: the tab and the last usable height are restored.
-        window._set_expanded(True)
-        QApplication.processEvents()
-        self.assertTrue(window._is_expanded)
-        self.assertFalse(window._bottom_body.isHidden())
-        self.assertEqual(window._selected_tab, "tests")
-        self.assertEqual(window._bottom_tabs.currentIndex(), 4)
-        self.assertEqual(window._bottom_body.currentIndex(), 4)
-        self.assertEqual(window._bottom_panel.height(), expanded_height)
-        self.assertEqual(window._horizontal_splitter.height(), workspace_expanded)
-
-    def test_repeated_collapse_expand_cycles_are_stable(self):
-        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
-        total = sum(window._vertical_splitter.sizes())
-        window._vertical_splitter.setSizes([total - 280, 280])
-        QApplication.processEvents()
-        expanded_height = window._bottom_panel.height()
-
-        for _ in range(3):
-            window._set_expanded(False)
-            QApplication.processEvents()
-            self.assertFalse(window._is_expanded)
-            self.assertEqual(
-                window._bottom_panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT
-            )
-            window._set_expanded(True)
-            QApplication.processEvents()
-            self.assertTrue(window._is_expanded)
-            self.assertEqual(window._bottom_panel.height(), expanded_height)
-
-    def test_set_expanded_is_idempotent(self):
-        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
-        expanded_sizes = list(window._vertical_splitter.sizes())
-        window._set_expanded(True)  # already expanded — must not move anything
-        QApplication.processEvents()
-        self.assertEqual(list(window._vertical_splitter.sizes()), expanded_sizes)
-
-        window._set_expanded(False)
-        QApplication.processEvents()
-        collapsed_sizes = list(window._vertical_splitter.sizes())
-        window._set_expanded(False)  # already collapsed — must not move anything
-        QApplication.processEvents()
-        self.assertEqual(list(window._vertical_splitter.sizes()), collapsed_sizes)
-
-    # -- disclosure control ----------------------------------------------
-
-    def test_disclosure_chevron_and_accessibility(self):
+    def test_document_selection_refreshes_documents(self):
         window = MainWindow()
-        # Expanded: down chevron + "Collapse ..." semantics.
-        self.assertEqual(window._disclosure_button.text(), "▾")
-        self.assertEqual(
-            window._disclosure_button.accessibleName(), "Collapse bottom panel"
-        )
-        self.assertEqual(
-            window._disclosure_button.toolTip(), "Collapse bottom panel"
-        )
+        sent = []
 
-        window._set_expanded(False)
-        self.assertEqual(window._disclosure_button.text(), "▴")
-        self.assertEqual(
-            window._disclosure_button.accessibleName(), "Expand bottom panel"
-        )
-        self.assertEqual(
-            window._disclosure_button.toolTip(), "Expand bottom panel"
-        )
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
 
-        window._set_expanded(True)
-        self.assertEqual(window._disclosure_button.text(), "▾")
+        window._send = fake_send
+        window._select_destination("document")
+        self.assertEqual(sent[-1]["action"], contract.ACTION_DOCUMENT_LIST)
 
-    def test_disclosure_click_toggles(self):
-        window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
-        self.assertTrue(window._is_expanded)
-        window._disclosure_button.click()
-        QApplication.processEvents()
-        self.assertFalse(window._is_expanded)
-        self.assertTrue(window._bottom_body.isHidden())
-        window._disclosure_button.click()
-        QApplication.processEvents()
-        self.assertTrue(window._is_expanded)
-        self.assertFalse(window._bottom_body.isHidden())
+    def test_preview_selection_loads_package_once(self):
+        window = MainWindow()
+        sent = []
 
-    # -- vertical tiling --------------------------------------------------
+        def fake_send(request, on_success, on_error):
+            sent.append(request)
+            return True
 
-    def _assert_vertical_tiling(self, window):
-        vsplit = window._vertical_splitter
-        hsplit = window._horizontal_splitter
-        panel = window._bottom_panel
-        header = window._bottom_panel_header
+        window._send = fake_send
+        window._select_destination("preview")
+        window._select_destination("document")
+        window._select_destination("preview")
+        package_requests = [r for r in sent if r["action"] == contract.ACTION_GET_PACKAGE]
+        self.assertEqual(len(package_requests), 1)
 
-        # The vertical splitter allocates its full height to the workspace, the
-        # handle and the panel — no slack.
-        self.assertEqual(
-            hsplit.height() + style.SPLITTER_HANDLE_WIDTH + panel.height(),
-            vsplit.height(),
-        )
+    def test_advanced_group_selection_expands_disclosure(self):
+        window = MainWindow()
+        self.assertTrue(window._nav_group_container.isHidden())
+        window._select_destination("source_code_map")
+        self.assertFalse(window._nav_group_container.isHidden())
+        self.assertTrue(window._advanced_button.isChecked())
 
-        # The panel is exactly its header plus (when expanded) the body.
-        if window._is_expanded:
-            self.assertGreater(window._bottom_body.height(), 0)
-            self.assertEqual(
-                header.height() + window._bottom_body.height(), panel.height()
-            )
-        else:
-            self.assertEqual(panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT)
+    # -- Advanced grouping ------------------------------------------------
 
-        # The panel sits directly on the status bar (no dead band).
-        status_bar = window.findChild(QWidget, "statusBar")
-        self.assertIsNotNone(status_bar)
-        self.assertEqual(
-            panel.mapTo(window, panel.rect().topLeft()).y() + panel.height(),
-            status_bar.mapTo(window, status_bar.rect().topLeft()).y(),
-        )
+    def test_advanced_groups_expose_retained_surfaces(self):
+        window = MainWindow()
+        # Source & Code Map is the retained three-pane splitter.
+        self.assertEqual(window._horizontal_splitter.count(), 3)
+        # Change Review keeps Agent Chat (chat composer), Plan, Diff and the raw
+        # Candidate tab; Validation Evidence keeps Problems, Tests, Evidence.
+        for key in ("plan", "diff", "problems", "tests", "evidence"):
+            self.assertIn(key, window._views)
+        self.assertIsNotNone(window._chat_composer)
+        self.assertIsNotNone(window._document_result)
 
-    def test_vertical_tiling_expanded_and_collapsed(self):
-        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
-            for width, height in self.SIZES:
-                for state in ("expanded", "collapsed"):
-                    with self.subTest(
-                        palette=palette.name, size=(width, height), state=state
-                    ):
-                        window = self._laid_out(palette, width, height)
-                        if state == "collapsed":
-                            window._set_expanded(False)
-                            QApplication.processEvents()
-                        self._assert_vertical_tiling(window)
+    def test_scan_output_still_reaches_secondary_views(self):
+        window = MainWindow()
+        window._on_scan_completed(_sample_result())
+        self.assertIn("read-only", window._views["diff"].toPlainText())
+        self.assertIn("app/main.py", window._views["evidence"].toPlainText())
 
-    def test_vertical_tiling_after_splitter_move(self):
-        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
-            for width, height in self.SIZES:
-                with self.subTest(palette=palette.name, size=(width, height)):
-                    window = self._laid_out(palette, width, height)
-                    # Drag the divider toward each end; the content must stay
-                    # fully tiled with no gap after each move.
-                    window._vertical_splitter.moveSplitter(height // 4, 1)
-                    QApplication.processEvents()
-                    self._assert_vertical_tiling(window)
-                    window._vertical_splitter.moveSplitter(height * 3 // 4, 1)
-                    QApplication.processEvents()
-                    self._assert_vertical_tiling(window)
+    # -- accessibility ----------------------------------------------------
 
-    def test_expanded_panel_respects_min_height(self):
-        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
-            for width, height in self.SIZES:
-                with self.subTest(palette=palette.name, size=(width, height)):
-                    window = self._laid_out(palette, width, height)
-                    self.assertGreaterEqual(
-                        window._bottom_panel.height(), style.BOTTOM_PANEL_MIN_HEIGHT
-                    )
-                    self.assertGreaterEqual(
-                        window._bottom_body.height(), style.BOTTOM_PANEL_BODY_MIN_HEIGHT
-                    )
+    def test_nav_buttons_are_labelled_and_focusable(self):
+        window = MainWindow()
+        for key, button in window._nav_buttons.items():
+            self.assertEqual(button.accessibleName(), _NAV_LABELS[key])
+            self.assertTrue(button.isCheckable())
+            self.assertNotEqual(button.focusPolicy(), Qt.NoFocus)
 
-    def test_collapsed_panel_reserves_only_header(self):
-        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
-            with self.subTest(palette=palette.name):
-                window = self._laid_out(palette, 1360, 840)
-                window._set_expanded(False)
-                QApplication.processEvents()
-                self.assertTrue(window._bottom_body.isHidden())
-                self.assertEqual(
-                    window._bottom_panel.height(), style.BOTTOM_PANEL_HEADER_HEIGHT
-                )
-                self.assertEqual(
-                    window._bottom_panel_header.height(), style.BOTTOM_PANEL_HEADER_HEIGHT
-                )
+    def test_advanced_disclosure_accessible_names(self):
+        window = MainWindow()
+        self.assertEqual(window._advanced_button.accessibleName(), "Show Advanced")
+        window._advanced_button.setChecked(True)
+        self.assertEqual(window._advanced_button.accessibleName(), "Hide Advanced")
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
@@ -2885,14 +2706,14 @@ class SettingsDialogTests(unittest.TestCase):
         window = MainWindow()
         window.show()
         QApplication.processEvents()
-        splitter_geom = window._vertical_splitter.geometry()
+        stack_geom = window._content_stack.geometry()
         region_height = window._provider_status_label.parentWidget().height()
         window._set_provider_status(PROVIDER_STATUS_PENDING)
         QApplication.processEvents()
         self.assertEqual(
             window._provider_status_label.parentWidget().height(), region_height
         )
-        self.assertEqual(window._vertical_splitter.geometry(), splitter_geom)
+        self.assertEqual(window._content_stack.geometry(), stack_geom)
 
     def test_navigation_rows_are_compact_and_do_not_touch(self):
         # The left-nav rows share one centrally-owned compact height; the
