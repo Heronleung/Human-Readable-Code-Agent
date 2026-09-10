@@ -52,10 +52,13 @@ from hrca.contract import (
     ACTION_LIBRARY_TRASH,
     ACTION_LIBRARY_RESTORE,
     ACTION_CANDIDATE_PACKAGE_STAGE,
+    ACTION_RULE_DELTA_STAGE,
+    ACTION_RULE_DELTA_RUN,
     PACKAGE_ACTIONS,
     DOCUMENT_ACTIONS,
     LIBRARY_ACTIONS,
     CANDIDATE_PACKAGE_ACTIONS,
+    RULE_DELTA_ACTIONS,
     ALLOWED_ACTIONS,
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
@@ -130,7 +133,8 @@ class AllowedActionTests(unittest.TestCase):
             | PACKAGE_ACTIONS
             | DOCUMENT_ACTIONS
             | LIBRARY_ACTIONS
-            | CANDIDATE_PACKAGE_ACTIONS,
+            | CANDIDATE_PACKAGE_ACTIONS
+            | RULE_DELTA_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -376,6 +380,24 @@ class AllowedActionTests(unittest.TestCase):
             self.assertNotIn(action, DOCUMENT_ACTIONS)
             self.assertNotIn(action, LIBRARY_ACTIONS)
             self.assertNotIn(action, ADVISORY_ACTIONS)
+
+    def test_rule_delta_actions_are_allowlisted(self):
+        self.assertEqual(
+            RULE_DELTA_ACTIONS,
+            frozenset({ACTION_RULE_DELTA_STAGE, ACTION_RULE_DELTA_RUN}),
+        )
+
+    def test_rule_delta_actions_are_bounded(self):
+        # Rule-delta actions never touch source/Git/provider/credential/network/
+        # adoption; run_rule_delta executes only code-owned handlers in the
+        # isolated runner.
+        for action in RULE_DELTA_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, DOCUMENT_ACTIONS)
+            self.assertNotIn(action, ADVISORY_ACTIONS)
+            self.assertNotIn(action, PROFILE_ACTIONS)
+            self.assertNotIn(action, CREDENTIAL_ACTIONS)
 
     def test_task_actions_exclude_mutators(self):
         self.assertTrue(READ_ONLY_TASK_ACTIONS <= ALLOWED_ACTIONS)

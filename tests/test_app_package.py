@@ -37,6 +37,18 @@ class ReferencePackageTests(unittest.TestCase):
         self.assertEqual(package["package_id"], "quotation-rules-alt")
         self.assertEqual(package["handler"], "quotation_rules_alt.evaluate")
 
+    def test_late_return_fee_package_is_valid(self):
+        self.assertIsNone(
+            app_package.validate_package(app_package.late_return_fee_package())
+        )
+
+    def test_late_return_fee_package_shape(self):
+        package = app_package.late_return_fee_package()
+        self.assertEqual(package["package_id"], "late-return-fee")
+        self.assertEqual(package["handler"], "late_return_fee.evaluate")
+        self.assertEqual([f["name"] for f in package["form"]], ["days_late"])
+        self.assertEqual([f["name"] for f in package["result"]], ["fee"])
+
 
 class ValidatorTests(unittest.TestCase):
     def test_rejects_non_mapping(self):

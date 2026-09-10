@@ -35,10 +35,13 @@ def main(argv: Sequence[str]) -> int:
     form = payload.get("input")
     if not isinstance(handler_id, str) or not isinstance(form, dict):
         return 2
+    parameters = payload.get("parameters")
+    if parameters is not None and not isinstance(parameters, dict):
+        return 2
     function = runtime_handlers.resolve_handler(handler_id)
     if function is None:
         return 2
-    result, error = function(form)
+    result, error = function(form, parameters)
     out = {"result": result} if error is None else {"error": error}
     try:
         with open(output_path, "w", encoding="utf-8") as fh:

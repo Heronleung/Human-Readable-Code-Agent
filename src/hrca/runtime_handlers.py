@@ -49,6 +49,14 @@ _ALT_REGIONAL_FEES = {
     "east": Decimal("9"),
 }
 
+# Late-return-fee family (P4.7a, hand-authored). A fixed 3-per-day rate capped at
+# a default 30.00; only the cap is a code-owned parameter a rule delta may change.
+_LATE_RETURN_DAILY_RATE = Decimal("3")
+_LATE_RETURN_DEFAULT_CAP = Decimal("30")
+
+# Bounded reasons for the late-return-fee handler.
+REASON_DAYS = "days_late must be a non-negative integer"
+
 # Bounded error reasons (fixed tokens; never interpolate caller content).
 REASON_MISSING = "missing required field"
 REASON_SUBTOTAL = "subtotal must be non-negative"
@@ -78,12 +86,29 @@ def _coerce_subtotal(value: Any) -> Optional[Decimal]:
     return None
 
 
-def quotation_rules_evaluate(form: Dict[str, Any]) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+def _parameter_decimal(parameters: Any, key: str, default: Decimal) -> Decimal:
+    """Return the code-owned parameter ``key`` as a :class:`Decimal`, or ``default``.
+
+    ``parameters`` is the resolved, already-validated delta parameter mapping (a
+    dict of decimal strings); it is trusted input from the code-owned resolver,
+    never raw candidate text.
+    """
+    if isinstance(parameters, dict) and key in parameters:
+        value = _coerce_subtotal(parameters[key])
+        if value is not None:
+            return value
+    return default
+
+
+def quotation_rules_evaluate(
+    form: Dict[str, Any], parameters: Optional[Dict[str, Any]] = None
+) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
     """Evaluate the quotation-rules package for one validated ``form``.
 
     Rules (hand-written, deterministic):
 
-    * ``member`` gets a 5% discount (rounded half-up to two decimals);
+    * ``member`` gets a 5% discount by default; the code-owned
+      ``member_discount_rate`` parameter (a rule delta) may change it;
     * shipping is free at or above a 100.00 post-discount subtotal, else 10.00;
     * a per-region fee applies (west 0, north 5, south 3, east 8);
     * the subtotal must be non-negative and all required fields present;
@@ -94,17 +119,12 @@ def quotation_rules_evaluate(form: Dict[str, Any]) -> Tuple[Optional[Dict[str, s
     """
     if not isinstance(form, dict):
         return None, REASON_MISSING
-    if "subtotal" not in form:
-        return None, REASON_MISSING
-    if "member" not in form:
-        return None, REASON_MISSING
-    if "region" not in form:
-        return None, REASON_MISSING
+    for key in ("subtotal", "member", "region"):
+        if key not in form:
+            return None, REASON_MISSING
 
     subtotal = _coerce_subtotal(form["subtotal"])
-    if subtotal is None:
-        return None, REASON_SUBTOTAL
-    if subtotal < 0:
+    if subtotal is None or subtotal < 0:
         return None, REASON_SUBTOTAL
 
     member = form["member"]
@@ -115,7 +135,8 @@ def quotation_rules_evaluate(form: Dict[str, Any]) -> Tuple[Optional[Dict[str, s
     if region not in _REGIONS:
         return None, REASON_REGION
 
-    discount = subtotal * _MEMBER_DISCOUNT_RATE if member else Decimal("0")
+    discount_rate = _parameter_decimal(parameters, "member_discount_rate", _MEMBER_DISCOUNT_RATE)
+    discount = subtotal * discount_rate if member else Decimal("0")
     discount = discount.quantize(_TWO, rounding=ROUND_HALF_UP)
     base = subtotal - discount
     shipping_fee = Decimal("0") if base >= _SHIPPING_THRESHOLD else _SHIPPING_FEE
@@ -130,8 +151,13 @@ def quotation_rules_evaluate(form: Dict[str, Any]) -> Tuple[Optional[Dict[str, s
     }, None
 
 
-def quotation_rules_alt_evaluate(form: Dict[str, Any]) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+def quotation_rules_alt_evaluate(
+    form: Dict[str, Any], parameters: Optional[Dict[str, Any]] = None
+) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
     """Evaluate the alternative quotation-rules variant (P4.7, hand-authored).
+
+    ``parameters`` is accepted for parity with the delta-parameterized handlers
+    and ignored here (this variant has no changeable parameter).
 
     Rules differ from :func:`quotation_rules_evaluate` only by their reviewed
     constants: a 3% member discount, free shipping at or above 150.00 (else
@@ -171,12 +197,35 @@ def quotation_rules_alt_evaluate(form: Dict[str, Any]) -> Tuple[Optional[Dict[st
     }, None
 
 
+def late_return_fee_evaluate(
+    form: Dict[str, Any], parameters: Optional[Dict[str, Any]] = None
+) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+    """Evaluate the late-return-fee package for one validated ``form`` (P4.7a).
+
+    Rules (hand-written, deterministic): a 3-per-day late fee capped at 30.00 by
+    default; the code-owned ``cap`` parameter (a rule delta) may change the cap.
+    ``days_late`` must be a non-negative integer.
+    """
+    if not isinstance(form, dict) or "days_late" not in form:
+        return None, REASON_MISSING
+    days = form["days_late"]
+    if isinstance(days, bool) or not isinstance(days, int):
+        return None, REASON_DAYS
+    if days < 0:
+        return None, REASON_DAYS
+
+    cap = _parameter_decimal(parameters, "cap", _LATE_RETURN_DEFAULT_CAP)
+    fee = min(Decimal(days) * _LATE_RETURN_DAILY_RATE, cap)
+    return {"fee": _money_str(fee)}, None
+
+
 # The code-owned handler registry the in-image ``runner_main`` resolves a
 # package ``handler`` against. Adding a handler is a separate, gated change
 # mirrored in :data:`hrca.app_package.ALLOWED_HANDLERS`.
 HANDLERS = {
     "quotation_rules.evaluate": quotation_rules_evaluate,
     "quotation_rules_alt.evaluate": quotation_rules_alt_evaluate,
+    "late_return_fee.evaluate": late_return_fee_evaluate,
 }
 
 
@@ -190,8 +239,10 @@ __all__ = [
     "REASON_SUBTOTAL",
     "REASON_MEMBER",
     "REASON_REGION",
+    "REASON_DAYS",
     "quotation_rules_evaluate",
     "quotation_rules_alt_evaluate",
+    "late_return_fee_evaluate",
     "HANDLERS",
     "resolve_handler",
 ]

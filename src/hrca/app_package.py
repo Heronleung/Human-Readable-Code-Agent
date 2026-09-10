@@ -75,8 +75,10 @@ _ALLOWED_FIELD_KEYS = frozenset(
 # Code-owned allowlists. The handler is a *name* here, resolved by the runner
 # to a trusted, pre-installed function — never read from the package. The second
 # id/handler (P4.7) is a hand-authored, benign rule variant.
-ALLOWED_PACKAGE_IDS = frozenset({"quotation-rules", "quotation-rules-alt"})
-ALLOWED_HANDLERS = frozenset({"quotation_rules.evaluate", "quotation_rules_alt.evaluate"})
+ALLOWED_PACKAGE_IDS = frozenset({"quotation-rules", "quotation-rules-alt", "late-return-fee"})
+ALLOWED_HANDLERS = frozenset(
+    {"quotation_rules.evaluate", "quotation_rules_alt.evaluate", "late_return_fee.evaluate"}
+)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _PACKAGE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -387,6 +389,28 @@ def quotation_rules_alt_package() -> Dict[str, Any]:
     }
 
 
+def late_return_fee_package() -> Dict[str, Any]:
+    """Return the hand-written late-return-fee package (P4.7a, held-out family).
+
+    A separate code-owned evaluator family under the same delta/validation/
+    binding/verifier framework: a 3-per-day fee capped at 30.00, with only the
+    ``cap`` parameter changeable by a rule delta.
+    """
+    return {
+        "schema_version": APP_PACKAGE_SCHEMA_VERSION,
+        "package_id": "late-return-fee",
+        "runtime": RUNNER_IDENTITY,
+        "handler": "late_return_fee.evaluate",
+        "title": "Late return fee",
+        "form": [
+            {"name": "days_late", "type": TYPE_INTEGER, "min": 0, "max": MAX_DECIMAL_VALUE, "required": True},
+        ],
+        "result": [
+            {"name": "fee", "type": TYPE_DECIMAL},
+        ],
+    }
+
+
 __all__ = [
     "APP_PACKAGE_SCHEMA_VERSION",
     "RUNNER_IDENTITY",
@@ -416,4 +440,5 @@ __all__ = [
     "validate_result",
     "quotation_reference_package",
     "quotation_rules_alt_package",
+    "late_return_fee_package",
 ]

@@ -230,6 +230,38 @@ class RunTests(unittest.TestCase):
         self.assertEqual(observed["input_mode"], 0o755)
 
 
+class ParameterStagingTests(unittest.TestCase):
+    def test_parameters_are_staged(self):
+        runner = container_runner.ContainerRunner(which=lambda name: "docker")
+        input_dir = tempfile.mkdtemp()
+        try:
+            runner._stage_input(
+                input_dir, "quotation_rules.evaluate", {"subtotal": "200.00"},
+                {"member_discount_rate": "0.10"},
+            )
+            with open(os.path.join(input_dir, "input.json"), "r", encoding="utf-8") as fh:
+                payload = json.loads(fh.read())
+            self.assertEqual(payload["handler"], "quotation_rules.evaluate")
+            self.assertEqual(payload["parameters"], {"member_discount_rate": "0.10"})
+        finally:
+            import shutil
+
+            shutil.rmtree(input_dir, ignore_errors=True)
+
+    def test_no_parameters_are_staged(self):
+        runner = container_runner.ContainerRunner(which=lambda name: "docker")
+        input_dir = tempfile.mkdtemp()
+        try:
+            runner._stage_input(input_dir, "quotation_rules.evaluate", {"subtotal": "200.00"})
+            with open(os.path.join(input_dir, "input.json"), "r", encoding="utf-8") as fh:
+                payload = json.loads(fh.read())
+            self.assertNotIn("parameters", payload)
+        finally:
+            import shutil
+
+            shutil.rmtree(input_dir, ignore_errors=True)
+
+
 class OutputBoundsTests(unittest.TestCase):
     def setUp(self):
         self.runner = container_runner.ContainerRunner(which=lambda name: "docker")

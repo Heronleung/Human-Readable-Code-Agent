@@ -181,10 +181,16 @@ class ContainerRunner:
     # -- execution -------------------------------------------------------
 
     def run(
-        self, *, handler: str, input_payload: Dict[str, Any]
+        self,
+        *,
+        handler: str,
+        input_payload: Dict[str, Any],
+        parameters: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Stage the input, run once inside the container, collect the output.
 
+        ``parameters`` is an optional, already-validated mapping of code-owned
+        rule parameters (resolved from a rule delta) passed to the handler.
         Returns ``(result, error)`` where exactly one is ``None``. ``result`` is
         the raw ``result`` mapping from the runner output (validated against the
         package result schema by the broker); ``error`` is a normalized state
@@ -197,7 +203,7 @@ class ContainerRunner:
         output_dir = tempfile.mkdtemp(prefix="hrca-out-")
         container_name = "hrca-run-" + uuid.uuid4().hex
         try:
-            self._stage_input(input_dir, handler, input_payload)
+            self._stage_input(input_dir, handler, input_payload, parameters)
             # The staged input directory must be traversable by the container's
             # non-root user (``tempfile.mkdtemp`` creates a 0700 directory, which
             # ``nobody`` could not read). The staged input file is world-readable;
@@ -239,8 +245,16 @@ class ContainerRunner:
 
     # -- helpers ---------------------------------------------------------
 
-    def _stage_input(self, input_dir: str, handler: str, input_payload: Dict[str, Any]) -> None:
+    def _stage_input(
+        self,
+        input_dir: str,
+        handler: str,
+        input_payload: Dict[str, Any],
+        parameters: Optional[Dict[str, Any]] = None,
+    ) -> None:
         payload = {"handler": handler, "input": input_payload}
+        if parameters is not None:
+            payload["parameters"] = parameters
         path = os.path.join(input_dir, _INPUT_FILENAME)
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=True, separators=(",", ":"))

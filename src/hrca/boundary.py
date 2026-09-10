@@ -43,12 +43,15 @@ from . import (
     contract,
     credential_store,
     deepseek,
+    delta_candidate,
+    delta_verifier,
     document,
     library,
     library_store,
     proposal,
     provider,
     provider_config,
+    rule_delta,
     twin,
     twin_store,
     verifier,
@@ -315,6 +318,10 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _restore_item_result(request, session)
     elif action == contract.ACTION_CANDIDATE_PACKAGE_STAGE:
         result = _stage_candidate_package_result(request, session)
+    elif action == contract.ACTION_RULE_DELTA_STAGE:
+        result = _stage_rule_delta_result(request, session)
+    elif action == contract.ACTION_RULE_DELTA_RUN:
+        result = _run_rule_delta_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -2175,6 +2182,122 @@ def _stage_result(
             normalized["checks"] = runtime["checks"]
         result["runtime"] = normalized
     return result
+
+
+# -- Declarative rule-delta handlers (P4.7a) ---------------------------------
+#
+# ``stage_rule_delta`` validates, binds and verifies a rule-delta candidate
+# offline (no execution, no adoption, no provider); ``run_rule_delta`` validates
+# and executes a reviewed delta through the isolated runner only. Both fail
+# closed on invalid/mismatched/forged input before any execution.
+
+
+def _delta_stage_result(
+    state: str,
+    limitations: List[str],
+    provenance: Optional[str],
+    binding: Optional[Dict[str, Any]],
+    runtime: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "state": state,
+        "limitations": list(limitations),
+        "provenance": provenance,
+        "binding": binding,
+    }
+    if runtime is not None:
+        normalized = {
+            "available": bool(runtime.get("available")),
+            "reason": runtime.get("reason"),
+        }
+        if "checks" in runtime:
+            normalized["checks"] = runtime["checks"]
+        result["runtime"] = normalized
+    return result
+
+
+def _stage_rule_delta_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Validate, bind and independently verify a rule-delta candidate (read-only).
+
+    The delta candidate is validated against the bounded contract, its delta
+    fingerprint must match, its binding must match the Working Document head
+    (revision id + content fingerprint) and the accepted-baseline fingerprint,
+    and its evidence must verify against the independent oracle. A runner
+    preflight is reported read-only; a valid candidate whose runtime is
+    unavailable is ``blocked``.
+    """
+    document_id = _document_id(request)
+    candidate = request.get("candidate")
+    store = _load_document_store(session, document_id)
+    state = document.document_state(store)
+    head = state.get("head_revision") or {}
+    accepted = state.get("accepted")
+
+    provenance = candidate.get("provenance") if isinstance(candidate, dict) else None
+    binding = candidate.get("binding") if isinstance(candidate, dict) else None
+
+    reason = delta_candidate.validate_candidate(candidate)
+    if reason is not None:
+        return _delta_stage_result(
+            delta_candidate.STATE_INVALID, [reason], provenance, binding
+        )
+
+    delta = candidate["delta"]
+    resolved = rule_delta.resolve_delta(delta)
+    rule_id = resolved["rule_id"]
+    parameters = resolved["parameters"]
+
+    if (
+        binding.get("document_revision_id") != head.get("revision_id")
+        or binding.get("document_fingerprint") != head.get("content_fingerprint")
+    ):
+        return _delta_stage_result(
+            delta_candidate.STATE_INVALID, ["stale"], provenance, binding
+        )
+
+    expected_baseline = accepted.get("document_fingerprint") if accepted else None
+    if binding.get("baseline_fingerprint") != expected_baseline:
+        return _delta_stage_result(
+            delta_candidate.STATE_INVALID, ["baseline mismatch"], provenance, binding
+        )
+
+    reason = delta_verifier.verify(rule_id, parameters, candidate["evidence"])
+    if reason is not None:
+        return _delta_stage_result(
+            delta_candidate.STATE_INSUFFICIENT_EVIDENCE, [reason], provenance, binding
+        )
+
+    runner = _staging_runner(session)
+    preflight = runner.preflight()
+    if not preflight.get("available"):
+        return _delta_stage_result(
+            delta_candidate.STATE_BLOCKED,
+            [preflight.get("reason") or "runtime unavailable"],
+            provenance,
+            binding,
+            runtime=preflight,
+        )
+
+    return _delta_stage_result(
+        delta_candidate.provenance_state(provenance),
+        [],
+        provenance,
+        binding,
+        runtime=preflight,
+    )
+
+
+def _run_rule_delta_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Validate and execute a reviewed rule delta through the isolated runner only."""
+    delta = request.get("delta")
+    form_input = request.get("input")
+    from . import runner_broker
+
+    return runner_broker.run_rule_delta(delta, form_input, session.runner)
 
 
 if __name__ == "__main__":

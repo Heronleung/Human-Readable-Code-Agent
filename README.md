@@ -393,6 +393,42 @@ arbitrary code, dangerous controls, evidence mismatch and verifier tampering.
   environment (no Docker daemon in the WSL distro), so validation/staging is
   exercised offline and the runtime is reported `runtime_unavailable`.
 
+## Declarative rule-delta contract (P4.7a)
+
+A bounded, parameterized, data-only **rule delta** replaces P4.7's byte-match
+selection of prewritten variants, so a later provider can return a genuinely new
+bounded rule change without ever supplying code.
+
+- **Delta schema** (`hrca.rule_delta`). A versioned record of `result_kind` +
+  `changes` (only `set_parameter` against an allowlisted `rule_id` +
+  `parameter_id` with one exact typed decimal value) plus optional
+  `clarification_questions` / `unsupported_requirements`. Anything else —
+  code/script/import/command/dependency/path/mount/env/network/UI/runtime/
+  verifier — is rejected as an unknown key. Duplicate/conflicting changes,
+  unknown ids/operators, out-of-range, over-precise or malformed decimals and
+  fingerprint mismatch are refused. `resolve_delta` returns a bounded
+  `{rule_id, parameters}` mapping; raw code never enters the path.
+- **Two bounded families, no byte-matched variants.** The quotation family
+  supports changing only the member-discount parameter (5% → 10%:
+  `{subtotal 200, member, west}` yields discount 20 / total 180, while
+  non-member, shipping threshold, regional fees and invalid input stay
+  unchanged). The held-out **late-return-fee** family (3/day capped at 30)
+  supports changing only the cap (30 → 24); below-cap, boundary, above-cap and
+  negative input are proven.
+- **Binding + independent oracle** (`hrca.delta_candidate`, `hrca.delta_verifier`).
+  The candidate binds the Working Document revision/fingerprint, the
+  accepted-baseline fingerprint, the delta fingerprint, the runner identity and
+  the protected verifier identity; evidence is verified against a code-owned
+  oracle that recomputes expected results **independently** of the runner
+  evaluator and candidate data. Stale/forged/mismatched states fail closed and
+  cannot become adoptable.
+- **Real isolated execution** (`stage_rule_delta` / `run_rule_delta`). Reviewed
+  deltas execute only in the isolated `hrca-runner:v1` container (network none,
+  non-root, read-only rootfs, resource-bounded); invalid deltas/inputs are
+  rejected before any container starts. No provider, credential, token,
+  document-interpretation, host-Python fallback, repository/Git or adoption
+  side effect is introduced.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:

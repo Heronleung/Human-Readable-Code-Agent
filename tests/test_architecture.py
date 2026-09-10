@@ -52,7 +52,7 @@ _PROVIDER_SEAM = frozenset(
      "credential_sheet_win", "provider_config", "provider_cli", "credential_host",
      "deepseek_transport", "advisory",
      "app_package", "runner_broker", "container_runner", "runtime_handlers",
-     "verifier", "candidate_package"}
+     "verifier", "candidate_package", "rule_delta", "delta_verifier", "delta_candidate"}
 )
 
 # Network primitives a client must never import: only the backend transport may
@@ -211,7 +211,7 @@ class ClientArchitectureTests(unittest.TestCase):
     def test_candidate_package_modules_do_not_import_network(self):
         # The candidate-package contract and protected verifier are offline:
         # they never open a socket, so validation/staging stays network-free.
-        for name in ("candidate_package", "verifier"):
+        for name in ("candidate_package", "verifier", "rule_delta", "delta_verifier", "delta_candidate"):
             path = os.path.join(_SRC, name + ".py")
             imported = _imported_top_level_names(path)
             self.assertTrue(

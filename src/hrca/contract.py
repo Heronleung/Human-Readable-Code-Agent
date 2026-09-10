@@ -131,6 +131,13 @@ ACTION_LIBRARY_RESTORE = "restore_item"
 # a provider/credential/network/token call. It returns a read-only evidence
 # state, never a run result.
 ACTION_CANDIDATE_PACKAGE_STAGE = "stage_candidate_package"
+# The P4.7a declarative rule-delta protocol. ``stage_rule_delta`` validates,
+# binds and verifies a rule delta offline (returning a read-only evidence
+# state); ``run_rule_delta`` validates and executes a reviewed delta through the
+# isolated runner only. Neither action adopts a Candidate, makes a provider/
+# credential/network/token call, or writes the repository.
+ACTION_RULE_DELTA_STAGE = "stage_rule_delta"
+ACTION_RULE_DELTA_RUN = "run_rule_delta"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -232,6 +239,9 @@ LIBRARY_ACTIONS = frozenset(
 # verify a bounded candidate package; no execution, adoption, provider,
 # credential, network or token access.
 CANDIDATE_PACKAGE_ACTIONS = frozenset({ACTION_CANDIDATE_PACKAGE_STAGE})
+# The P4.7a declarative rule-delta protocol. Offline validation/binding/
+# verification plus isolated-runner execution of reviewed deltas only.
+RULE_DELTA_ACTIONS = frozenset({ACTION_RULE_DELTA_STAGE, ACTION_RULE_DELTA_RUN})
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -246,6 +256,7 @@ ALLOWED_ACTIONS = (
     | DOCUMENT_ACTIONS
     | LIBRARY_ACTIONS
     | CANDIDATE_PACKAGE_ACTIONS
+    | RULE_DELTA_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -535,6 +546,8 @@ __all__ = [
     "ACTION_LIBRARY_TRASH",
     "ACTION_LIBRARY_RESTORE",
     "ACTION_CANDIDATE_PACKAGE_STAGE",
+    "ACTION_RULE_DELTA_STAGE",
+    "ACTION_RULE_DELTA_RUN",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
@@ -548,6 +561,7 @@ __all__ = [
     "DOCUMENT_ACTIONS",
     "LIBRARY_ACTIONS",
     "CANDIDATE_PACKAGE_ACTIONS",
+    "RULE_DELTA_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",

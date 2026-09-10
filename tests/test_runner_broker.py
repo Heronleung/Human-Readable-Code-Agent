@@ -21,7 +21,7 @@ class FakeRunner:
         self.preflight_calls += 1
         return self.preflight_result
 
-    def run(self, *, handler, input_payload):
+    def run(self, *, handler, input_payload, parameters=None):
         self.run_calls += 1
         if self.run_error is not None:
             return None, self.run_error
@@ -97,6 +97,51 @@ class BrokerTests(unittest.TestCase):
         runner = FakeRunner(run_error=app_package.STATE_RUNNER_FAILED)
         result = runner_broker.run_package(self._package(), _VALID_INPUT, runner)
         self.assertEqual(result["state"], app_package.STATE_RUNNER_FAILED)
+
+
+class RuleDeltaBrokerTests(unittest.TestCase):
+    def _delta(self):
+        return {
+            "schema_version": "1.0.0",
+            "result_kind": "quotation",
+            "changes": [{"operation": "set_parameter", "rule_id": "quotation",
+                         "parameter_id": "member_discount_rate", "value": "0.10"}],
+        }
+
+    def _input(self):
+        return {"subtotal": "200.00", "member": True, "region": "west"}
+
+    def test_ok(self):
+        runner = FakeRunner(run_result={"discount": "20.00", "shipping_fee": "0.00",
+                                        "regional_fee": "0.00", "total": "180.00"})
+        result = runner_broker.run_rule_delta(self._delta(), self._input(), runner)
+        self.assertEqual(result["state"], app_package.STATE_OK)
+        self.assertEqual(result["result"]["total"], "180.00")
+        self.assertEqual(runner.run_calls, 1)
+
+    def test_invalid_delta_never_reaches_runner(self):
+        delta = self._delta()
+        delta["code"] = "import os"
+        runner = FakeRunner(run_result={})
+        result = runner_broker.run_rule_delta(delta, self._input(), runner)
+        self.assertEqual(result["state"], app_package.STATE_PACKAGE_INVALID)
+        self.assertEqual(runner.run_calls, 0)
+
+    def test_input_invalid_never_reaches_runner(self):
+        runner = FakeRunner(run_result={})
+        result = runner_broker.run_rule_delta(self._delta(), {"subtotal": "-1.00"}, runner)
+        self.assertEqual(result["state"], app_package.STATE_INPUT_INVALID)
+        self.assertEqual(runner.run_calls, 0)
+
+    def test_output_invalid(self):
+        runner = FakeRunner(run_result={"total": "180.00"})  # missing fields
+        result = runner_broker.run_rule_delta(self._delta(), self._input(), runner)
+        self.assertEqual(result["state"], app_package.STATE_OUTPUT_INVALID)
+
+    def test_runtime_unavailable(self):
+        runner = FakeRunner(preflight={"available": False, "reason": "runtime_unavailable"})
+        result = runner_broker.run_rule_delta(self._delta(), self._input(), runner)
+        self.assertEqual(result["state"], app_package.STATE_RUNTIME_UNAVAILABLE)
 
 
 if __name__ == "__main__":

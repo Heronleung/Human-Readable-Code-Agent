@@ -116,6 +116,93 @@ class AltVariantAcceptanceTests(unittest.TestCase):
         self.assertEqual(error, runtime_handlers.REASON_SUBTOTAL)
 
 
+class DeltaParameterTests(unittest.TestCase):
+    """The P4.7a parameterized quotation evaluator: 5% -> 10% via a delta parameter."""
+
+    def test_baseline_member_discount(self):
+        result, error = runtime_handlers.quotation_rules_evaluate(
+            {"subtotal": "200.00", "member": True, "region": "west"}
+        )
+        self.assertIsNone(error)
+        self.assertEqual(result["discount"], "10.00")
+        self.assertEqual(result["total"], "190.00")
+
+    def test_delta_discount_10_percent(self):
+        result, error = runtime_handlers.quotation_rules_evaluate(
+            {"subtotal": "200.00", "member": True, "region": "west"},
+            {"member_discount_rate": "0.10"},
+        )
+        self.assertIsNone(error)
+        self.assertEqual(result["discount"], "20.00")
+        self.assertEqual(result["total"], "180.00")
+
+    def test_non_member_discount_unchanged(self):
+        result, error = runtime_handlers.quotation_rules_evaluate(
+            {"subtotal": "200.00", "member": False, "region": "west"},
+            {"member_discount_rate": "0.10"},
+        )
+        self.assertIsNone(error)
+        self.assertEqual(result["discount"], "0.00")
+        self.assertEqual(result["shipping_fee"], "0.00")
+        self.assertEqual(result["total"], "200.00")
+
+    def test_invalid_subtotal_still_rejected(self):
+        result, error = runtime_handlers.quotation_rules_evaluate(
+            {"subtotal": "-1.00", "member": False, "region": "west"},
+            {"member_discount_rate": "0.10"},
+        )
+        self.assertIsNone(result)
+        self.assertEqual(error, runtime_handlers.REASON_SUBTOTAL)
+
+
+class LateReturnFeeTests(unittest.TestCase):
+    """The P4.7a held-out late-return-fee evaluator (3/day, capped; cap is a parameter)."""
+
+    def _fee(self, days, cap=None):
+        params = {"cap": cap} if cap is not None else None
+        return runtime_handlers.late_return_fee_evaluate({"days_late": days}, params)
+
+    def test_baseline_below_cap(self):
+        result, error = self._fee(1)
+        self.assertIsNone(error)
+        self.assertEqual(result["fee"], "3.00")
+
+    def test_baseline_boundary(self):
+        result, error = self._fee(10)
+        self.assertIsNone(error)
+        self.assertEqual(result["fee"], "30.00")  # 10 * 3 = 30 = default cap
+
+    def test_baseline_above_cap(self):
+        result, error = self._fee(11)
+        self.assertIsNone(error)
+        self.assertEqual(result["fee"], "30.00")
+
+    def test_delta_cap_24(self):
+        result, error = self._fee(11, cap="24")
+        self.assertIsNone(error)
+        self.assertEqual(result["fee"], "24.00")
+
+    def test_delta_cap_24_boundary(self):
+        result, error = self._fee(8, cap="24")
+        self.assertIsNone(error)
+        self.assertEqual(result["fee"], "24.00")  # 8 * 3 = 24 = new cap
+
+    def test_delta_cap_24_below(self):
+        result, error = self._fee(1, cap="24")
+        self.assertIsNone(error)
+        self.assertEqual(result["fee"], "3.00")  # daily rate preserved
+
+    def test_negative_days_rejected(self):
+        result, error = self._fee(-1)
+        self.assertIsNone(result)
+        self.assertEqual(error, runtime_handlers.REASON_DAYS)
+
+    def test_non_integer_days_rejected(self):
+        result, error = runtime_handlers.late_return_fee_evaluate({"days_late": "3"})
+        self.assertIsNone(result)
+        self.assertEqual(error, runtime_handlers.REASON_DAYS)
+
+
 class RegistryTests(unittest.TestCase):
     def test_resolve_handler(self):
         self.assertIs(
@@ -127,6 +214,12 @@ class RegistryTests(unittest.TestCase):
         self.assertIs(
             runtime_handlers.resolve_handler("quotation_rules_alt.evaluate"),
             runtime_handlers.quotation_rules_alt_evaluate,
+        )
+
+    def test_resolve_late_fee_handler(self):
+        self.assertIs(
+            runtime_handlers.resolve_handler("late_return_fee.evaluate"),
+            runtime_handlers.late_return_fee_evaluate,
         )
 
     def test_resolve_unknown_handler(self):
