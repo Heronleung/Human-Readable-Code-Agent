@@ -43,6 +43,8 @@ from . import (
     credential_store,
     deepseek,
     document,
+    library,
+    library_store,
     proposal,
     provider,
     provider_config,
@@ -297,6 +299,18 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _restore_version_result(request, session)
     elif action == contract.ACTION_DOCUMENT_PREVIEW:
         result = _preview_document_result(request, session)
+    elif action == contract.ACTION_LIBRARY_GET:
+        result = _get_library_result(request, session)
+    elif action == contract.ACTION_LIBRARY_CREATE_FOLDER:
+        result = _create_folder_result(request, session)
+    elif action == contract.ACTION_LIBRARY_RENAME:
+        result = _rename_item_result(request, session)
+    elif action == contract.ACTION_LIBRARY_MOVE:
+        result = _move_item_result(request, session)
+    elif action == contract.ACTION_LIBRARY_TRASH:
+        result = _trash_item_result(request, session)
+    elif action == contract.ACTION_LIBRARY_RESTORE:
+        result = _restore_item_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -1549,25 +1563,36 @@ def _persist_document(session: WorkspaceSession, document_id: str, store: Dict[s
 def _create_document_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
     """Create an empty Working Document from a validated, unique md/txt name.
 
-    The name is normalized (trimmed, case-insensitively compared) and must not
-    collide with any existing document; a collision is refused with a bounded
-    error and the existing document is left unchanged. Performs no provider,
-    package or runner access. The returned state has no revision and no
-    candidate; the first save creates revision 1.
+    The name is normalized (trimmed, case-insensitively compared) and must be
+    unique among the *siblings* of its target folder (folders and documents
+    together); a collision is refused with a bounded error and the existing
+    items are left unchanged. The document is placed at ``parent_id`` (the root
+    when absent). Performs no provider, package or runner access. The returned
+    state has no revision and no candidate; the first save creates revision 1.
     """
     name = document.normalize_name(request.get("name"))
     if name is None:
         raise contract.ContractError("document_name_invalid")
+    parent_id = _optional_parent_id(request)
+    store = _library_state(session)
+    parent_err = library.parent_error(store, parent_id)
+    if parent_err is not None:
+        raise contract.ContractError(_library_error_code(parent_err, name_invalid_code="document_name_invalid"))
     key = document.name_key(name)
-    for summary in version_store.list_documents(session.store_base):
-        if document.name_key(summary.get("name")) == key:
-            raise contract.ContractError("document_name_in_use")
+    if key in _sibling_keys(session, store, parent_id):
+        raise contract.ContractError("document_name_in_use")
     document_id = document.new_document_id()
-    store = document.new_document_store(
+    doc_store = document.new_document_store(
         document_id, name, document.kind_for_name(name), _now_iso()
     )
-    _persist_document(session, document_id, store)
-    return document.document_state(store)
+    _persist_document(session, document_id, doc_store)
+    new_store, reason = library.add_document(store, document_id, parent_id)
+    if new_store is None:
+        raise contract.ContractError(_library_error_code(reason, name_invalid_code="document_name_invalid"))
+    _persist_library(session, new_store)
+    result = document.document_state(doc_store)
+    result["tree"] = library_store.get_tree(session.store_base, _now_iso())
+    return result
 
 
 def _open_document_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
@@ -1753,6 +1778,283 @@ def _preview_document_result(request: Dict[str, Any], session: WorkspaceSession)
     if package is None:  # pragma: no cover - the fixture is always present
         raise contract.ContractError("package_not_found")
     return document.preview_state(store, package)
+
+
+# -- App-owned document-library handlers (P4.6) -----------------------------
+#
+# The library is the app-owned folder/document tree. It organises documents only
+# — it is never app/prompt context, a filesystem browser, a source tree or a
+# sync surface. Every mutation writes the library store (folder names, parent
+# relationships and the trash flag) and — for a document rename — the document's
+# display name; it never rewrites a document id, revision, candidate/accepted
+# record, package identity, evidence binding or the Working Document content.
+# Folders and documents share one sibling namespace: names are compared
+# case-insensitively after trimming, and a collision is a bounded refusal.
+
+
+def _library_state(session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the reconciled library store, migrating flat documents if needed."""
+    store, _adopted = library_store.ensure_library(session.store_base, _now_iso())
+    if store is None:
+        # A corrupt/future-version library is never silently replaced.
+        raise contract.ContractError("library_persist_failed")
+    return store
+
+
+def _persist_library(session: WorkspaceSession, store: Dict[str, Any]) -> None:
+    """Persist the library store atomically, raising a bounded error on failure."""
+    if library_store.save(session.store_base, store) is not None:
+        raise contract.ContractError("library_persist_failed")
+
+
+def _library_tree(session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the joined app-owned tree for the current session's store base."""
+    return library_store.get_tree(session.store_base, _now_iso())
+
+
+def _optional_parent_id(request: Dict[str, Any]) -> Optional[str]:
+    """Return the request's parent folder id (``None`` = root) or raise."""
+    parent_id = request.get("parent_id")
+    if parent_id is None:
+        return None
+    if not isinstance(parent_id, str) or not parent_id.strip():
+        raise contract.ContractError("invalid_parent")
+    return parent_id
+
+
+def _item_id(request: Dict[str, Any]) -> str:
+    """Return and validate the opaque ``item_id`` from ``request``."""
+    item_id = request.get("item_id")
+    if not isinstance(item_id, str) or not item_id.strip():
+        raise contract.ContractError("invalid_request")
+    return item_id
+
+
+def _folder_record(store: Dict[str, Any], folder_id: str) -> Optional[Dict[str, Any]]:
+    """Return the library folder record for ``folder_id``, or ``None``."""
+    for folder in store.get("folders", []):
+        if isinstance(folder, dict) and folder.get("folder_id") == folder_id:
+            return folder
+    return None
+
+
+def _document_record(store: Dict[str, Any], document_id: str) -> Optional[Dict[str, Any]]:
+    """Return the library document reference for ``document_id``, or ``None``."""
+    for ref in store.get("documents", []):
+        if isinstance(ref, dict) and ref.get("document_id") == document_id:
+            return ref
+    return None
+
+
+def _document_summaries(session: WorkspaceSession) -> Dict[str, Dict[str, Any]]:
+    """Return ``{document_id: summary}`` for every readable Working Document."""
+    return {
+        s["document_id"]: s for s in version_store.list_documents(session.store_base)
+    }
+
+
+def _sibling_keys(
+    session: WorkspaceSession,
+    store: Dict[str, Any],
+    parent_id: Optional[str],
+    exclude_id: Optional[str] = None,
+) -> set:
+    """Return the normalized sibling name-keys at ``parent_id``.
+
+    Joins the library's folders with each Working Document's name so a folder and
+    a document with the same name collide.
+    """
+    summaries = _document_summaries(session)
+    documents = []
+    for ref in store.get("documents", []):
+        if not isinstance(ref, dict):
+            continue
+        summary = summaries.get(ref.get("document_id"))
+        if summary is None:
+            continue
+        documents.append({**ref, "name": summary.get("name")})
+    return library.sibling_name_keys(
+        store.get("folders", []), documents, parent_id, exclude_id
+    )
+
+
+def _document_name_key(session: WorkspaceSession, document_id: str) -> Optional[str]:
+    """Return the Working Document's normalized name-key, or ``None``."""
+    summary = _document_summaries(session).get(document_id)
+    return document.name_key(summary.get("name")) if summary is not None else None
+
+
+def _library_error_code(reason: Optional[str], *, name_invalid_code: str) -> str:
+    """Map a bounded library reason to a contract error code."""
+    if reason == library.REASON_NAME_INVALID:
+        return name_invalid_code
+    if reason == library.REASON_NAME_IN_USE:
+        return "name_in_use"
+    if reason == library.REASON_ITEM_NOT_FOUND:
+        return "item_not_found"
+    if reason == library.REASON_FOLDER_NOT_FOUND:
+        return "folder_not_found"
+    if reason == library.REASON_INVALID_PARENT:
+        return "invalid_parent"
+    if reason == library.REASON_CYCLIC_MOVE:
+        return "cyclic_move"
+    if reason == library.REASON_PARENT_TRASHED:
+        return "parent_trashed"
+    if reason == library.REASON_ITEM_TRASHED:
+        return "item_trashed"
+    if reason == library.REASON_NOT_TRASHED:
+        return "item_not_trashed"
+    if reason == library.REASON_RESTORE_COLLISION:
+        return "restore_collision"
+    if reason == document.REASON_NAME_INVALID:
+        return name_invalid_code
+    return "invalid_request"
+
+
+def _get_library_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Return the joined app-owned tree (folders + enriched document references)."""
+    return library_store.get_tree(session.store_base, _now_iso())
+
+
+def _create_folder_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Create an app-owned folder under ``parent_id`` (root when absent)."""
+    name = request.get("name")
+    parent_id = _optional_parent_id(request)
+    store = _library_state(session)
+    siblings = _sibling_keys(session, store, parent_id)
+    new_store, reason = library.add_folder(
+        store, library.new_folder_id(), name, parent_id, _now_iso(), siblings
+    )
+    if new_store is None:
+        raise contract.ContractError(_library_error_code(reason, name_invalid_code="folder_name_invalid"))
+    _persist_library(session, new_store)
+    return _library_tree(session)
+
+
+def _rename_item_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Rename a folder or document (display metadata only; identity untouched)."""
+    item_id = _item_id(request)
+    name = request.get("name")
+    store = _library_state(session)
+
+    if item_id.startswith("dir:"):
+        folder = _folder_record(store, item_id)
+        if folder is None:
+            raise contract.ContractError("item_not_found")
+        if folder.get("trashed"):
+            raise contract.ContractError("item_trashed")
+        siblings = _sibling_keys(session, store, folder.get("parent_id"), exclude_id=item_id)
+        new_store, reason = library.rename_folder(store, item_id, name, siblings)
+        if new_store is None:
+            raise contract.ContractError(_library_error_code(reason, name_invalid_code="folder_name_invalid"))
+        _persist_library(session, new_store)
+    elif item_id.startswith("doc:"):
+        ref = _document_record(store, item_id)
+        if ref is None:
+            raise contract.ContractError("item_not_found")
+        if ref.get("trashed"):
+            raise contract.ContractError("item_trashed")
+        normalized = document.normalize_name(name)
+        if normalized is None:
+            raise contract.ContractError("document_name_invalid")
+        siblings = _sibling_keys(session, store, ref.get("parent_id"), exclude_id=item_id)
+        if document.name_key(normalized) in siblings:
+            raise contract.ContractError("name_in_use")
+        doc_store = _load_document_store(session, item_id)
+        renamed, reason = document.rename_document(doc_store, normalized)
+        if renamed is None:
+            raise contract.ContractError(_library_error_code(reason, name_invalid_code="document_name_invalid"))
+        _persist_document(session, item_id, renamed)
+    else:
+        raise contract.ContractError("item_not_found")
+    return _library_tree(session)
+
+
+def _move_item_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Move a folder or document under a new parent (structure only)."""
+    item_id = _item_id(request)
+    new_parent_id = _optional_parent_id(request)
+    store = _library_state(session)
+
+    if item_id.startswith("dir:"):
+        folder = _folder_record(store, item_id)
+        if folder is None:
+            raise contract.ContractError("item_not_found")
+        if folder.get("trashed"):
+            raise contract.ContractError("item_trashed")
+        siblings = _sibling_keys(session, store, new_parent_id, exclude_id=item_id)
+        new_store, reason = library.move_folder(store, item_id, new_parent_id, siblings)
+        if new_store is None:
+            raise contract.ContractError(_library_error_code(reason, name_invalid_code="folder_name_invalid"))
+        _persist_library(session, new_store)
+    elif item_id.startswith("doc:"):
+        ref = _document_record(store, item_id)
+        if ref is None:
+            raise contract.ContractError("item_not_found")
+        if ref.get("trashed"):
+            raise contract.ContractError("item_trashed")
+        siblings = _sibling_keys(session, store, new_parent_id, exclude_id=item_id)
+        new_store, reason = library.move_document(
+            store, item_id, new_parent_id, siblings, _document_name_key(session, item_id)
+        )
+        if new_store is None:
+            raise contract.ContractError(_library_error_code(reason, name_invalid_code="document_name_invalid"))
+        _persist_library(session, new_store)
+    else:
+        raise contract.ContractError("item_not_found")
+    return _library_tree(session)
+
+
+def _trash_item_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Mark a folder or document trashed (recoverable; never a permanent delete)."""
+    item_id = _item_id(request)
+    store = _library_state(session)
+    if item_id.startswith("dir:"):
+        new_store, reason = library.trash_folder(store, item_id)
+    elif item_id.startswith("doc:"):
+        new_store, reason = library.trash_document(store, item_id)
+    else:
+        raise contract.ContractError("item_not_found")
+    if new_store is None:
+        raise contract.ContractError(_library_error_code(reason, name_invalid_code="folder_name_invalid"))
+    _persist_library(session, new_store)
+    return _library_tree(session)
+
+
+def _restore_item_result(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Restore a trashed folder or document (never overwrites live data)."""
+    item_id = _item_id(request)
+    store = _library_state(session)
+
+    if item_id.startswith("dir:"):
+        folder = _folder_record(store, item_id)
+        if folder is None:
+            raise contract.ContractError("item_not_found")
+        if not folder.get("trashed"):
+            raise contract.ContractError("item_not_trashed")
+        restore_parent = library.restore_parent(store, folder)
+        siblings = _sibling_keys(session, store, restore_parent, exclude_id=item_id)
+        new_store, reason = library.restore_folder(store, item_id, restore_parent, siblings)
+        if new_store is None:
+            raise contract.ContractError(_library_error_code(reason, name_invalid_code="folder_name_invalid"))
+        _persist_library(session, new_store)
+    elif item_id.startswith("doc:"):
+        ref = _document_record(store, item_id)
+        if ref is None:
+            raise contract.ContractError("item_not_found")
+        if not ref.get("trashed"):
+            raise contract.ContractError("item_not_trashed")
+        restore_parent = library.restore_parent(store, ref)
+        siblings = _sibling_keys(session, store, restore_parent, exclude_id=item_id)
+        new_store, reason = library.restore_document(
+            store, item_id, restore_parent, siblings, _document_name_key(session, item_id)
+        )
+        if new_store is None:
+            raise contract.ContractError(_library_error_code(reason, name_invalid_code="document_name_invalid"))
+        _persist_library(session, new_store)
+    else:
+        raise contract.ContractError("item_not_found")
+    return _library_tree(session)
 
 
 if __name__ == "__main__":

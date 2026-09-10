@@ -109,6 +109,22 @@ ACTION_DOCUMENT_RESTORE = "restore_version"
 # Accepted Version, the fixed package schema and the validation evidence — it
 # never executes a package, changes version state or calls a provider.
 ACTION_DOCUMENT_PREVIEW = "preview_document"
+# The P4.6 app-owned document-library protocol. It owns the folder/document tree
+# the explorer renders: ``get_library`` returns the joined tree (folders plus
+# document references enriched with each Working Document's name/kind/revision
+# summary), and the mutation actions create folders, rename/move/trash/restore a
+# folder or document. Every mutation writes only the library store (folder
+# names, parent relationships and the trash flag) and — for a document rename —
+# the document's display name; it never rewrites a document id, revision,
+# candidate/accepted record, package identity, evidence binding or the Working
+# Document content. No action here touches source, Git state, a command, a
+# provider or the network.
+ACTION_LIBRARY_GET = "get_library"
+ACTION_LIBRARY_CREATE_FOLDER = "create_folder"
+ACTION_LIBRARY_RENAME = "rename_item"
+ACTION_LIBRARY_MOVE = "move_item"
+ACTION_LIBRARY_TRASH = "trash_item"
+ACTION_LIBRARY_RESTORE = "restore_item"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -194,6 +210,18 @@ DOCUMENT_ACTIONS = frozenset(
         ACTION_DOCUMENT_PREVIEW,
     }
 )
+# The P4.6 app-owned document-library protocol. See the comment beside the
+# ACTION_LIBRARY_* constants above: it organises documents/folders only.
+LIBRARY_ACTIONS = frozenset(
+    {
+        ACTION_LIBRARY_GET,
+        ACTION_LIBRARY_CREATE_FOLDER,
+        ACTION_LIBRARY_RENAME,
+        ACTION_LIBRARY_MOVE,
+        ACTION_LIBRARY_TRASH,
+        ACTION_LIBRARY_RESTORE,
+    }
+)
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -206,6 +234,7 @@ ALLOWED_ACTIONS = (
     | ADVISORY_ACTIONS
     | PACKAGE_ACTIONS
     | DOCUMENT_ACTIONS
+    | LIBRARY_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -314,6 +343,19 @@ _ERROR_MESSAGES = {
     "already_adopted": "the candidate has already been adopted",
     "version_not_found": "the accepted version does not exist",
     "restore_not_allowed": "the version cannot be restored",
+    # Document-library errors (P4.6). Messages are fixed and never interpolate a
+    # folder id, document id, name or user prose, so caller text cannot leak.
+    "folder_not_found": "the folder does not exist",
+    "folder_name_invalid": "the folder name is invalid",
+    "item_not_found": "the item does not exist",
+    "name_in_use": "an item with this name already exists in this folder",
+    "invalid_parent": "the parent folder is not valid",
+    "cyclic_move": "a folder cannot be moved into itself or its own subfolder",
+    "parent_trashed": "the parent folder is in the trash",
+    "item_trashed": "the item is in the trash",
+    "item_not_trashed": "the item is not in the trash",
+    "restore_collision": "an item with this name already exists where it would be restored",
+    "library_persist_failed": "the document library could not be saved",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)
@@ -475,6 +517,12 @@ __all__ = [
     "ACTION_DOCUMENT_LIST_VERSIONS",
     "ACTION_DOCUMENT_RESTORE",
     "ACTION_DOCUMENT_PREVIEW",
+    "ACTION_LIBRARY_GET",
+    "ACTION_LIBRARY_CREATE_FOLDER",
+    "ACTION_LIBRARY_RENAME",
+    "ACTION_LIBRARY_MOVE",
+    "ACTION_LIBRARY_TRASH",
+    "ACTION_LIBRARY_RESTORE",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
@@ -486,6 +534,7 @@ __all__ = [
     "ADVISORY_ACTIONS",
     "PACKAGE_ACTIONS",
     "DOCUMENT_ACTIONS",
+    "LIBRARY_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",

@@ -1344,6 +1344,19 @@ DOCUMENT_FAILURE_MESSAGES = {
     "already_adopted": "This candidate has already been adopted.",
     "version_not_found": "That accepted version no longer exists.",
     "restore_not_allowed": "The version cannot be restored.",
+    # Document-library errors (P4.6). Fixed sentences, never an id, name or
+    # user prose.
+    "folder_not_found": "That folder no longer exists.",
+    "folder_name_invalid": "Use a valid folder name without path characters.",
+    "item_not_found": "That item no longer exists.",
+    "name_in_use": "An item with this name already exists in this folder.",
+    "invalid_parent": "The parent folder is not valid.",
+    "cyclic_move": "A folder cannot be moved into itself or its own subfolder.",
+    "parent_trashed": "The parent folder is in the trash.",
+    "item_trashed": "The item is in the trash.",
+    "item_not_trashed": "The item is not in the trash.",
+    "restore_collision": "An item with this name already exists where it would be restored.",
+    "library_persist_failed": "The document library could not be saved.",
 }
 
 
@@ -1357,14 +1370,22 @@ def document_failure_message(code: str) -> str:
     return DOCUMENT_FAILURE_MESSAGES.get(code, "The operation could not be completed.")
 
 
-def build_create_document_request(correlation_id: str, name: str) -> Dict[str, Any]:
-    """Build a ``create_document`` request for a validated md/txt name."""
-    return {
+def build_create_document_request(
+    correlation_id: str, name: str, parent_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Build a ``create_document`` request for a validated md/txt name.
+
+    ``parent_id`` is the optional target folder (absent = root).
+    """
+    request = {
         "contract_version": contract.CONTRACT_VERSION,
         "correlation_id": correlation_id,
         "action": contract.ACTION_DOCUMENT_CREATE,
         "name": name,
     }
+    if parent_id is not None:
+        request["parent_id"] = parent_id
+    return request
 
 
 def build_open_document_request(correlation_id: str, document_id: str) -> Dict[str, Any]:
@@ -1785,6 +1806,84 @@ def _fixture_lines(preview: Dict[str, Any]) -> List[str]:
     return lines
 
 
+# -- App-owned document-library client vocabulary (P4.6) --------------------
+#
+# Request builders for the library actions (get_library, create_folder,
+# rename/move/trash/restore an item). None of these carries a credential, a
+# command or a path; the boundary owns every validation decision.
+
+def build_get_library_request(correlation_id: str) -> Dict[str, Any]:
+    """Build a ``get_library`` request (the joined folder/document tree)."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_LIBRARY_GET,
+    }
+
+
+def build_create_folder_request(
+    correlation_id: str, name: str, parent_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Build a ``create_folder`` request (``parent_id`` absent = root)."""
+    request = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_LIBRARY_CREATE_FOLDER,
+        "name": name,
+    }
+    if parent_id is not None:
+        request["parent_id"] = parent_id
+    return request
+
+
+def build_rename_item_request(
+    correlation_id: str, item_id: str, name: str
+) -> Dict[str, Any]:
+    """Build a ``rename_item`` request for a folder or document id."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_LIBRARY_RENAME,
+        "item_id": item_id,
+        "name": name,
+    }
+
+
+def build_move_item_request(
+    correlation_id: str, item_id: str, parent_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Build a ``move_item`` request (``parent_id`` absent = root)."""
+    request = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_LIBRARY_MOVE,
+        "item_id": item_id,
+    }
+    if parent_id is not None:
+        request["parent_id"] = parent_id
+    return request
+
+
+def build_trash_item_request(correlation_id: str, item_id: str) -> Dict[str, Any]:
+    """Build a ``trash_item`` request for a folder or document id."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_LIBRARY_TRASH,
+        "item_id": item_id,
+    }
+
+
+def build_restore_item_request(correlation_id: str, item_id: str) -> Dict[str, Any]:
+    """Build a ``restore_item`` request for a trashed folder or document id."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_LIBRARY_RESTORE,
+        "item_id": item_id,
+    }
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -1909,6 +2008,12 @@ __all__ = [
     "preview_badge",
     "build_preview_request",
     "format_preview",
+    "build_get_library_request",
+    "build_create_folder_request",
+    "build_rename_item_request",
+    "build_move_item_request",
+    "build_trash_item_request",
+    "build_restore_item_request",
     "default_fixture_root",
     "resolve_backend_command",
     "resolve_credential_host_command",

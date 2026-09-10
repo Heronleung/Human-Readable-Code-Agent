@@ -150,6 +150,30 @@ badge and body use plain language, never raw ids. Versions distinguishes Save
 (storing requirements) from adoption and shows each accepted app with the
 document revision it accepted.
 
+As of **P4.6**, the Working Document destination is replaced by a compact,
+application-owned **document library explorer** for non-programmers. A narrow,
+resizable, collapsible pane immediately right of the navigation rail shows an
+expandable folder/document tree and a recoverable **Trash**, so opening a
+document is one click (no dropdown-plus-Open step). It provides New document /
+New folder / Rename / Move / Trash / Restore. This is an organiser only — not a
+general file manager, a source tree, a filesystem browser, cloud sync or app
+context. Every folder and document carries an opaque stable id; names are
+normalized and must be unique among *siblings* (folders and documents together),
+so identity never depends on title, order, path or tree position. Rename and
+move change only display metadata / the parent relationship — they never rewrite
+a document id, revision, candidate/accepted record, package identity or evidence
+binding. Legacy flat documents are migrated to the root idempotently and
+crash-safely, preserving ids, content, revisions and duplicate names; new
+conflicting names are blocked until a legacy collision is resolved explicitly.
+Trash is recoverable (no permanent deletion); trashing a non-empty folder asks
+for confirmation, and restore never overwrites live data — a name collision is
+refused with a clear message. Switching away from a document with unsaved edits
+offers Save / Discard / Cancel. The three actions remain distinct: **Save**
+stores requirements only, **Create preview** builds the deterministic fixture
+Candidate (never from the prose), and **Use this version** (adoption) is the
+separate, explicit, revalidated step that makes an Accepted Version — it is
+never automatic.
+
 All visual values live in the desktop-only design system `hrca/style.py` —
 light and dark palettes (auto-selected from the operating-system appearance),
 a 4 px spacing scale, corner radii, typography, component geometry, and a Qt

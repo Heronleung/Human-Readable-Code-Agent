@@ -152,6 +152,18 @@ EXPLORER_MAX_WIDTH = 420
 SOURCE_MIN_WIDTH = 360
 TWIN_MIN_WIDTH = 300
 
+# App-owned document-library explorer geometry (P4.6). A narrow, resizable,
+# collapsible pane immediately right of the navigation rail; it shares the
+# Project Explorer's width grammar so the two trees read as one component.
+LIBRARY_EXPLORER_DEFAULT_WIDTH = 240
+LIBRARY_EXPLORER_MIN_WIDTH = 160
+LIBRARY_EXPLORER_MAX_WIDTH = 420
+LIBRARY_EXPLORER_STRETCH = 0
+# The content stack (right of the explorer) takes all extra width.
+LIBRARY_CONTENT_STRETCH = 1
+# Maximum height of the recoverable Trash strip in the library explorer (P4.6).
+LIBRARY_TRASH_MAX_HEIGHT = 168
+
 # Initial primary-splitter pane widths (px), applied once at construction.
 PRIMARY_SOURCE_INITIAL_WIDTH = 560
 PRIMARY_TWIN_INITIAL_WIDTH = 360

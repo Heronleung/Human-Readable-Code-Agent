@@ -240,11 +240,12 @@ class MainWindowLayoutTests(unittest.TestCase):
     def test_horizontal_splitter_stretch_factors(self):
         # PySide6 exposes only ``setStretchFactor``, not a getter, so the
         # factors are verified by how the three panes share extra width. The
-        # narrow width is chosen above the rail+minimum-pane squeeze point so
-        # the Explorer (stretch 0) keeps its width and the 3:2 growth is clean.
+        # narrow width is chosen above the rail+library-explorer+minimum-pane
+        # squeeze point so the Explorer (stretch 0) keeps its width and the 3:2
+        # growth is clean.
         window = MainWindow()
-        narrow = self._laid_out_sizes(window, 1200)
-        wide = self._laid_out_sizes(window, 1920)
+        narrow = self._laid_out_sizes(window, 1440)
+        wide = self._laid_out_sizes(window, 2160)
         explorer_narrow, source_narrow, twin_narrow = narrow
         explorer_wide, source_wide, twin_wide = wide
         # Explorer has stretch factor 0: it keeps its width as the window grows.
@@ -486,7 +487,10 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertLessEqual(abs(allocated - splitter.width()), 2)
 
     def test_geometry_matrix_across_palettes_and_sizes(self):
-        sizes = ((1024, 640), (1360, 840), (1920, 1080))
+        # The narrowest size is above the rail + library-explorer + minimum-pane
+        # squeeze point so the Source & Code Map panes can each hold their
+        # minimum width.
+        sizes = ((1440, 640), (1680, 840), (1920, 1080))
         for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
             for width, height in sizes:
                 with self.subTest(palette=palette.name, size=(width, height)):
@@ -2026,7 +2030,7 @@ class NavigationRailTests(unittest.TestCase):
 
         window._send = fake_send
         window._select_destination("document")
-        self.assertEqual(sent[-1]["action"], contract.ACTION_DOCUMENT_LIST)
+        self.assertEqual(sent[-1]["action"], contract.ACTION_LIBRARY_GET)
 
     def test_preview_selection_refreshes_preview(self):
         window = MainWindow()

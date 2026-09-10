@@ -85,6 +85,7 @@ REASON_FUTURE_VERSION = "schema_version is newer than supported"
 REASON_NOT_MIGRATABLE = "schema_version is not migratable"
 
 REASON_CONTENT_INVALID = "content is not valid text"
+REASON_NAME_INVALID = "name invalid"
 REASON_STALE = "stale"
 REASON_NO_REVISION = "no saved revision"
 
@@ -305,6 +306,26 @@ def _candidate_id(candidate: Dict[str, Any]) -> str:
     """Return the deterministic candidate id from its binding fields."""
     binding = {k: candidate[k] for k in _CANDIDATE_BINDING_KEYS}
     return "cand:" + sha256_hex(dumps(binding).encode("utf-8"))
+
+
+# -- rename (display metadata only) ---------------------------------------
+
+
+def rename_document(
+    store: Dict[str, Any], name: str
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Change a Working Document's display name (P4.6).
+
+    Only the ``name`` field changes — the document id, kind, revision history,
+    candidate/accepted records, package identity and every fingerprint are
+    untouched. A name that does not normalize is refused with a bounded reason.
+    """
+    normalized = normalize_name(name)
+    if normalized is None:
+        return None, REASON_NAME_INVALID
+    new_store = _copy(store)
+    new_store["name"] = normalized
+    return new_store, None
 
 
 # -- save (append an immutable revision) ----------------------------------
@@ -815,6 +836,7 @@ __all__ = [
     "REASON_FUTURE_VERSION",
     "REASON_NOT_MIGRATABLE",
     "REASON_CONTENT_INVALID",
+    "REASON_NAME_INVALID",
     "REASON_STALE",
     "REASON_NO_REVISION",
     "REASON_CANDIDATE_NOT_FOUND",
@@ -837,6 +859,7 @@ __all__ = [
     "name_key",
     "_WINDOWS_RESERVED_BASE_NAMES",
     "new_document_store",
+    "rename_document",
     "save_revision",
     "build_candidate",
     "adopt_candidate",

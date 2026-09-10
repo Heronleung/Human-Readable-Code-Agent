@@ -15,6 +15,12 @@ from hrca.client_core import (
     build_preview_request,
     build_restore_version_request,
     build_save_document_request,
+    build_get_library_request,
+    build_create_folder_request,
+    build_rename_item_request,
+    build_move_item_request,
+    build_trash_item_request,
+    build_restore_item_request,
     document_failure_message,
     document_kind_label,
     format_document_state,
@@ -68,6 +74,33 @@ class RequestBuilderTests(unittest.TestCase):
     def test_list_documents(self):
         req = build_list_documents_request("cid")
         self.assertEqual(req["action"], contract.ACTION_DOCUMENT_LIST)
+
+    def test_create_document_with_parent(self):
+        req = build_create_document_request("cid", "notes.md", "dir:f")
+        self.assertEqual(req["parent_id"], "dir:f")
+        req = build_create_document_request("cid", "notes.md")
+        self.assertNotIn("parent_id", req)
+
+    def test_library_request_builders(self):
+        self.assertEqual(
+            build_get_library_request("cid")["action"], contract.ACTION_LIBRARY_GET
+        )
+        req = build_create_folder_request("cid", "Plans", "dir:f")
+        self.assertEqual(req["action"], contract.ACTION_LIBRARY_CREATE_FOLDER)
+        self.assertEqual(req["parent_id"], "dir:f")
+        req = build_rename_item_request("cid", "dir:a", "New")
+        self.assertEqual(req["action"], contract.ACTION_LIBRARY_RENAME)
+        self.assertEqual(req["item_id"], "dir:a")
+        self.assertEqual(req["name"], "New")
+        req = build_move_item_request("cid", "doc:d", "dir:f")
+        self.assertEqual(req["action"], contract.ACTION_LIBRARY_MOVE)
+        self.assertEqual(req["parent_id"], "dir:f")
+        req = build_move_item_request("cid", "doc:d")
+        self.assertNotIn("parent_id", req)
+        req = build_trash_item_request("cid", "doc:d")
+        self.assertEqual(req["action"], contract.ACTION_LIBRARY_TRASH)
+        req = build_restore_item_request("cid", "doc:d")
+        self.assertEqual(req["action"], contract.ACTION_LIBRARY_RESTORE)
 
 
 class LabelTests(unittest.TestCase):

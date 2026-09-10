@@ -45,8 +45,15 @@ from hrca.contract import (
     ACTION_DOCUMENT_LIST_VERSIONS,
     ACTION_DOCUMENT_RESTORE,
     ACTION_DOCUMENT_PREVIEW,
+    ACTION_LIBRARY_GET,
+    ACTION_LIBRARY_CREATE_FOLDER,
+    ACTION_LIBRARY_RENAME,
+    ACTION_LIBRARY_MOVE,
+    ACTION_LIBRARY_TRASH,
+    ACTION_LIBRARY_RESTORE,
     PACKAGE_ACTIONS,
     DOCUMENT_ACTIONS,
+    LIBRARY_ACTIONS,
     ALLOWED_ACTIONS,
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
@@ -119,7 +126,8 @@ class AllowedActionTests(unittest.TestCase):
             | PROFILE_ACTIONS
             | ADVISORY_ACTIONS
             | PACKAGE_ACTIONS
-            | DOCUMENT_ACTIONS,
+            | DOCUMENT_ACTIONS
+            | LIBRARY_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -315,6 +323,39 @@ class AllowedActionTests(unittest.TestCase):
             self.assertNotIn(action, PROFILE_ACTIONS)
             self.assertNotIn(action, ADVISORY_ACTIONS)
             self.assertNotIn(action, PACKAGE_ACTIONS)
+
+    def test_library_actions_are_allowlisted(self):
+        self.assertEqual(
+            LIBRARY_ACTIONS,
+            frozenset(
+                {
+                    ACTION_LIBRARY_GET,
+                    ACTION_LIBRARY_CREATE_FOLDER,
+                    ACTION_LIBRARY_RENAME,
+                    ACTION_LIBRARY_MOVE,
+                    ACTION_LIBRARY_TRASH,
+                    ACTION_LIBRARY_RESTORE,
+                }
+            ),
+        )
+
+    def test_library_actions_are_read_only(self):
+        # The library organises folders/documents only: it writes the library
+        # store (names, parent relationships, trash) and a document's display
+        # name — never source, Git, a command, a provider or the network.
+        for action in LIBRARY_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, WORKSPACE_ACTIONS)
+            self.assertNotIn(action, TWIN_ACTIONS)
+            self.assertNotIn(action, DRAFT_ACTIONS)
+            self.assertNotIn(action, PROPOSAL_ACTIONS)
+            self.assertNotIn(action, READINESS_ACTIONS)
+            self.assertNotIn(action, CREDENTIAL_ACTIONS)
+            self.assertNotIn(action, PROFILE_ACTIONS)
+            self.assertNotIn(action, ADVISORY_ACTIONS)
+            self.assertNotIn(action, PACKAGE_ACTIONS)
+            self.assertNotIn(action, DOCUMENT_ACTIONS)
 
     def test_task_actions_exclude_mutators(self):
         self.assertTrue(READ_ONLY_TASK_ACTIONS <= ALLOWED_ACTIONS)

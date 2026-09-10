@@ -180,7 +180,6 @@ from .client_core import (
     build_create_document_request,
     build_open_document_request,
     build_save_document_request,
-    build_list_documents_request,
     build_create_candidate_request,
     build_adopt_candidate_request,
     build_list_versions_request,
@@ -194,6 +193,12 @@ from .client_core import (
     preview_badge,
     preview_state_label,
     preview_state_message,
+    build_get_library_request,
+    build_create_folder_request,
+    build_rename_item_request,
+    build_move_item_request,
+    build_trash_item_request,
+    build_restore_item_request,
 )
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -660,6 +665,29 @@ class _ProjectTreeView(QTreeView):
         return True
 
 
+class _DocumentTreeView(_ProjectTreeView):
+    """A document-library tree that toggles a folder on the *first* click.
+
+    Mirrors :class:`_ProjectTreeView` but recognises the library's ``folder``
+    node kind (the project tree uses ``dir``). Clicking a folder toggles its
+    expansion; clicking a document emits ``clicked`` so the explorer can open it
+    with a single click.
+    """
+
+    def _toggle_dir_at(self, event) -> bool:
+        index = self.indexAt(event.position().toPoint())
+        if not index.isValid():
+            return False
+        item = self.model().itemFromIndex(index)
+        if item is None or item.data(Qt.UserRole + 1) != "folder":
+            return False
+        if self.isExpanded(index):
+            self.collapse(index)
+        else:
+            self.expand(index)
+        return True
+
+
 class MainWindow(QMainWindow):
     """Render the IDE workspace shell (P3.2 presentation-only surface)."""
 
@@ -753,6 +781,7 @@ class MainWindow(QMainWindow):
         # flag, the accepted-version list, and the mounted widgets.
         self._documents: List[Dict[str, Any]] = []
         self._document_id: Optional[str] = None
+        self._document_name: Optional[str] = None
         self._document_base_revision_id: Optional[str] = None
         self._document_head: Dict[str, Any] = {}
         self._document_candidate: Optional[Dict[str, Any]] = None
@@ -765,12 +794,9 @@ class MainWindow(QMainWindow):
         # and the last requested name (used for the name-conflict message).
         self._document_candidate_pending: bool = False
         self._pending_document_name: Optional[str] = None
-        self._document_combo: Optional[QComboBox] = None
         self._document_status_label: Optional[QLabel] = None
         self._document_editor: Optional[QPlainTextEdit] = None
         self._document_result: Optional[QPlainTextEdit] = None
-        self._document_new_button: Optional[QPushButton] = None
-        self._document_open_button: Optional[QPushButton] = None
         self._document_save_button: Optional[QPushButton] = None
         self._document_candidate_button: Optional[QPushButton] = None
         self._document_review_button: Optional[QPushButton] = None
@@ -799,6 +825,24 @@ class MainWindow(QMainWindow):
         self._advanced_button: Optional[QPushButton] = None
         self._nav_group_container: Optional[QWidget] = None
         self._content_stack: Optional[QStackedWidget] = None
+        # P4.6 app-owned document library (explorer) state: the joined tree, the
+        # currently selected item (a folder or document id), a monotonic open
+        # generation that discards late open responses, a deferred target for the
+        # dirty-switch Save path, and the mounted explorer widgets.
+        self._library_folders: List[Dict[str, Any]] = []
+        self._library_documents: List[Dict[str, Any]] = []
+        self._library_selected_id: Optional[str] = None
+        self._document_open_generation: int = 0
+        self._pending_document_switch_id: Optional[str] = None
+        self._library_model: Optional[QStandardItemModel] = None
+        self._library_view: Optional[_DocumentTreeView] = None
+        self._library_trash_layout: Optional[QVBoxLayout] = None
+        self._library_new_doc_button: Optional[QPushButton] = None
+        self._library_new_folder_button: Optional[QPushButton] = None
+        self._library_rename_button: Optional[QPushButton] = None
+        self._library_move_button: Optional[QPushButton] = None
+        self._library_trash_button: Optional[QPushButton] = None
+        self._library_item_by_id: Dict[str, QStandardItem] = {}
 
         self._supervisor = BackendSupervisor()
         self._supervisor.completed.connect(self._on_completed)
@@ -841,7 +885,8 @@ class MainWindow(QMainWindow):
         root.addWidget(self._build_command_bar())
         root.addWidget(self._build_provider_status_region())
 
-        # Main row: the compact labelled navigation rail beside the one content
+        # Main row: the compact labelled navigation rail, then the narrow
+        # resizable/collapsible document library explorer, then the one content
         # stack that pages Document, Preview, Versions and the Advanced group.
         main_row = QWidget()
         main_row.setObjectName("mainRow")
@@ -851,7 +896,22 @@ class MainWindow(QMainWindow):
         )
         main_layout.setSpacing(style.SPACE_0)
         main_layout.addWidget(self._build_nav_rail())
-        main_layout.addWidget(self._build_content_stack(), stretch=1)
+        self._library_splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        self._library_splitter.setObjectName("libraryWorkspace")
+        self._library_explorer_panel = self._build_library_explorer()
+        self._library_splitter.addWidget(self._library_explorer_panel)
+        self._library_splitter.addWidget(self._build_content_stack())
+        self._library_splitter.setCollapsible(0, True)
+        self._library_splitter.setCollapsible(1, False)
+        self._library_splitter.setStretchFactor(0, style.LIBRARY_EXPLORER_STRETCH)
+        self._library_splitter.setStretchFactor(1, style.LIBRARY_CONTENT_STRETCH)
+        self._library_splitter.setSizes(
+            [
+                style.LIBRARY_EXPLORER_DEFAULT_WIDTH,
+                style.PRIMARY_SOURCE_INITIAL_WIDTH,
+            ]
+        )
+        main_layout.addWidget(self._library_splitter, stretch=1)
         root.addWidget(main_row, stretch=1)
 
         root.addWidget(self._build_status_bar())
@@ -1369,6 +1429,118 @@ class MainWindow(QMainWindow):
         stack.setCurrentIndex(_NAV_DESTINATION_INDEX["document"])
         return stack
 
+    def _build_library_explorer(self) -> QWidget:
+        """Build the app-owned document library explorer (P4.6).
+
+        A narrow, resizable, collapsible pane immediately right of the nav rail.
+        It shows an expandable folder/document tree, compact New document / New
+        folder / Rename / Move / Trash controls, and a recoverable Trash section
+        with per-item Restore. It is an organiser only — never a filesystem
+        browser, a source tree, a sync surface or app/prompt context.
+        """
+        panel = QWidget()
+        panel.setObjectName("libraryExplorerPanel")
+        panel.setMinimumWidth(style.LIBRARY_EXPLORER_MIN_WIDTH)
+        panel.setMaximumWidth(style.LIBRARY_EXPLORER_MAX_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_0)
+
+        header, _header_layout = self._header_row("Documents")
+        layout.addWidget(header)
+
+        # Compact create controls (always available).
+        create_row = QWidget()
+        create_layout = QHBoxLayout(create_row)
+        create_layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.SPACE_0
+        )
+        create_layout.setSpacing(style.GAP_TIGHT)
+        self._library_new_doc_button = QPushButton("New document")
+        self._library_new_doc_button.setAccessibleName("New document")
+        self._library_new_doc_button.clicked.connect(self._new_document)
+        self._library_new_folder_button = QPushButton("New folder")
+        self._library_new_folder_button.setAccessibleName("New folder")
+        self._library_new_folder_button.clicked.connect(self._new_folder)
+        create_layout.addWidget(self._library_new_doc_button)
+        create_layout.addWidget(self._library_new_folder_button)
+        create_layout.addStretch(1)
+        layout.addWidget(create_row)
+
+        # Compact organise controls (enabled only when an item is selected).
+        organise_row = QWidget()
+        organise_layout = QHBoxLayout(organise_row)
+        organise_layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.GAP_TIGHT
+        )
+        organise_layout.setSpacing(style.GAP_TIGHT)
+        self._library_rename_button = QPushButton("Rename")
+        self._library_move_button = QPushButton("Move")
+        self._library_trash_button = QPushButton("Trash")
+        self._library_rename_button.setAccessibleName("Rename item")
+        self._library_move_button.setAccessibleName("Move item")
+        self._library_trash_button.setAccessibleName("Move item to Trash")
+        self._library_rename_button.clicked.connect(self._rename_item)
+        self._library_move_button.clicked.connect(self._move_item)
+        self._library_trash_button.clicked.connect(self._trash_item)
+        organise_layout.addWidget(self._library_rename_button)
+        organise_layout.addWidget(self._library_move_button)
+        organise_layout.addWidget(self._library_trash_button)
+        organise_layout.addStretch(1)
+        layout.addWidget(organise_row)
+
+        # The expandable folder/document tree.
+        self._library_model = QStandardItemModel()
+        self._library_model.setHorizontalHeaderLabels(["Name"])
+        self._library_view = _DocumentTreeView()
+        self._library_view.setObjectName("libraryTree")
+        self._library_view.setModel(self._library_model)
+        self._library_view.setHeaderHidden(True)
+        self._library_view.setRootIsDecorated(True)
+        self._library_view.setIndentation(style.TREE_INDENT)
+        self._library_view.setUniformRowHeights(True)
+        self._library_view.setAnimated(False)
+        self._library_view.setSortingEnabled(False)
+        self._library_view.setAlternatingRowColors(False)
+        self._library_view.setFrameShape(QFrame.NoFrame)
+        self._library_view.setAccessibleName("Document library")
+        self._library_view.clicked.connect(self._on_library_clicked)
+        layout.addWidget(self._library_view, stretch=1)
+
+        # Recoverable Trash section (no permanent deletion).
+        trash_header = QWidget()
+        trash_header_layout = QHBoxLayout(trash_header)
+        trash_header_layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.SPACE_0
+        )
+        trash_header_layout.setSpacing(style.GAP_TIGHT)
+        trash_label = QLabel("Trash")
+        trash_label.setFont(style.panel_header_font())
+        trash_label.setStyleSheet(style.secondary_text_style(self._palette))
+        trash_header_layout.addWidget(trash_label)
+        trash_header_layout.addStretch(1)
+        layout.addWidget(trash_header)
+
+        trash_list = QWidget()
+        self._library_trash_layout = QVBoxLayout(trash_list)
+        self._library_trash_layout.setContentsMargins(
+            style.INSET, style.SPACE_0, style.INSET, style.INSET
+        )
+        self._library_trash_layout.setSpacing(style.GAP_TIGHT)
+        trash_scroll = QScrollArea()
+        trash_scroll.setObjectName("libraryTrashScroll")
+        trash_scroll.setWidgetResizable(True)
+        trash_scroll.setFrameShape(QFrame.NoFrame)
+        trash_scroll.setWidget(trash_list)
+        trash_scroll.setFixedHeight(style.LIBRARY_TRASH_MAX_HEIGHT)
+        layout.addWidget(trash_scroll)
+
+        self._populate_library_tree()
+        self._update_library_actions()
+        return panel
+
     def _build_change_review_page(self) -> QWidget:
         """Build the Change Review group: Agent Chat, Plan and Diff.
 
@@ -1589,17 +1761,7 @@ class MainWindow(QMainWindow):
         title.setFont(style.panel_header_font())
         title.setStyleSheet(style.secondary_text_style(self._palette))
         header_layout.addWidget(title)
-        self._document_combo = QComboBox()
-        self._document_combo.setAccessibleName("Working Document")
-        header_layout.addWidget(self._document_combo, stretch=1)
-        self._document_new_button = QPushButton("New")
-        self._document_new_button.setAccessibleName("New document")
-        self._document_new_button.clicked.connect(self._new_document)
-        self._document_open_button = QPushButton("Open")
-        self._document_open_button.setAccessibleName("Open document")
-        self._document_open_button.clicked.connect(self._open_working_document)
-        header_layout.addWidget(self._document_new_button)
-        header_layout.addWidget(self._document_open_button)
+        header_layout.addStretch(1)
         layout.addWidget(header)
 
         self._document_status_label = QLabel("")
@@ -1627,7 +1789,7 @@ class MainWindow(QMainWindow):
         self._document_save_button.setObjectName("primaryButton")
         self._document_candidate_button = QPushButton("Create preview")
         self._document_review_button = QPushButton("Review candidate")
-        self._document_adopt_button = QPushButton("Adopt")
+        self._document_adopt_button = QPushButton("Use this version")
         self._document_save_button.setAccessibleName("Save document")
         self._document_candidate_button.setAccessibleName("Create preview")
         self._document_candidate_button.setToolTip(
@@ -1635,7 +1797,11 @@ class MainWindow(QMainWindow):
             "fixture. It does not interpret your document or generate code."
         )
         self._document_review_button.setAccessibleName("Review candidate")
-        self._document_adopt_button.setAccessibleName("Adopt candidate")
+        self._document_adopt_button.setAccessibleName("Use this version")
+        self._document_adopt_button.setToolTip(
+            "Make this candidate the Accepted Version. This is a separate, "
+            "explicit step that revalidates the candidate — never automatic."
+        )
         self._document_save_button.clicked.connect(self._save_document)
         self._document_candidate_button.clicked.connect(self._create_candidate)
         self._document_review_button.clicked.connect(self._review_candidate)
@@ -1729,7 +1895,7 @@ class MainWindow(QMainWindow):
             self._advanced_button.setChecked(True)
         self._content_stack.setCurrentIndex(_NAV_DESTINATION_INDEX[key])
         if key == "document":
-            self._refresh_documents()
+            self._refresh_library()
         elif key == "preview":
             self._refresh_preview()
 
@@ -3343,21 +3509,53 @@ class MainWindow(QMainWindow):
 
     # -- Document/version-authority flow (P4.4) ---------------------------
 
-    def _sync_document_combo_selection(self) -> None:
-        """Point the document selector at the currently open document by id.
+    def _sync_library_selection(self) -> None:
+        """Point the explorer's selection at the selected/open item by stable id.
 
-        Selection is keyed by the opaque ``document_id``, never list index, title,
-        creation order or revision number, so a rename/display-order change cannot
-        silently retarget the open document.
+        Selection is keyed by the opaque folder/document id, never list index,
+        title, creation order, tree position or revision number, so a refresh
+        cannot silently retarget the open document.
         """
-        combo = self._document_combo
-        if combo is None:
+        view = self._library_view
+        if view is None:
             return
-        index = combo.findData(self._document_id) if self._document_id else -1
-        if index >= 0:
-            combo.blockSignals(True)
-            combo.setCurrentIndex(index)
-            combo.blockSignals(False)
+        target = self._library_selected_id or self._document_id
+        item = self._library_item_by_id.get(target) if target else None
+        if item is None:
+            view.clearSelection()
+            return
+        view.setCurrentIndex(item.index())
+
+    def _update_library_actions(self) -> None:
+        """Enable the organise controls only when a live item is selected."""
+        selected = self._library_selected_id
+        has_selection = selected is not None
+        if self._library_rename_button is not None:
+            self._library_rename_button.setEnabled(has_selection)
+        if self._library_move_button is not None:
+            self._library_move_button.setEnabled(has_selection)
+        if self._library_trash_button is not None:
+            self._library_trash_button.setEnabled(has_selection)
+
+    def _selected_folder_id(self) -> Optional[str]:
+        """Return the selected folder id (for create-under), else ``None`` (root)."""
+        selected = self._library_selected_id
+        if selected and selected.startswith("dir:"):
+            return selected
+        return None
+
+    def _selected_item_name(self) -> Optional[str]:
+        """Return the display name of the selected item (for the rename prefill)."""
+        selected = self._library_selected_id
+        if not selected:
+            return None
+        for folder in self._library_folders:
+            if folder.get("folder_id") == selected:
+                return folder.get("name")
+        for doc in self._library_documents:
+            if doc.get("document_id") == selected:
+                return doc.get("name")
+        return None
 
     def _candidate_is_current(self) -> bool:
         """True when the latest candidate is bound to the current document head.
@@ -3413,10 +3611,14 @@ class MainWindow(QMainWindow):
             return
         if self._document_id is None:
             self._document_status_label.setText("No document open.")
-        elif self._document_dirty:
-            self._document_status_label.setText("Working Document — unsaved changes.")
+            return
+        name = self._document_name or "Untitled"
+        if self._document_dirty:
+            self._document_status_label.setText(
+                f"{name} — unsaved changes."
+            )
         else:
-            self._document_status_label.setText("Working Document — saved.")
+            self._document_status_label.setText(f"{name} — saved.")
 
     def _mark_document_dirty(self, *_args: Any) -> None:
         if self._document_loading:
@@ -3425,76 +3627,208 @@ class MainWindow(QMainWindow):
         self._update_document_status()
         self._update_document_actions()
 
-    def _refresh_documents(self) -> None:
+    def _refresh_library(self) -> None:
+        """Request the joined folder/document tree for the explorer."""
         cid = contract.new_correlation_id()
-        request = build_list_documents_request(cid)
+        request = build_get_library_request(cid)
         self._set_status(STATE_RUNNING, "listing documents")
-        if not self._send(request, self._on_documents_loaded, self._on_document_error):
+        if not self._send(request, self._on_library_loaded, self._on_document_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
-    def _repopulate_document_selector(self) -> None:
-        """Rebuild the selector from ``_documents``, preserving the open id.
+    def _on_library_loaded(self, result: Dict[str, Any]) -> None:
+        self._apply_library(result)
+        self._set_status(STATE_SUCCESS, f"{len(self._library_documents)} document(s)")
 
-        Selection is keyed by the opaque ``document_id``, never list index, title,
-        creation order or revision number.
+    def _apply_library(self, tree: Dict[str, Any]) -> None:
+        """Adopt a joined tree and repopulate the explorer, preserving selection.
+
+        Selection is keyed by the opaque id, never list index, title, order, path
+        or tree position. Only an externally removed document (no longer listed)
+        clears the open selection, with a clear message.
         """
-        combo = self._document_combo
-        if combo is None:
-            return
-        selected_id = self._document_id
-        if selected_id is None and combo.count():
-            selected_id = combo.currentData()
-
-        combo.blockSignals(True)
-        combo.clear()
-        for doc in self._documents:
-            label = f"{doc.get('name')} (rev {doc.get('head_revision_number', 0)})"
-            combo.addItem(label, doc.get("document_id"))
-
-        index = combo.findData(selected_id) if selected_id else -1
-        if index < 0 and combo.count():
-            index = 0
-        if index >= 0:
-            combo.setCurrentIndex(index)
-        combo.blockSignals(False)
-
-    def _upsert_document_summary(self, summary: Dict[str, Any]) -> None:
-        """Add/update one document summary in memory and repopulate the selector.
-
-        Used after create/save so the selector reflects the change immediately,
-        keyed by the opaque document_id, without a second list round-trip that
-        could conflict with an in-flight preview request.
-        """
-        document_id = summary.get("document_id")
-        if not document_id:
-            return
-        for index, existing in enumerate(self._documents):
-            if existing.get("document_id") == document_id:
-                self._documents[index] = summary
-                break
-        else:
-            self._documents.append(summary)
-        self._documents.sort(
-            key=lambda s: (str(s.get("name") or ""), str(s.get("document_id") or ""))
-        )
-        self._repopulate_document_selector()
-
-    def _on_documents_loaded(self, result: Dict[str, Any]) -> None:
-        self._documents = list(result.get("documents") or [])
-        if self._document_combo is None:
-            return
-        self._repopulate_document_selector()
-
-        # Bounded external-change handling: only an externally deleted/corrupt
-        # document (no longer listed) clears the open selection, with a clear
-        # message and a safe fallback to the first available document.
+        self._library_folders = list(tree.get("folders") or [])
+        self._library_documents = list(tree.get("documents") or [])
+        self._documents = [
+            {
+                "document_id": d.get("document_id"),
+                "name": d.get("name"),
+                "kind": d.get("kind"),
+                "head_revision_number": d.get("head_revision_number", 0),
+                "revision_count": d.get("revision_count", 0),
+            }
+            for d in self._library_documents
+        ]
+        # A rename of the open document refreshes its header name.
+        if self._document_id is not None:
+            for d in self._library_documents:
+                if d.get("document_id") == self._document_id:
+                    self._document_name = d.get("name")
+                    break
+        self._populate_library_tree()
+        self._update_document_status()
         if self._document_id is not None and not any(
-            d.get("document_id") == self._document_id for d in self._documents
+            d.get("document_id") == self._document_id for d in self._library_documents
         ):
             self._clear_open_document()
             self._set_status(STATE_SUCCESS, "the open document was removed")
-        else:
-            self._set_status(STATE_SUCCESS, f"{len(self._documents)} document(s)")
+
+    def _populate_library_tree(self) -> None:
+        """Rebuild the explorer's tree and trash strip from the joined library.
+
+        Folders whose own flag or an ancestor is trashed are hidden (their
+        descendants reappear when the folder is restored); documents are leaves
+        under a visible parent folder or the root. Trashed items (own flag) are
+        listed in the Trash strip with a Restore action.
+        """
+        model = self._library_model
+        if model is None:
+            return
+        folders = self._library_folders
+        documents = self._library_documents
+        folder_by_id = {f["folder_id"]: f for f in folders if f.get("folder_id")}
+
+        def hidden(fid: str) -> bool:
+            seen = set()
+            current = fid
+            while current is not None and current not in seen:
+                seen.add(current)
+                folder = folder_by_id.get(current)
+                if folder is None:
+                    return False
+                if folder.get("trashed"):
+                    return True
+                current = folder.get("parent_id")
+            return False
+
+        model.clear()
+        model.setHorizontalHeaderLabels(["Name"])
+        self._library_item_by_id = {}
+
+        children = {fid: [] for fid in folder_by_id}
+        roots = []
+        for fid, folder in folder_by_id.items():
+            if hidden(fid):
+                continue
+            pid = folder.get("parent_id")
+            if pid and pid in folder_by_id and not hidden(pid):
+                children.setdefault(pid, []).append(fid)
+            else:
+                roots.append(fid)
+
+        def name_sort(fid: str):
+            return (str(folder_by_id[fid].get("name") or "").lower(), fid)
+
+        roots.sort(key=name_sort)
+        for key in list(children):
+            children[key].sort(key=name_sort)
+
+        def add_folder(parent_item: QStandardItem, fid: str) -> None:
+            folder = folder_by_id[fid]
+            item = QStandardItem(folder.get("name") or fid)
+            item.setEditable(False)
+            item.setData(fid, Qt.UserRole)
+            item.setData("folder", Qt.UserRole + 1)
+            item.setFont(style.tree_folder_font())
+            parent_item.appendRow(item)
+            self._library_item_by_id[fid] = item
+            for kid in children.get(fid, []):
+                add_folder(item, kid)
+
+        root = model.invisibleRootItem()
+        for fid in roots:
+            add_folder(root, fid)
+
+        visible_docs = [d for d in documents if not d.get("trashed")]
+        visible_docs.sort(
+            key=lambda d: (
+                str(d.get("name") or "").lower(),
+                str(d.get("document_id") or ""),
+            )
+        )
+        for doc in visible_docs:
+            pid = doc.get("parent_id")
+            if pid and hidden(pid):
+                continue
+            item = QStandardItem(doc.get("name") or doc.get("document_id"))
+            item.setEditable(False)
+            item.setData(doc.get("document_id"), Qt.UserRole)
+            item.setData("document", Qt.UserRole + 1)
+            parent_item = self._library_item_by_id.get(pid, root)
+            parent_item.appendRow(item)
+            self._library_item_by_id[doc.get("document_id")] = item
+
+        self._library_view.expandAll()
+        self._populate_trash_list()
+        self._sync_library_selection()
+        self._update_library_actions()
+
+    def _populate_trash_list(self) -> None:
+        """Rebuild the recoverable Trash strip (own-trashed folders + documents)."""
+        layout = self._library_trash_layout
+        if layout is None:
+            return
+        while layout.count():
+            entry = layout.takeAt(0)
+            widget = entry.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        trash = [f for f in self._library_folders if f.get("trashed")]
+        trash += [d for d in self._library_documents if d.get("trashed")]
+        trash.sort(key=lambda x: str(x.get("name") or "").lower())
+
+        if not trash:
+            empty = QLabel("Trash is empty.")
+            empty.setObjectName("secondary")
+            empty.setStyleSheet(style.secondary_text_style(self._palette))
+            empty.setWordWrap(True)
+            empty.setAccessibleName("Trash is empty")
+            layout.addWidget(empty)
+            layout.addStretch(1)
+            return
+
+        for entry in trash:
+            item_id = entry.get("folder_id") or entry.get("document_id")
+            name = entry.get("name") or item_id
+            label = QLabel(name)
+            label.setStyleSheet(style.status_label_style(self._palette))
+            label.setAccessibleName(f"Trashed {name}")
+            restore = QPushButton("Restore")
+            restore.setAccessibleName(f"Restore {name}")
+            restore.clicked.connect(partial(self._restore_item, item_id))
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(
+                style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+            )
+            row_layout.setSpacing(style.GAP_TIGHT)
+            row_layout.addWidget(label, stretch=1)
+            row_layout.addWidget(restore)
+            layout.addWidget(row)
+        layout.addStretch(1)
+
+    def _on_library_clicked(self, index) -> None:
+        """Handle a single click: select a folder, or open a document.
+
+        A folder click selects it (for Rename/Move/Trash); a document click
+        selects it and opens it with a single click. Opening an already-open,
+        clean document is a no-op (no accidental reopen); opening a different
+        document while dirty offers Save / Discard / Cancel.
+        """
+        model = self._library_model
+        if model is None:
+            return
+        item = model.itemFromIndex(index)
+        if item is None:
+            return
+        node_type = item.data(Qt.UserRole + 1)
+        item_id = item.data(Qt.UserRole)
+        if not item_id:
+            return
+        self._library_selected_id = item_id
+        self._update_library_actions()
+        if node_type == "document":
+            self._open_document_by_id(item_id)
 
     def _new_document(self) -> None:
         name, ok = QInputDialog.getText(
@@ -3507,7 +3841,7 @@ class MainWindow(QMainWindow):
             return
         self._pending_document_name = name
         cid = contract.new_correlation_id()
-        request = build_create_document_request(cid, name)
+        request = build_create_document_request(cid, name, self._selected_folder_id())
         self._set_status(STATE_RUNNING, "creating document")
         if not self._send(request, self._on_document_created, self._on_create_document_error):
             self._set_status(STATE_FAILED, "a request is already in progress")
@@ -3516,19 +3850,136 @@ class MainWindow(QMainWindow):
         doc = result.get("document") or {}
         self._document_id = doc.get("document_id")
         self._apply_document_state(result)
-        # Make the new document visible and selected immediately, in the same
-        # UI cycle, without a second list round-trip that could conflict with
-        # the preview refresh fired by _apply_document_state.
-        self._upsert_document_summary(
-            {
-                "document_id": doc.get("document_id"),
-                "name": doc.get("name"),
-                "kind": doc.get("kind"),
-                "head_revision_number": doc.get("head_revision_number", 0),
-                "revision_count": doc.get("revision_count", 0),
-            }
-        )
+        # The boundary returns the updated tree in the same result, so the
+        # explorer reflects the new document without a second round-trip.
+        tree = result.get("tree")
+        if tree is not None:
+            self._apply_library(tree)
         self._set_status(STATE_SUCCESS, "document created")
+
+    def _new_folder(self) -> None:
+        name, ok = QInputDialog.getText(self, "New folder", "Folder name:")
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        cid = contract.new_correlation_id()
+        request = build_create_folder_request(cid, name, self._selected_folder_id())
+        self._set_status(STATE_RUNNING, "creating folder")
+        if not self._send(
+            request, partial(self._on_library_mutated, "folder created"), self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_library_mutated(self, message: str, result: Dict[str, Any]) -> None:
+        """Apply an updated tree after a library mutation and report the outcome."""
+        self._apply_library(result)
+        self._set_status(STATE_SUCCESS, message)
+
+    def _rename_item(self) -> None:
+        item_id = self._library_selected_id
+        if not item_id:
+            return
+        current = self._selected_item_name() or ""
+        name, ok = QInputDialog.getText(
+            self, "Rename", "New name:", text=current
+        )
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        cid = contract.new_correlation_id()
+        request = build_rename_item_request(cid, item_id, name)
+        self._set_status(STATE_RUNNING, "renaming")
+        if not self._send(
+            request, partial(self._on_library_mutated, "renamed"), self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _move_item(self) -> None:
+        item_id = self._library_selected_id
+        if not item_id:
+            return
+        labels = ["(root)"]
+        ids: List[Optional[str]] = [None]
+        for folder in self._library_folders:
+            if folder.get("trashed"):
+                continue
+            if folder.get("folder_id") == item_id:
+                continue
+            labels.append(folder.get("name") or folder.get("folder_id"))
+            ids.append(folder.get("folder_id"))
+        choice, ok = QInputDialog.getItem(
+            self, "Move", "Move to folder:", labels, 0, False
+        )
+        if not ok:
+            return
+        try:
+            parent_id = ids[labels.index(choice)]
+        except ValueError:
+            return
+        cid = contract.new_correlation_id()
+        request = build_move_item_request(cid, item_id, parent_id)
+        self._set_status(STATE_RUNNING, "moving")
+        if not self._send(
+            request, partial(self._on_library_mutated, "moved"), self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _trash_item(self) -> None:
+        item_id = self._library_selected_id
+        if not item_id:
+            return
+        if self._item_is_non_empty_folder(item_id):
+            box = QMessageBox(self)
+            box.setWindowTitle("Move to Trash")
+            box.setText("Move this folder and its contents to Trash?")
+            box.setInformativeText(
+                "The folder contains items. Trash is recoverable — nothing is "
+                "permanently deleted."
+            )
+            trash_button = box.addButton("Move to Trash", QMessageBox.AcceptRole)
+            cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+            box.setDefaultButton(cancel_button)
+            box.exec()
+            if box.clickedButton() is not trash_button:
+                return
+        cid = contract.new_correlation_id()
+        request = build_trash_item_request(cid, item_id)
+        self._set_status(STATE_RUNNING, "moving to Trash")
+        if not self._send(
+            request, partial(self._on_library_mutated, "moved to Trash"), self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _item_is_non_empty_folder(self, item_id: str) -> bool:
+        """True when ``item_id`` is a folder with at least one live direct child."""
+        if not item_id.startswith("dir:"):
+            return False
+        for folder in self._library_folders:
+            if folder.get("trashed"):
+                continue
+            if folder.get("parent_id") == item_id:
+                return True
+        for doc in self._library_documents:
+            if doc.get("trashed"):
+                continue
+            if doc.get("parent_id") == item_id:
+                return True
+        return False
+
+    def _restore_item(self, item_id: str) -> None:
+        if not item_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_restore_item_request(cid, item_id)
+        self._set_status(STATE_RUNNING, "restoring")
+        if not self._send(
+            request, partial(self._on_library_mutated, "restored"), self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
 
     def _on_create_document_error(self, reason: str) -> None:
         """Handle a create-document failure, naming the requested name on a conflict.
@@ -3548,34 +3999,72 @@ class MainWindow(QMainWindow):
         else:
             self._on_document_error(reason)
 
-    def _open_working_document(self) -> None:
-        combo = self._document_combo
-        if combo is None or combo.currentIndex() < 0:
+    def _open_document_by_id(self, document_id: str) -> None:
+        """Open a document, guarding unsaved changes.
+
+        Opening the already-open clean document is a no-op (no accidental reopen
+        or duplicate request); opening a different document while dirty offers
+        Save / Discard / Cancel.
+        """
+        if document_id == self._document_id and not self._document_dirty:
             return
-        document_id = combo.currentData()
-        if not document_id:
+        if self._document_dirty:
+            self._guard_dirty_switch(document_id)
             return
+        self._do_open_document(document_id)
+
+    def _guard_dirty_switch(self, target_id: str) -> None:
+        """Offer Save / Discard / Cancel before switching away from a dirty document."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Unsaved changes")
+        box.setText("Save changes to this document before opening another?")
+        box.setInformativeText("Your unsaved edits will be lost if you discard them.")
+        save_button = box.addButton("Save", QMessageBox.AcceptRole)
+        discard_button = box.addButton("Discard", QMessageBox.DestructiveRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_button:
+            self._pending_document_switch_id = target_id
+            self._save_document()
+        elif clicked is discard_button:
+            self._document_dirty = False
+            self._do_open_document(target_id)
+
+    def _next_document_open_generation(self) -> int:
+        """Advance the open generation so a late open response is discarded."""
+        self._document_open_generation += 1
+        return self._document_open_generation
+
+    def _do_open_document(self, document_id: str) -> None:
+        generation = self._next_document_open_generation()
         cid = contract.new_correlation_id()
         request = build_open_document_request(cid, document_id)
         self._set_status(STATE_RUNNING, "opening document")
         if not self._send(
-            request, self._on_working_document_opened, self._on_document_error
+            request,
+            partial(self._on_working_document_opened, generation),
+            self._on_document_error,
         ):
             self._set_status(STATE_FAILED, "a request is already in progress")
 
-    def _on_working_document_opened(self, result: Dict[str, Any]) -> None:
+    def _on_working_document_opened(self, generation: int, result: Dict[str, Any]) -> None:
+        if generation != self._document_open_generation:
+            return
         self._apply_document_state(result)
         self._set_status(STATE_SUCCESS, "document opened")
 
     def _apply_document_state(self, result: Dict[str, Any]) -> None:
         """Load the full document state into the editor and the state area.
 
-        The open document id is taken from the result (not the selector), so an
-        Open always binds the editor to the exact document the boundary returned,
-        and the selector is re-pointed at it by id.
+        The open document id is taken from the result (not the explorer), so an
+        open always binds the editor to the exact document the boundary returned;
+        the explorer selection is re-pointed at it by id.
         """
         document = result.get("document") or {}
         self._document_id = document.get("document_id")
+        self._document_name = document.get("name")
         head = result.get("head_revision") or {}
         self._document_head = head
         self._document_loading = True
@@ -3585,7 +4074,7 @@ class MainWindow(QMainWindow):
             self._document_loading = False
         self._document_base_revision_id = head.get("revision_id")
         self._document_dirty = False
-        self._sync_document_combo_selection()
+        self._sync_library_selection()
         self._refresh_document_meta(result)
 
     def _clear_open_document(self) -> None:
@@ -3596,6 +4085,7 @@ class MainWindow(QMainWindow):
         a clear message is shown and the user can Open another document.
         """
         self._document_id = None
+        self._document_name = None
         self._document_base_revision_id = None
         self._document_head = {}
         self._document_candidate = None
@@ -3610,12 +4100,13 @@ class MainWindow(QMainWindow):
         self._document_dirty = False
         self._document_result.setPlainText(
             "The open document was removed or is no longer available.\n\n"
-            "Select another document and choose Open."
+            "Select another document in the library to open it."
         )
         self._update_document_status()
         self._update_document_actions()
         self._refresh_preview()
         self._populate_versions_list()
+        self._sync_library_selection()
 
     def _refresh_document_meta(self, result: Dict[str, Any]) -> None:
         """Refresh candidate/accepted/version metadata without touching the editor.
@@ -3719,17 +4210,12 @@ class MainWindow(QMainWindow):
         self._set_status(
             STATE_SUCCESS, f"document saved (rev {result.get('head_revision_number')})"
         )
-        # Update the selector's revision label in memory (no conflicting round-trip).
-        for index, doc in enumerate(self._documents):
-            if doc.get("document_id") == self._document_id:
-                updated = dict(doc)
-                updated["head_revision_number"] = result.get(
-                    "head_revision_number", doc.get("head_revision_number", 0)
-                )
-                self._documents[index] = updated
-                self._repopulate_document_selector()
-                break
         self._refresh_preview()
+        # A dirty-switch that chose Save now opens the deferred target document.
+        if self._pending_document_switch_id is not None:
+            target = self._pending_document_switch_id
+            self._pending_document_switch_id = None
+            self._do_open_document(target)
 
     def _create_candidate(self) -> None:
         if not self._document_id or self._document_candidate_pending:
@@ -3753,13 +4239,13 @@ class MainWindow(QMainWindow):
         if not self._document_id or not self._document_candidate_id:
             return
         box = QMessageBox(self)
-        box.setWindowTitle("Adopt candidate")
-        box.setText("Adopt this candidate as the Accepted Version?")
+        box.setWindowTitle("Use this version")
+        box.setText("Use this candidate as the Accepted Version?")
         box.setInformativeText(
             "The candidate is bound to the hand-written quotation fixture, not "
             "generated from the document. Adoption revalidates it first."
         )
-        adopt_button = box.addButton("Adopt", QMessageBox.AcceptRole)
+        adopt_button = box.addButton("Use this version", QMessageBox.AcceptRole)
         cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
         box.setDefaultButton(cancel_button)
         box.exec()
@@ -4126,7 +4612,7 @@ def run_gui(argv: Optional[Sequence[str]] = None) -> int:
     # is truthful without a manual command, and populate the document selector
     # for the primary Document workspace. Never a provider or network call.
     window._refresh_profiles()
-    window._refresh_documents()
+    window._refresh_library()
     return app.exec()
 
 
