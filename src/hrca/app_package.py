@@ -73,9 +73,10 @@ _ALLOWED_FIELD_KEYS = frozenset(
 )
 
 # Code-owned allowlists. The handler is a *name* here, resolved by the runner
-# to a trusted, pre-installed function — never read from the package.
-ALLOWED_PACKAGE_IDS = frozenset({"quotation-rules"})
-ALLOWED_HANDLERS = frozenset({"quotation_rules.evaluate"})
+# to a trusted, pre-installed function — never read from the package. The second
+# id/handler (P4.7) is a hand-authored, benign rule variant.
+ALLOWED_PACKAGE_IDS = frozenset({"quotation-rules", "quotation-rules-alt"})
+ALLOWED_HANDLERS = frozenset({"quotation_rules.evaluate", "quotation_rules_alt.evaluate"})
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _PACKAGE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -354,6 +355,38 @@ def quotation_reference_package() -> Dict[str, Any]:
     }
 
 
+def quotation_rules_alt_package() -> Dict[str, Any]:
+    """Return the hand-written alternative quotation-rules package (P4.7).
+
+    A second reviewed, benign rule variant with the same bounded form/result
+    schema as the reference, but a distinct handler and rule constants. It is
+    authored here, never generated or document-interpreted.
+    """
+    return {
+        "schema_version": APP_PACKAGE_SCHEMA_VERSION,
+        "package_id": "quotation-rules-alt",
+        "runtime": RUNNER_IDENTITY,
+        "handler": "quotation_rules_alt.evaluate",
+        "title": "Quotation rules (alternative)",
+        "form": [
+            {"name": "subtotal", "type": TYPE_DECIMAL, "min": 0, "max": MAX_DECIMAL_VALUE, "required": True},
+            {"name": "member", "type": TYPE_BOOLEAN, "required": True},
+            {
+                "name": "region",
+                "type": TYPE_CHOICE,
+                "options": ["west", "north", "south", "east"],
+                "required": True,
+            },
+        ],
+        "result": [
+            {"name": "discount", "type": TYPE_DECIMAL},
+            {"name": "shipping_fee", "type": TYPE_DECIMAL},
+            {"name": "regional_fee", "type": TYPE_DECIMAL},
+            {"name": "total", "type": TYPE_DECIMAL},
+        ],
+    }
+
+
 __all__ = [
     "APP_PACKAGE_SCHEMA_VERSION",
     "RUNNER_IDENTITY",
@@ -382,4 +415,5 @@ __all__ = [
     "validate_form_input",
     "validate_result",
     "quotation_reference_package",
+    "quotation_rules_alt_package",
 ]

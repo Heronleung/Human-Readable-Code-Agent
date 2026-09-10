@@ -76,11 +76,57 @@ class RejectionTests(unittest.TestCase):
         self.assertEqual(error, runtime_handlers.REASON_MEMBER)
 
 
+class AltVariantAcceptanceTests(unittest.TestCase):
+    """The P4.7 alternative benign variant must agree with the frozen verifier cases."""
+
+    def _alt(self, form):
+        return runtime_handlers.quotation_rules_alt_evaluate(form)
+
+    def test_alt_member_discount(self):
+        result, error = self._alt({"subtotal": "200.00", "member": True, "region": "west"})
+        self.assertIsNone(error)
+        self.assertEqual(result["discount"], "6.00")
+        self.assertEqual(result["shipping_fee"], "0.00")
+        self.assertEqual(result["regional_fee"], "1.00")
+        self.assertEqual(result["total"], "195.00")
+
+    def test_alt_shipping_fee_below_threshold(self):
+        result, error = self._alt({"subtotal": "50.00", "member": False, "region": "west"})
+        self.assertIsNone(error)
+        self.assertEqual(result["shipping_fee"], "12.00")
+        self.assertEqual(result["regional_fee"], "1.00")
+        self.assertEqual(result["total"], "63.00")
+
+    def test_alt_free_shipping_at_threshold(self):
+        result, error = self._alt({"subtotal": "160.00", "member": False, "region": "north"})
+        self.assertIsNone(error)
+        self.assertEqual(result["shipping_fee"], "0.00")
+        self.assertEqual(result["regional_fee"], "6.00")
+        self.assertEqual(result["total"], "166.00")
+
+    def test_alt_rounding(self):
+        result, error = self._alt({"subtotal": "9.99", "member": True, "region": "west"})
+        self.assertIsNone(error)
+        self.assertEqual(result["discount"], "0.30")
+        self.assertEqual(result["total"], "22.69")
+
+    def test_alt_rejects_negative_subtotal(self):
+        result, error = self._alt({"subtotal": "-1.00", "member": False, "region": "west"})
+        self.assertIsNone(result)
+        self.assertEqual(error, runtime_handlers.REASON_SUBTOTAL)
+
+
 class RegistryTests(unittest.TestCase):
     def test_resolve_handler(self):
         self.assertIs(
             runtime_handlers.resolve_handler("quotation_rules.evaluate"),
             runtime_handlers.quotation_rules_evaluate,
+        )
+
+    def test_resolve_alt_handler(self):
+        self.assertIs(
+            runtime_handlers.resolve_handler("quotation_rules_alt.evaluate"),
+            runtime_handlers.quotation_rules_alt_evaluate,
         )
 
     def test_resolve_unknown_handler(self):

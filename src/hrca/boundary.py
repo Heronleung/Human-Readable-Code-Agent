@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, TextIO, Sequence
 from . import (
     advisory,
     app_package,
+    candidate_package,
     codemap,
     codemap_draft,
     contract,
@@ -50,6 +51,7 @@ from . import (
     provider_config,
     twin,
     twin_store,
+    verifier,
     version_store,
     workspace,
 )
@@ -311,6 +313,8 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _trash_item_result(request, session)
     elif action == contract.ACTION_LIBRARY_RESTORE:
         result = _restore_item_result(request, session)
+    elif action == contract.ACTION_CANDIDATE_PACKAGE_STAGE:
+        result = _stage_candidate_package_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -2055,6 +2059,122 @@ def _restore_item_result(request: Dict[str, Any], session: WorkspaceSession) -> 
     else:
         raise contract.ContractError("item_not_found")
     return _library_tree(session)
+
+
+# -- Candidate-package staging seam (P4.7) ----------------------------------
+#
+# ``stage_candidate_package`` is the offline validation/binding/verification
+# seam the later, separately authorized document-to-app flow will call. It never
+# executes a package, adopts a candidate, persists anything, or touches a
+# provider/credential/network/token. It returns a read-only evidence state.
+
+
+def _stage_candidate_package_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Validate, bind and independently verify a candidate package (read-only).
+
+    The candidate package is validated against the bounded code-owned contract,
+    its package must be byte-identical to a code-owned variant, its binding must
+    match the Working Document head (revision id + content fingerprint) and the
+    code-owned runtime/verifier identities, and its evidence must verify against
+    the protected verifier. A runner preflight is reported read-only; a valid
+    candidate whose runtime is unavailable is ``blocked`` (never executed).
+    """
+    document_id = _document_id(request)
+    candidate = request.get("candidate_package")
+    store = _load_document_store(session, document_id)
+    state = document.document_state(store)
+    head = state.get("head_revision") or {}
+
+    variant_id = candidate.get("variant_id") if isinstance(candidate, dict) else None
+    provenance = candidate.get("provenance") if isinstance(candidate, dict) else None
+    binding = candidate.get("binding") if isinstance(candidate, dict) else None
+    candidate_package_id = (
+        candidate.get("candidate_package_id") if isinstance(candidate, dict) else None
+    )
+
+    # 1. Structural validation (fail closed, before any binding or verification).
+    reason = candidate_package.validate_candidate_package(candidate)
+    if reason is not None:
+        return _stage_result(
+            candidate_package.STATE_INVALID, [reason], candidate_package_id,
+            provenance, variant_id, binding,
+        )
+
+    # 2. Exact binding against the current Working Document head.
+    if (
+        binding.get("document_revision_id") != head.get("revision_id")
+        or binding.get("document_fingerprint") != head.get("content_fingerprint")
+    ):
+        return _stage_result(
+            candidate_package.STATE_INVALID, ["stale"], candidate_package_id,
+            provenance, variant_id, binding,
+        )
+
+    # 3. Protected verification of the claimed evidence.
+    reason = verifier.verify(variant_id, candidate.get("evidence"))
+    if reason is not None:
+        return _stage_result(
+            candidate_package.STATE_INSUFFICIENT_EVIDENCE, [reason],
+            candidate_package_id, provenance, variant_id, binding,
+        )
+
+    # 4. Runner feasibility (read-only preflight; never an execution).
+    runner = _staging_runner(session)
+    preflight = runner.preflight()
+    if not preflight.get("available"):
+        return _stage_result(
+            candidate_package.STATE_BLOCKED,
+            [preflight.get("reason") or "runtime unavailable"],
+            candidate_package_id, provenance, variant_id, binding,
+            runtime=preflight,
+        )
+
+    return _stage_result(
+        candidate_package.provenance_state(provenance),
+        [],
+        candidate_package_id, provenance, variant_id, binding,
+        runtime=preflight,
+    )
+
+
+def _staging_runner(session: WorkspaceSession):
+    """Resolve the runner for the read-only preflight (lazily constructed)."""
+    if session.runner is not None:
+        return session.runner
+    from . import container_runner
+
+    return container_runner.ContainerRunner()
+
+
+def _stage_result(
+    state: str,
+    limitations: List[str],
+    candidate_package_id: Optional[str],
+    provenance: Optional[str],
+    variant_id: Optional[str],
+    binding: Optional[Dict[str, Any]],
+    runtime: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assemble the read-only staging result."""
+    result: Dict[str, Any] = {
+        "state": state,
+        "limitations": list(limitations),
+        "candidate_package_id": candidate_package_id,
+        "provenance": provenance,
+        "variant_id": variant_id,
+        "binding": binding,
+    }
+    if runtime is not None:
+        normalized = {
+            "available": bool(runtime.get("available")),
+            "reason": runtime.get("reason"),
+        }
+        if "checks" in runtime:
+            normalized["checks"] = runtime["checks"]
+        result["runtime"] = normalized
+    return result
 
 
 if __name__ == "__main__":

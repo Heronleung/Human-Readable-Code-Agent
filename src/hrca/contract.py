@@ -125,6 +125,12 @@ ACTION_LIBRARY_RENAME = "rename_item"
 ACTION_LIBRARY_MOVE = "move_item"
 ACTION_LIBRARY_TRASH = "trash_item"
 ACTION_LIBRARY_RESTORE = "restore_item"
+# The P4.7 candidate-package staging seam. ``stage_candidate_package`` performs
+# only offline validation, exact binding and protected verification of a bounded
+# candidate package — it never executes a package, adopts a candidate, or makes
+# a provider/credential/network/token call. It returns a read-only evidence
+# state, never a run result.
+ACTION_CANDIDATE_PACKAGE_STAGE = "stage_candidate_package"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -222,6 +228,10 @@ LIBRARY_ACTIONS = frozenset(
         ACTION_LIBRARY_RESTORE,
     }
 )
+# The P4.7 candidate-package staging protocol. Offline only: validate, bind and
+# verify a bounded candidate package; no execution, adoption, provider,
+# credential, network or token access.
+CANDIDATE_PACKAGE_ACTIONS = frozenset({ACTION_CANDIDATE_PACKAGE_STAGE})
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -235,6 +245,7 @@ ALLOWED_ACTIONS = (
     | PACKAGE_ACTIONS
     | DOCUMENT_ACTIONS
     | LIBRARY_ACTIONS
+    | CANDIDATE_PACKAGE_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -523,6 +534,7 @@ __all__ = [
     "ACTION_LIBRARY_MOVE",
     "ACTION_LIBRARY_TRASH",
     "ACTION_LIBRARY_RESTORE",
+    "ACTION_CANDIDATE_PACKAGE_STAGE",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
@@ -535,6 +547,7 @@ __all__ = [
     "PACKAGE_ACTIONS",
     "DOCUMENT_ACTIONS",
     "LIBRARY_ACTIONS",
+    "CANDIDATE_PACKAGE_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",

@@ -36,6 +36,19 @@ _REGIONAL_FEES = {
 }
 _REGIONS = frozenset(_REGIONAL_FEES)
 
+# A second hand-authored, benign rule variant (P4.7). It is reviewed here, never
+# generated or document-interpreted: a 3% member discount, free shipping at or
+# above a 150.00 threshold, a 12.00 shipping fee, and a shifted per-region fee.
+_ALT_MEMBER_DISCOUNT_RATE = Decimal("0.03")
+_ALT_SHIPPING_THRESHOLD = Decimal("150")
+_ALT_SHIPPING_FEE = Decimal("12")
+_ALT_REGIONAL_FEES = {
+    "west": Decimal("1"),
+    "north": Decimal("6"),
+    "south": Decimal("4"),
+    "east": Decimal("9"),
+}
+
 # Bounded error reasons (fixed tokens; never interpolate caller content).
 REASON_MISSING = "missing required field"
 REASON_SUBTOTAL = "subtotal must be non-negative"
@@ -117,11 +130,53 @@ def quotation_rules_evaluate(form: Dict[str, Any]) -> Tuple[Optional[Dict[str, s
     }, None
 
 
+def quotation_rules_alt_evaluate(form: Dict[str, Any]) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+    """Evaluate the alternative quotation-rules variant (P4.7, hand-authored).
+
+    Rules differ from :func:`quotation_rules_evaluate` only by their reviewed
+    constants: a 3% member discount, free shipping at or above 150.00 (else
+    12.00), and a shifted per-region fee (west 1, north 6, south 4, east 9).
+    The structure, validation and half-up rounding are identical.
+    """
+    if not isinstance(form, dict):
+        return None, REASON_MISSING
+    for key in ("subtotal", "member", "region"):
+        if key not in form:
+            return None, REASON_MISSING
+
+    subtotal = _coerce_subtotal(form["subtotal"])
+    if subtotal is None or subtotal < 0:
+        return None, REASON_SUBTOTAL
+
+    member = form["member"]
+    if not isinstance(member, bool):
+        return None, REASON_MEMBER
+
+    region = form["region"]
+    if region not in _ALT_REGIONAL_FEES:
+        return None, REASON_REGION
+
+    discount = subtotal * _ALT_MEMBER_DISCOUNT_RATE if member else Decimal("0")
+    discount = discount.quantize(_TWO, rounding=ROUND_HALF_UP)
+    base = subtotal - discount
+    shipping_fee = Decimal("0") if base >= _ALT_SHIPPING_THRESHOLD else _ALT_SHIPPING_FEE
+    regional_fee = _ALT_REGIONAL_FEES[region]
+    total = subtotal - discount + shipping_fee + regional_fee
+
+    return {
+        "discount": _money_str(discount),
+        "shipping_fee": _money_str(shipping_fee),
+        "regional_fee": _money_str(regional_fee),
+        "total": _money_str(total),
+    }, None
+
+
 # The code-owned handler registry the in-image ``runner_main`` resolves a
 # package ``handler`` against. Adding a handler is a separate, gated change
 # mirrored in :data:`hrca.app_package.ALLOWED_HANDLERS`.
 HANDLERS = {
     "quotation_rules.evaluate": quotation_rules_evaluate,
+    "quotation_rules_alt.evaluate": quotation_rules_alt_evaluate,
 }
 
 
@@ -136,6 +191,7 @@ __all__ = [
     "REASON_MEMBER",
     "REASON_REGION",
     "quotation_rules_evaluate",
+    "quotation_rules_alt_evaluate",
     "HANDLERS",
     "resolve_handler",
 ]

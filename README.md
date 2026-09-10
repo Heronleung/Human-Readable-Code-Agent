@@ -356,6 +356,43 @@ form UI, and run only through an isolated container runner.
 The container image is defined (but not built here) at `packaging/runner/`;
 building it requires a running Docker daemon.
 
+## Candidate-package readiness (P4.7)
+
+The offline safety and correctness seams needed before the first real
+document-to-app generation flow — **not** a provider-generation task. It
+validates, binds, stages and independently verifies a bounded candidate package
+that a later, separately authorized flow could originate, and it fails closed on
+arbitrary code, dangerous controls, evidence mismatch and verifier tampering.
+
+- **Bounded candidate-package contract** (`hrca.candidate_package`). A versioned,
+  data-only record that wraps a `package` manifest (which must be byte-identical
+  to one of the code-owned variants), a `provenance` token, an exact `binding`
+  (Working Document revision id + content fingerprint + runtime + protected
+  verifier identity), and an `evidence` list. Any `script`/`code`/`html`/
+  `import`/`path`/`command`/`url`/`network`/`install`/`dependencies`/`mount`/
+  `env`/`dockerfile`/`image`/`entrypoint`/`args` field is rejected as an unknown
+  key; the renderer schema is code-owned, so a candidate cannot alter form/result
+  fields, handler or rules.
+- **Protected verifier** (`hrca.verifier`). A code-owned offline oracle with a
+  fixed identity and two reviewed, hand-authored benign rule variants (the
+  reference `quotation-rules` and the alternative `quotation-rules-alt`), each
+  pinned by frozen regression cases. `verify` compares a candidate's claimed
+  evidence to the frozen expectations — missing, extra, malformed or mismatched
+  evidence is refused — and it never executes a package or imports the in-image
+  handler (no host fallback). The expectations cannot be edited by candidate
+  input.
+- **Staging seam** (`stage_candidate_package`). Validate → bind → verify →
+  report a read-only evidence state (`deterministic_fixture` /
+  `manually_validated_variant` / `valid_candidate` / `invalid` / `blocked` /
+  `insufficient_evidence`). It never executes a package, adopts a candidate,
+  persists anything, or makes a provider/credential/network/token call; a valid
+  candidate whose runtime is unavailable is reported `blocked`.
+- **Honest runner feasibility.** The isolated runner executes only the baked-in,
+  code-owned handlers resolved from `hrca.runtime_handlers`; it cannot execute
+  arbitrary or provider-produced code. The runner image is not built in this
+  environment (no Docker daemon in the WSL distro), so validation/staging is
+  exercised offline and the runtime is reported `runtime_unavailable`.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:

@@ -51,7 +51,8 @@ _PROVIDER_SEAM = frozenset(
     {"deepseek", "credential_store", "credential_store_win",
      "credential_sheet_win", "provider_config", "provider_cli", "credential_host",
      "deepseek_transport", "advisory",
-     "app_package", "runner_broker", "container_runner", "runtime_handlers"}
+     "app_package", "runner_broker", "container_runner", "runtime_handlers",
+     "verifier", "candidate_package"}
 )
 
 # Network primitives a client must never import: only the backend transport may
@@ -199,6 +200,18 @@ class ClientArchitectureTests(unittest.TestCase):
         # The document domain and its store are offline: they never open a
         # socket, so a frozen save/adopt loop stays network-free.
         for name in ("document", "version_store"):
+            path = os.path.join(_SRC, name + ".py")
+            imported = _imported_top_level_names(path)
+            self.assertTrue(
+                imported.isdisjoint(_NETWORK_MODULES),
+                f"hrca.{name} imports network primitives: "
+                f"{sorted(imported & _NETWORK_MODULES)}",
+            )
+
+    def test_candidate_package_modules_do_not_import_network(self):
+        # The candidate-package contract and protected verifier are offline:
+        # they never open a socket, so validation/staging stays network-free.
+        for name in ("candidate_package", "verifier"):
             path = os.path.join(_SRC, name + ".py")
             imported = _imported_top_level_names(path)
             self.assertTrue(

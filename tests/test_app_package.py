@@ -27,6 +27,16 @@ class ReferencePackageTests(unittest.TestCase):
         result_names = {f["name"] for f in package["result"]}
         self.assertEqual(result_names, {"discount", "shipping_fee", "regional_fee", "total"})
 
+    def test_alt_package_is_valid(self):
+        self.assertIsNone(
+            app_package.validate_package(app_package.quotation_rules_alt_package())
+        )
+
+    def test_alt_package_is_a_distinct_variant(self):
+        package = app_package.quotation_rules_alt_package()
+        self.assertEqual(package["package_id"], "quotation-rules-alt")
+        self.assertEqual(package["handler"], "quotation_rules_alt.evaluate")
+
 
 class ValidatorTests(unittest.TestCase):
     def test_rejects_non_mapping(self):

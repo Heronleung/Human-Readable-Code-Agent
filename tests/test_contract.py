@@ -51,9 +51,11 @@ from hrca.contract import (
     ACTION_LIBRARY_MOVE,
     ACTION_LIBRARY_TRASH,
     ACTION_LIBRARY_RESTORE,
+    ACTION_CANDIDATE_PACKAGE_STAGE,
     PACKAGE_ACTIONS,
     DOCUMENT_ACTIONS,
     LIBRARY_ACTIONS,
+    CANDIDATE_PACKAGE_ACTIONS,
     ALLOWED_ACTIONS,
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
@@ -127,7 +129,8 @@ class AllowedActionTests(unittest.TestCase):
             | ADVISORY_ACTIONS
             | PACKAGE_ACTIONS
             | DOCUMENT_ACTIONS
-            | LIBRARY_ACTIONS,
+            | LIBRARY_ACTIONS
+            | CANDIDATE_PACKAGE_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -356,6 +359,23 @@ class AllowedActionTests(unittest.TestCase):
             self.assertNotIn(action, ADVISORY_ACTIONS)
             self.assertNotIn(action, PACKAGE_ACTIONS)
             self.assertNotIn(action, DOCUMENT_ACTIONS)
+
+    def test_candidate_package_actions_are_allowlisted(self):
+        self.assertEqual(
+            CANDIDATE_PACKAGE_ACTIONS,
+            frozenset({ACTION_CANDIDATE_PACKAGE_STAGE}),
+        )
+
+    def test_candidate_package_actions_are_read_only(self):
+        # Staging validates/binds/verifies offline; it never executes a package,
+        # adopts a candidate, or touches source/Git/provider/credential/network.
+        for action in CANDIDATE_PACKAGE_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, PACKAGE_ACTIONS)
+            self.assertNotIn(action, DOCUMENT_ACTIONS)
+            self.assertNotIn(action, LIBRARY_ACTIONS)
+            self.assertNotIn(action, ADVISORY_ACTIONS)
 
     def test_task_actions_exclude_mutators(self):
         self.assertTrue(READ_ONLY_TASK_ACTIONS <= ALLOWED_ACTIONS)
