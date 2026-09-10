@@ -191,7 +191,7 @@ from .client_core import (
     format_version_list,
     build_preview_request,
     format_preview,
-    preview_kind_label,
+    preview_badge,
     preview_state_label,
     preview_state_message,
 )
@@ -3309,16 +3309,19 @@ class MainWindow(QMainWindow):
 
         self._set_preview_state_badge(state, kind)
         if self._preview_body is not None:
-            self._preview_body.setPlainText(format_preview(preview))
+            text = format_preview(preview)
+            if self._document_dirty:
+                text += (
+                    "\n\nNote: this preview reflects only the last saved "
+                    "revision. Your unsaved edits are not represented here."
+                )
+            self._preview_body.setPlainText(text)
 
     def _set_preview_state_badge(self, state: str, kind: Optional[str]) -> None:
         """Set the Preview state badge word + semantic colour (never colour alone)."""
         if self._preview_state_label is None:
             return
-        kind_word = preview_kind_label(kind) if kind else ""
-        state_word = preview_state_label(state)
-        text = f"{kind_word} — {state_word}" if kind_word else state_word
-        self._preview_state_label.setText(text)
+        self._preview_state_label.setText(preview_badge(state, kind))
         token = _PREVIEW_STATE_TOKEN.get(state, style.STATE_NEUTRAL)
         self._preview_state_label.setStyleSheet(style.state_chip_style(self._palette, token))
         self._preview_state_label.setToolTip(preview_state_message(state))
@@ -3634,10 +3637,11 @@ class MainWindow(QMainWindow):
         self._refresh_preview()
 
     def _populate_versions_list(self) -> None:
-        """Rebuild the Versions drawer rows: one human label + Restore per version.
+        """Rebuild the Versions drawer: revision-aware accepted-app rows.
 
-        Versions are shown with 1-based human labels (never the opaque version id)
-        plus a ``current`` / ``restored`` marker, each with its own Restore action.
+        Each row shows the accepted app and the document revision it accepted
+        (never a raw version id). The empty state explains that Save stores
+        requirements but does not adopt an app.
         """
         layout = self._versions_layout
         if layout is None:
@@ -3649,17 +3653,26 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
         if not self._document_versions:
-            empty = QLabel("No accepted versions yet.")
+            empty = QLabel(
+                "No accepted app version yet.\n\n"
+                "Save stores your requirements; it does not adopt an app. "
+                "To make an accepted app, create a preview and then adopt it."
+            )
             empty.setObjectName("secondary")
             empty.setStyleSheet(style.secondary_text_style(self._palette))
             empty.setWordWrap(True)
+            empty.setAccessibleName("No accepted app version")
             layout.addWidget(empty)
             layout.addStretch(1)
             return
 
         for index, version in enumerate(self._document_versions, start=1):
             version_id = version.get("version_id")
-            label_text = f"Version {index}"
+            revision_number = version.get("document_revision_number")
+            if revision_number is not None:
+                label_text = f"Accepted app {index} — from revision {revision_number}"
+            else:
+                label_text = f"Accepted app {index}"
             if version_id == self._current_accepted_version_id:
                 label_text += " (current)"
             if version.get("restore_of"):

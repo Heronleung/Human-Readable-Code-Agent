@@ -20,6 +20,7 @@ from hrca.client_core import (
     format_document_state,
     format_preview,
     format_version_list,
+    preview_badge,
     preview_kind_label,
     preview_state_label,
 )
@@ -136,17 +137,27 @@ class PreviewVocabularyTests(unittest.TestCase):
 
     def test_state_and_kind_labels(self):
         self.assertEqual(preview_state_label("current"), "Current")
-        self.assertEqual(preview_state_label("stale"), "Stale")
+        self.assertEqual(preview_state_label("stale"), "Out of date")
         self.assertEqual(preview_state_label("unknown"), "unknown")
         self.assertEqual(preview_kind_label("candidate"), "Candidate")
         self.assertEqual(preview_kind_label("accepted"), "Accepted Version")
+
+    def test_preview_badge_words(self):
+        self.assertEqual(preview_badge("current", "candidate"), "Candidate — Current")
+        self.assertEqual(preview_badge("current", "accepted"), "Accepted app — Current")
+        self.assertEqual(preview_badge("stale", "candidate"), "Candidate — Out of date")
+        self.assertEqual(
+            preview_badge("stale", "accepted"), "Accepted app — Newer requirements"
+        )
+        self.assertEqual(preview_badge("no_candidate"), "No preview yet")
 
     def _preview(self):
         return {
             "document": {"document_id": "doc:d1", "name": "requirements.md",
                           "kind": "md", "revision_number": 1},
             "state": "current",
-            "binding": {"kind": "candidate", "record_id": "cand:c1", "adopted": False},
+            "binding": {"kind": "candidate", "adopted": False,
+                         "document_revision_number": 1},
             "provenance": "deterministic_fixture",
             "limitation": "Bound to the hand-written quotation fixture only; "
                           "no document-to-code interpretation occurred.",
@@ -175,7 +186,7 @@ class PreviewVocabularyTests(unittest.TestCase):
         self.assertIn("requirements.md", text)
         self.assertIn("revision 1", text)
         self.assertIn("Candidate", text)
-        self.assertIn("Current", text)
+        self.assertIn("not adopted", text)
         self.assertIn("subtotal", text)
         self.assertIn("discount", text)
         self.assertIn("Package executed: no", text)
@@ -184,6 +195,19 @@ class PreviewVocabularyTests(unittest.TestCase):
     def test_format_preview_never_shows_raw_id(self):
         text = format_preview(self._preview())
         self.assertNotIn("cand:c1", text)
+
+    def test_format_preview_empty_states_have_no_fixture(self):
+        no_candidate = {
+            "document": {"document_id": "doc:d1", "name": "requirements.md",
+                          "kind": "md", "revision_number": 1},
+            "state": "no_candidate",
+            "binding": None,
+        }
+        text = format_preview(no_candidate)
+        self.assertIn("no app preview yet", text)
+        self.assertNotIn("subtotal", text)
+        self.assertNotIn("quotation", text)
+        self.assertNotIn("Evidence", text)
 
     def test_format_preview_empty(self):
         self.assertEqual(format_preview({}), "")

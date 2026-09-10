@@ -54,8 +54,8 @@ def _preview(state="current", name="requirements.md", kind="candidate"):
         "document": {"document_id": "doc:d1", "name": name, "kind": "md",
                       "revision_number": 1, "revision_id": "rev:1"},
         "state": state,
-        "binding": {"kind": kind, "record_id": "cand:c1",
-                     "adopted": kind == "accepted"},
+        "binding": {"kind": kind, "adopted": kind == "accepted",
+                     "document_revision_number": 1},
         "provenance": "deterministic_fixture",
         "limitation": "Bound to the hand-written quotation fixture only; "
                       "no document-to-code interpretation occurred.",
@@ -165,8 +165,16 @@ class DocumentSurfaceTests(unittest.TestCase):
         state["current_accepted_version_id"] = "ver:2"
         self._open_state(state)
         labels = [l.text() for l in self.window._versions_list.findChildren(QLabel)]
-        self.assertIn("Version 1", labels)
-        self.assertIn("Version 2 (current) (restored)", labels)
+        self.assertIn("Accepted app 1", labels)
+        self.assertIn("Accepted app 2 (current) (restored)", labels)
+
+    def test_versions_empty_state_explains_save_not_adoption(self):
+        self.window._document_versions = []
+        self.window._populate_versions_list()
+        labels = [l.text() for l in self.window._versions_list.findChildren(QLabel)]
+        text = "\n".join(labels)
+        self.assertIn("does not adopt an app", text)
+        self.assertIn("create a preview and then adopt it", text)
 
     def test_failure_maps_to_bounded_message(self):
         self.window._document_id = "doc:d1"
@@ -304,7 +312,7 @@ class PreviewSurfaceTests(unittest.TestCase):
 
     def test_render_preview_distinguishes_accepted_version(self):
         self.window._render_preview(_preview(state="current", kind="accepted"))
-        self.assertIn("Accepted Version", self.window._preview_state_label.text())
+        self.assertIn("Accepted app", self.window._preview_state_label.text())
 
     def test_refresh_preview_dispatches_for_open_document(self):
         fake = _FakeSend()
@@ -340,6 +348,14 @@ class PreviewSurfaceTests(unittest.TestCase):
         self.window._on_preview_error("document_not_found")
         self.assertEqual(self.window._preview_document_label.text(), "")
         self.assertIn("No document", self.window._preview_state_label.text())
+
+    def test_unsaved_text_notes_preview_is_saved_only(self):
+        self.window._send = _FakeSend()
+        self.window._apply_document_state(_sample_state())
+        self.window._document_dirty = True
+        self.window._render_preview(_preview(state="current"))
+        body = self.window._preview_body.toPlainText()
+        self.assertIn("unsaved edits are not represented", body)
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")

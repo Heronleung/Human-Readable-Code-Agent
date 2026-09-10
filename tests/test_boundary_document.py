@@ -316,6 +316,29 @@ class BoundaryDocumentTests(unittest.TestCase):
         self.assertTrue(env["ok"])
         self.assertEqual(env["result"]["state"], "no_candidate")
 
+    def test_preview_no_candidate_has_no_fixture_detail(self):
+        doc_id = self._doc_id(self._create())
+        self._do(contract.ACTION_DOCUMENT_SAVE, document_id=doc_id, content="v1", base_revision_id=None)
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=doc_id)
+        preview = env["result"]
+        self.assertIsNone(preview["package"])
+        self.assertIsNone(preview["evidence"])
+        self.assertIsNone(preview["provenance"])
+
+    def test_preview_accepted_with_newer_requirements_is_stale(self):
+        doc_id = self._doc_id(self._create())
+        self._do(contract.ACTION_DOCUMENT_SAVE, document_id=doc_id, content="v1", base_revision_id=None)
+        created = self._do(contract.ACTION_DOCUMENT_CREATE_CANDIDATE, document_id=doc_id)
+        candidate_id = created["result"]["candidate"]["candidate_id"]
+        self._do(contract.ACTION_DOCUMENT_ADOPT, document_id=doc_id, candidate_id=candidate_id)
+        head = self._do(contract.ACTION_DOCUMENT_OPEN, document_id=doc_id)["result"]["head_revision"]["revision_id"]
+        self._do(contract.ACTION_DOCUMENT_SAVE, document_id=doc_id, content="v2", base_revision_id=head)
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=doc_id)
+        preview = env["result"]
+        self.assertEqual(preview["state"], "stale")
+        self.assertEqual(preview["binding"]["kind"], "accepted")
+        self.assertIsNotNone(preview["package"])
+
     def test_preview_missing_document(self):
         env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id="doc:missing")
         self.assertFalse(env["ok"])

@@ -139,6 +139,17 @@ by name; and after a successful save a single contextual **Create preview**
 action appears (hidden while dirty or pending) that runs only the existing
 deterministic candidate path.
 
+As of **P4.5b**, Preview and Versions are strictly document-bound and stateful.
+A document with no Candidate and no Accepted Version shows a calm empty state —
+no global quotation-fixture schema, package metadata or validation wording; the
+fixture's form/result/business-rule detail appears only for a stored
+Candidate/Accepted record that validates its binding to the quotation package.
+Candidate, current app, accepted app with newer (unapplied) requirements, unsaved
+text, out-of-date, invalid and insufficient-evidence are distinct states; the
+badge and body use plain language, never raw ids. Versions distinguishes Save
+(storing requirements) from adoption and shows each accepted app with the
+document revision it accepted.
+
 All visual values live in the desktop-only design system `hrca/style.py` —
 light and dark palettes (auto-selected from the operating-system appearance),
 a 4 px spacing scale, corner radii, typography, component geometry, and a Qt

@@ -1551,9 +1551,9 @@ def format_version_list(versions: List[Dict[str, Any]], current_id: Optional[str
 
 PREVIEW_STATE_LABELS = {
     "no_document": "No document",
-    "no_candidate": "No candidate",
+    "no_candidate": "No preview yet",
     "current": "Current",
-    "stale": "Stale",
+    "stale": "Out of date",
     "invalid": "Invalid",
     "insufficient_evidence": "Insufficient evidence",
 }
@@ -1568,9 +1568,9 @@ PREVIEW_KIND_LABELS = {
 # protocol token.
 PREVIEW_STATE_MESSAGES = {
     "no_document": "Save the document to see a preview.",
-    "no_candidate": "Save the document and create a candidate to see a preview.",
+    "no_candidate": "Save the document and choose \"Create preview\" to create a demonstration preview.",
     "current": "This preview is bound to the current document revision.",
-    "stale": "The document changed after this was created. Create a new candidate.",
+    "stale": "The document changed after this was created.",
     "invalid": "The candidate record is invalid.",
     "insufficient_evidence": "The candidate's evidence no longer matches the current package.",
 }
@@ -1589,6 +1589,27 @@ def preview_kind_label(kind: str) -> str:
 def preview_state_message(state: str) -> str:
     """Return the user-facing next-step message for a preview ``state``."""
     return PREVIEW_STATE_MESSAGES.get(state, "")
+
+
+def preview_badge(state: str, kind: Optional[str] = None) -> str:
+    """Return the one-line badge word for a preview state + binding kind.
+
+    Accepted versions read as "Accepted app"; a stale accepted app with newer
+    saved requirements reads as "Newer requirements" rather than "Out of date".
+    """
+    if kind == "accepted":
+        kind_word = "Accepted app"
+    elif kind == "candidate":
+        kind_word = "Candidate"
+    else:
+        kind_word = ""
+    if state == "stale" and kind == "accepted":
+        state_word = "Newer requirements"
+    elif state == "stale":
+        state_word = "Out of date"
+    else:
+        state_word = preview_state_label(state)
+    return f"{kind_word} — {state_word}" if kind_word else state_word
 
 
 def build_preview_request(correlation_id: str, document_id: str) -> Dict[str, Any]:
@@ -1628,85 +1649,140 @@ def _preview_yes_no(value: Any) -> str:
 
 
 def format_preview(preview: Dict[str, Any]) -> str:
-    """Render a version-bound preview as deterministic plain text (P4.5).
+    """Render a version-bound preview as deterministic plain text (P4.5b).
 
-    Shows the document identity/revision, the Candidate/Accepted binding and its
-    state, the provenance, the fixed form/result fields, a fixed business-rule
-    summary, and the validation-evidence summary with its limits. It never shows
-    a raw candidate/version id or the document content, and never implies a
-    package was executed.
+    Empty states (no document / no candidate) show only what exists and one next
+    step — never global fixture schema or evidence. Fixture form/result/
+    business-rule detail is shown only for a stored Candidate/Accepted record
+    that validates its binding to the quotation package (current or out-of-date),
+    plainly labelled as a deterministic demonstration fixture. It never shows a
+    raw id or the document content, and never implies a package was executed.
     """
     if not preview:
         return ""
     doc = preview.get("document") or {}
-    pkg = preview.get("package") or {}
+    state = str(preview.get("state", "unknown"))
     binding = preview.get("binding")
+    kind = binding.get("kind") if binding else None
+
+    name = doc.get("name") or "Untitled"
+    head_number = doc.get("revision_number", 0)
+
+    if state == "no_document":
+        return "\n".join(
+            [
+                f"Document: {name}",
+                "",
+                "No saved revision yet.",
+                "Save the document to see a preview.",
+            ]
+        )
+    if state == "no_candidate":
+        return "\n".join(
+            [
+                f"Document: {name} — revision {head_number}",
+                "",
+                "This document has a saved requirement, but no app preview yet.",
+                "Return to Document and choose \"Create preview\" to create a "
+                "demonstration preview.",
+            ]
+        )
+    if state == "invalid":
+        return "\n".join(
+            [
+                f"Document: {name} — revision {head_number}",
+                "",
+                "The candidate record is invalid and cannot be shown.",
+                "Create a new preview to replace it.",
+            ]
+        )
+    if state == "insufficient_evidence":
+        return "\n".join(
+            [
+                f"Document: {name} — revision {head_number}",
+                "",
+                "The candidate's evidence no longer matches the current "
+                "quotation package.",
+                "Create a new preview to replace it.",
+            ]
+        )
+
+    # current / out-of-date with a validated binding + package detail.
+    bound_number = (binding or {}).get("document_revision_number")
+    lines: List[str] = [f"Document: {name} — revision {head_number}", ""]
+
+    if kind == "accepted":
+        if state == "stale":
+            lines += [
+                f"Current app: accepted at revision {bound_number}.",
+                f"The document now has newer requirements at revision "
+                f"{head_number}, not yet applied.",
+            ]
+        else:
+            lines += [f"Current app: accepted at revision {bound_number}."]
+    else:  # candidate
+        if state == "stale":
+            lines += [
+                f"Candidate bound to revision {bound_number} (not adopted).",
+                f"The document is now at revision {head_number}. Create a new "
+                "candidate to reflect the latest requirements.",
+            ]
+        else:
+            lines += [f"Candidate bound to revision {bound_number} (not adopted)."]
+
+    lines += _fixture_lines(preview)
+    return "\n".join(lines)
+
+
+def _fixture_lines(preview: Dict[str, Any]) -> List[str]:
+    """Render the deterministic-fixture detail for a bound preview record."""
+    pkg = preview.get("package") or {}
     evidence = preview.get("evidence") or {}
-    state = preview_state_label(str(preview.get("state", "unknown")))
-
-    lines: List[str] = [
-        f"Document: {doc.get('name') or 'Untitled'} — "
-        f"revision {doc.get('revision_number', 0)}",
-    ]
-
-    if binding:
-        kind = preview_kind_label(str(binding.get("kind", "unknown")))
-        lines.append(f"Binding: {kind} ({state})")
-    else:
-        lines.append(f"State: {state}")
+    limitation = preview.get("limitation")
+    lines: List[str] = []
 
     if preview.get("provenance"):
-        lines.append("")
-        lines.append("Provenance: deterministic demonstration fixture.")
+        lines += [
+            "",
+            "Provenance: deterministic demonstration fixture — it did not "
+            "interpret the document or generate code.",
+        ]
 
-    lines.append("")
-    lines.append(
+    lines += [
+        "",
         f"{pkg.get('title') or 'Package'} — package {pkg.get('package_id', 'unknown')}, "
         f"schema {pkg.get('schema_version', 'unknown')}, "
-        f"runtime {pkg.get('runtime_identity', 'unknown')}"
-    )
-
-    lines.append("")
-    lines.append("Inputs:")
+        f"runtime {pkg.get('runtime_identity', 'unknown')}",
+        "",
+        "Inputs:",
+    ]
     for field in pkg.get("form") or []:
         lines.append(f"  - {_preview_field_line(field)}")
-
-    lines.append("")
-    lines.append("Results:")
+    lines += ["", "Results:"]
     for field in pkg.get("result") or []:
         lines.append(f"  - {_preview_field_line(field)}")
-
-    lines.append("")
-    lines.append(
+    lines += [
+        "",
         "Business rules: 5% member discount, free shipping at or above 100.00, "
         "a per-region fee, non-negative subtotal, and half-up rounding to two "
-        "decimal places."
-    )
-
-    lines.append("")
-    lines.append("Evidence:")
-    lines.append(
-        f"  - Package validates: {_preview_yes_no(evidence.get('package_validates'))}"
-    )
-    lines.append(
-        f"  - Package matches: {_preview_yes_no(evidence.get('package_matches'))}"
-    )
-    lines.append(
-        f"  - Runtime matches: {_preview_yes_no(evidence.get('runtime_matches'))}"
-    )
-    lines.append(
-        "  - Validation identity matches: "
-        f"{_preview_yes_no(evidence.get('validation_matches'))}"
-    )
-    lines.append("  - Package executed: no")
-
-    limitation = preview.get("limitation")
+        "decimal places.",
+        "",
+        "Evidence:",
+        f"  - Package validates: {_preview_yes_no(evidence.get('package_validates'))}",
+        f"  - Package matches: {_preview_yes_no(evidence.get('package_matches'))}",
+        f"  - Runtime matches: {_preview_yes_no(evidence.get('runtime_matches'))}",
+        f"  - Validation identity matches: "
+        f"{_preview_yes_no(evidence.get('validation_matches'))}",
+        "  - Package executed: no",
+    ]
     if limitation:
-        lines.append("")
-        lines.append("Limits:")
-        lines.append(f"  - {limitation}")
-        lines.append("  - Result fields are the declared schema, not live output.")
-    return "\n".join(lines)
+        lines += [
+            "",
+            "Limits:",
+            f"  - {limitation}",
+            "  - Result fields are the declared schema, not live output.",
+        ]
+    return lines
 
 
 __all__ = [
@@ -1830,6 +1906,7 @@ __all__ = [
     "preview_state_label",
     "preview_kind_label",
     "preview_state_message",
+    "preview_badge",
     "build_preview_request",
     "format_preview",
     "default_fixture_root",

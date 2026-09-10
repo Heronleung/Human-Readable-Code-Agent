@@ -343,11 +343,12 @@ class PreviewStateTests(unittest.TestCase):
         self.assertIsNone(preview["binding"])
 
     def test_current_candidate(self):
-        store, candidate = self._candidate_store()
+        store, _ = self._candidate_store()
         preview = self._preview(store)
         self.assertEqual(preview["state"], document.PREVIEW_STATE_CURRENT)
         self.assertEqual(preview["binding"]["kind"], document.PREVIEW_KIND_CANDIDATE)
-        self.assertEqual(preview["binding"]["record_id"], candidate["candidate_id"])
+        self.assertFalse(preview["binding"]["adopted"])
+        self.assertEqual(preview["binding"]["document_revision_number"], 1)
         self.assertEqual(preview["provenance"], document.SOURCE_DETERMINISTIC_FIXTURE)
         self.assertIn("no document-to-code", preview["limitation"])
 
@@ -369,14 +370,14 @@ class PreviewStateTests(unittest.TestCase):
 
     def test_accepted_version_is_distinct(self):
         store, candidate = self._candidate_store()
-        store, version = document.adopt_candidate(
+        store, _version = document.adopt_candidate(
             store, candidate["candidate_id"], _PACKAGE, _RUNTIME,
             document.VALIDATION_IDENTITY, _NOW,
         )
         preview = self._preview(store)
         self.assertEqual(preview["binding"]["kind"], document.PREVIEW_KIND_ACCEPTED)
-        self.assertEqual(preview["binding"]["record_id"], version["version_id"])
         self.assertTrue(preview["binding"]["adopted"])
+        self.assertEqual(preview["binding"]["document_revision_number"], 1)
         self.assertEqual(preview["state"], document.PREVIEW_STATE_CURRENT)
 
     def test_accepted_version_stale_after_edit(self):
@@ -409,6 +410,53 @@ class PreviewStateTests(unittest.TestCase):
         )
         self.assertTrue(preview["evidence"]["package_validates"])
         self.assertFalse(preview["evidence"]["execution_performed"])
+
+    def test_no_candidate_has_no_fixture_detail(self):
+        preview = self._preview(_store_with_revision())
+        self.assertIsNone(preview["package"])
+        self.assertIsNone(preview["evidence"])
+        self.assertIsNone(preview["provenance"])
+        self.assertIsNone(preview["limitation"])
+
+    def test_no_document_has_no_fixture_detail(self):
+        store = document.new_document_store("doc:d1", "requirements.md", document.KIND_MARKDOWN, _NOW)
+        preview = self._preview(store)
+        self.assertIsNone(preview["package"])
+        self.assertIsNone(preview["evidence"])
+
+    def test_invalid_has_no_fixture_detail(self):
+        store, _ = self._candidate_store()
+        store["candidates"][-1]["document_fingerprint"] = "0" * 64
+        preview = self._preview(store)
+        self.assertEqual(preview["state"], document.PREVIEW_STATE_INVALID)
+        self.assertIsNone(preview["package"])
+        self.assertIsNone(preview["evidence"])
+
+    def test_insufficient_evidence_has_no_fixture_detail(self):
+        store, _ = self._candidate_store()
+        preview = document.preview_state(store, dict(_PACKAGE, package_id="other-package"))
+        self.assertEqual(preview["state"], document.PREVIEW_STATE_INSUFFICIENT_EVIDENCE)
+        self.assertIsNone(preview["package"])
+        self.assertIsNone(preview["evidence"])
+
+    def test_stale_has_fixture_and_bound_revision(self):
+        store, _ = self._candidate_store()
+        store, _ = document.save_revision(store, "changed", store["head_revision_id"], _NOW)
+        preview = self._preview(store)
+        self.assertEqual(preview["state"], document.PREVIEW_STATE_STALE)
+        self.assertIsNotNone(preview["package"])
+        # Still bound to revision 1 while the head is revision 2.
+        self.assertEqual(preview["binding"]["document_revision_number"], 1)
+        self.assertEqual(preview["document"]["revision_number"], 2)
+
+    def test_binding_has_no_raw_ids(self):
+        store, _ = self._candidate_store()
+        preview = self._preview(store)
+        binding = preview["binding"]
+        self.assertNotIn("record_id", binding)
+        self.assertNotIn("document_revision_id", binding)
+        self.assertNotIn("document_fingerprint", binding)
+        self.assertNotIn("package_id", binding)
 
 
 if __name__ == "__main__":
