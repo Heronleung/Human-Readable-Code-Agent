@@ -1317,9 +1317,18 @@ def format_delta_disclosure(disclosure: Dict[str, Any]) -> str:
         return ""
     caps = disclosure.get("caps") or {}
     reservation = disclosure.get("reservation") or {}
-    lines = [
-        f"Provider: {disclosure.get('provider_id', 'unknown')}",
-        f"Model: {disclosure.get('model', 'unknown')}",
+    model = disclosure.get("model") or {}
+    lines = [f"Provider: {disclosure.get('provider_id', 'unknown')}"]
+    if isinstance(model, dict):
+        lines += [
+            f"Requested model: {model.get('requested_id', 'unknown')}",
+            f"Canonical model: {model.get('canonical_id', 'unknown')}",
+            f"Effective model: {model.get('effective_version', 'unknown')}",
+            f"Model facts verified: {model.get('verified_at', 'unknown')}",
+        ]
+    else:
+        lines.append(f"Model: {model or 'unknown'}")
+    lines += [
         "One attempt: yes — no retry, no paid repair",
         "",
         "Disclosure — the items below will be sent to the provider:",
@@ -1351,6 +1360,9 @@ def format_delta_disclosure(disclosure: Dict[str, Any]) -> str:
     lines.append(str(disclosure.get("policy_warning", "")))
     lines.append("")
     lines.append(str(disclosure.get("account_cap_statement", "")))
+    if isinstance(model, dict):
+        lines.append("")
+        lines.append(str(model.get("retirement_warning", "")))
     return "\n".join(lines)
 
 

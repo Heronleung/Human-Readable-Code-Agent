@@ -2261,7 +2261,7 @@ class ProviderReadinessGuiTests(unittest.TestCase):
             {
                 "state": "configured",
                 "provider_id": "deepseek",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "profiles": [],
                 "active_profile_id": None,
                 "credential_present": True,
@@ -2282,7 +2282,7 @@ class ProviderReadinessGuiTests(unittest.TestCase):
             {
                 "state": "missing_credential",
                 "provider_id": "deepseek",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "profiles": [],
                 "active_profile_id": None,
                 "credential_present": False,
@@ -2308,7 +2308,7 @@ class ProviderReadinessGuiTests(unittest.TestCase):
             {
                 "state": "configured",
                 "provider_id": "deepseek",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "profiles": [],
                 "active_profile_id": None,
                 "credential_present": True,
@@ -2320,7 +2320,7 @@ class ProviderReadinessGuiTests(unittest.TestCase):
             }
         )
         self.assertIn("DeepSeek is configured locally", window._provider_status_label.text())
-        self.assertEqual(window._provider_model, "deepseek-v4-flash")
+        self.assertEqual(window._provider_model, "deepseek-flash")
         self.assertTrue(window._provider_credential_present)
 
     def test_profiles_error_sets_provider_status_failed(self):
@@ -2450,10 +2450,10 @@ class SettingsDialogTests(unittest.TestCase):
     def test_provider_page_shows_fixed_identity_and_model(self):
         window = MainWindow()
         self._dialog(window)
-        window._provider_model = "deepseek-v4-flash"
+        window._provider_model = "deepseek-flash"
         window._refresh_settings_dialog()
         self.assertEqual(window._settings_provider_value.text(), "DeepSeek")
-        self.assertEqual(window._settings_model_value.text(), "deepseek-v4-flash")
+        self.assertEqual(window._settings_model_value.text(), "deepseek-flash")
 
     def test_active_selector_is_present_and_accessible(self):
         window = MainWindow()
@@ -2677,7 +2677,7 @@ class SettingsDialogTests(unittest.TestCase):
             {
                 "state": "configured",
                 "provider_id": "deepseek",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "profiles": [self._profile("a" * 32, "Work")],
                 "active_profile_id": "a" * 32,
                 "credential_present": True,

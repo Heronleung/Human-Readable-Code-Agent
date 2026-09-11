@@ -80,7 +80,7 @@ def _result_for(payload):
         task_id="delta:integration",
         content=rule_delta_interpret.dumps(payload),
         provider="deepseek",
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         structured_payload=payload,
         usage=provider.ProviderUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )

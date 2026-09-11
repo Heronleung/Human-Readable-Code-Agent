@@ -123,7 +123,16 @@ def _state(document_id="doc:d1", name="requirements.md", content="Members receiv
 def _disclosure():
     return {
         "provider_id": "deepseek",
-        "model": "deepseek-v4-flash",
+        "model": {
+            "requested_id": "deepseek-flash",
+            "canonical_id": "deepseek-flash",
+            "effective_version": "DeepSeek-V4.1-Flash",
+            "compatibility_aliases": ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"],
+            "compatibility_alias_status": "retired_routes_to_v4_1_flash",
+            "verified_at": "2026-09-12",
+            "sources": ["https://api-docs.deepseek.com/quick_start/pricing"],
+            "retirement_warning": "deepseek-v4-flash is a retired compatibility alias",
+        },
         "one_attempt": True,
         "no_retry": True,
         "no_paid_repair": True,
@@ -132,8 +141,8 @@ def _disclosure():
         "account_cap_statement": "US$8 is not an enforced account cap; the enforced reservation for this single request is US$0.01.",
         "caps": {"request_bytes": 12288, "input_tokens": 4096, "output_tokens": 1024,
                  "timeout_seconds": 45.0, "workflow_timeout_seconds": 120.0},
-        "reservation": {"amount_usd": "0.01", "worst_case_cost_usd": "0.00315",
-                        "input_rate_usd_per_1m": "0.44", "output_rate_usd_per_1m": "1.32",
+        "reservation": {"amount_usd": "0.01", "worst_case_cost_usd": "0.00246",
+                        "input_rate_usd_per_1m": "0.30", "output_rate_usd_per_1m": "1.20",
                         "sufficient": True},
         "items": [
             {"kind": "instruction", "label": "code-owned rule-delta schema, allowlist, baseline and examples",
@@ -146,7 +155,7 @@ def _disclosure():
 def _prepare_result(document_id="doc:d1"):
     return {
         "provider_id": "deepseek",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "document_id": document_id,
         "document_name": "requirements.md",
         "revision_id": "rev:1",
@@ -163,7 +172,7 @@ def _interpret_result(state="reviewable_candidate"):
         "schema_version": "1.0.0",
         "state": state,
         "provider_id": "deepseek",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "token": "delta:abc123",
         "sent": True,
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
@@ -239,7 +248,7 @@ class RuleDeltaGuiTests(unittest.TestCase):
             )
         self.assertEqual(len(boxes), 1)
         self.assertEqual(boxes[0].title, "Confirm rule interpretation request")
-        self.assertIn("deepseek-v4-flash", boxes[0].informative)
+        self.assertIn("deepseek-flash", boxes[0].informative)
 
     # -- disclosure is exact and defaults to Cancel -------------------------
 
@@ -254,7 +263,9 @@ class RuleDeltaGuiTests(unittest.TestCase):
         info = boxes[0].informative
         for expected in (
             "deepseek",
-            "deepseek-v4-flash",
+            "Requested model: deepseek-flash",
+            "Effective model: DeepSeek-V4.1-Flash",
+            "retired compatibility alias",
             "no retry",
             "US$0.01",
             "US$8 is not an enforced account cap",
@@ -372,7 +383,7 @@ class RuleDeltaGuiTests(unittest.TestCase):
             self.window._build_preview()
             self.window._on_rule_delta_prepared(
                 self.window._rule_delta_generation,
-                {"provider_id": "deepseek", "model": "deepseek-v4-flash",
+                {"provider_id": "deepseek", "model": "deepseek-flash",
                  "document_id": "doc:d1", "document_name": "requirements.md",
                  "revision_id": "rev:1", "revision_number": 1,
                  "token": None, "disclosure": None,

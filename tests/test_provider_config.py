@@ -20,7 +20,7 @@ class ProviderConfigValidationTests(unittest.TestCase):
         self.assertIsNone(provider_config.validate_config(cfg))
         self.assertEqual(cfg["schema_version"], provider_config.CONFIG_SCHEMA_VERSION)
         self.assertEqual(cfg["provider_id"], "deepseek")
-        self.assertEqual(cfg["model"], "deepseek-v4-flash")
+        self.assertEqual(cfg["model"], "deepseek-flash")
         self.assertEqual(cfg["profiles"], [])
         self.assertIsNone(cfg["active_profile_id"])
 
@@ -199,6 +199,53 @@ class MigrationTests(unittest.TestCase):
     def test_migrate_structure_rejects_unknown(self):
         self.assertIsNone(provider_config.migrate_structure({"schema_version": "999.0.0"}))
         self.assertIsNone(provider_config.migrate_structure("not-a-dict"))
+
+    def test_migrate_model_maps_alias_to_canonical_preserving_profiles(self):
+        raw = {
+            "schema_version": provider_config.CONFIG_SCHEMA_VERSION,
+            "provider_id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "profiles": [
+                {"profile_id": _profile_id(), "provider_id": "deepseek",
+                 "display_name": "Work"}
+            ],
+            "active_profile_id": _profile_id(),
+        }
+        migrated = provider_config.migrate_model(raw)
+        self.assertEqual(migrated["model"], "deepseek-flash")
+        # Profile/credential identity is preserved untouched.
+        self.assertEqual(migrated["profiles"], raw["profiles"])
+        self.assertEqual(migrated["active_profile_id"], raw["active_profile_id"])
+
+    def test_migrate_model_is_idempotent(self):
+        canonical = provider_config.default_config()
+        self.assertIs(provider_config.migrate_model(canonical), canonical)
+        unknown = provider_config.default_config()
+        unknown["model"] = "deepseek-chat"
+        self.assertIs(provider_config.migrate_model(unknown), unknown)
+
+    def test_load_migrates_alias_model(self):
+        # An on-disk v2 config predating the migration still carries the retired
+        # alias; load must migrate it to canonical while preserving profiles.
+        raw = {
+            "schema_version": provider_config.CONFIG_SCHEMA_VERSION,
+            "provider_id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "profiles": [
+                {"profile_id": _profile_id(), "provider_id": "deepseek",
+                 "display_name": "dev"}
+            ],
+            "active_profile_id": _profile_id(),
+        }
+        with tempfile.TemporaryDirectory() as base:
+            os.makedirs(base, exist_ok=True)
+            with open(provider_config.config_path(base), "w", encoding="utf-8") as fh:
+                json.dump(raw, fh)
+            loaded, err = provider_config.load(base)
+            self.assertIsNone(err)
+            self.assertEqual(loaded["model"], "deepseek-flash")
+            self.assertEqual(len(loaded["profiles"]), 1)
+            self.assertEqual(loaded["active_profile_id"], _profile_id())
 
 
 class ProviderConfigPersistenceTests(unittest.TestCase):

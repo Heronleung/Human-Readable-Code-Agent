@@ -125,7 +125,7 @@ class SuccessTests(unittest.TestCase):
         )
         result = transport.generate(_request())
         self.assertEqual(result.provider, "deepseek")
-        self.assertEqual(result.model, "deepseek-v4-flash")
+        self.assertEqual(result.model, "deepseek-flash")
         self.assertEqual(result.structured_payload["impact"], "documentation only")
         self.assertEqual(result.usage.total_tokens, 15)
 

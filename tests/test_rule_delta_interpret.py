@@ -178,7 +178,21 @@ class DisclosureTests(unittest.TestCase):
             requirement_text="Members get 10% off."
         )
         self.assertEqual(disclosure["provider_id"], "deepseek")
-        self.assertEqual(disclosure["model"], "deepseek-v4-flash")
+        # Requested / canonical / effective model are distinct and honest.
+        model = disclosure["model"]
+        self.assertEqual(model["requested_id"], "deepseek-flash")
+        self.assertEqual(model["canonical_id"], "deepseek-flash")
+        self.assertEqual(model["effective_version"], "DeepSeek-V4.1-Flash")
+        self.assertEqual(
+            model["compatibility_alias_status"], "retired_routes_to_v4_1_flash"
+        )
+        self.assertIn("deepseek-v4-flash", model["compatibility_aliases"])
+        self.assertEqual(model["verified_at"], "2026-09-12")
+        self.assertIn("retirement_warning", model)
+        self.assertTrue(model["sources"])
+        self.assertIn(
+            "https://api-docs.deepseek.com/quick_start/pricing", model["sources"]
+        )
         self.assertTrue(disclosure["one_attempt"])
         self.assertTrue(disclosure["no_retry"])
         self.assertTrue(disclosure["no_paid_repair"])
@@ -192,6 +206,17 @@ class DisclosureTests(unittest.TestCase):
         )
         self.assertGreater(disclosure["total_bytes"], 0)
         self.assertEqual(len(disclosure["items"]), 2)
+
+    def test_pricing_reflects_verified_flash_rates(self):
+        rates = rule_delta_interpret.pricing_for(rule_delta_interpret.MODEL_ID)
+        self.assertEqual(rates["input_usd_per_1m"], Decimal("0.30"))
+        self.assertEqual(rates["output_usd_per_1m"], Decimal("1.20"))
+        # Worst-case cost still fits the US$0.01 reservation.
+        self.assertLessEqual(
+            rule_delta_interpret.worst_case_cost_usd(),
+            rule_delta_interpret.RESERVATION_USD,
+        )
+        self.assertTrue(rule_delta_interpret.reservation_record()["sufficient"])
 
     def test_disclosure_never_contains_protected_oracle_data(self):
         serialized = rule_delta_interpret.dumps(

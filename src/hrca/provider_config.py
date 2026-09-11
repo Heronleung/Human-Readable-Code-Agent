@@ -244,6 +244,24 @@ def validate_config(value: Any) -> Optional[str]:
 # -- migration -------------------------------------------------------------
 
 
+def migrate_model(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a config with its model id migrated to canonical (idempotent).
+
+    Only the non-secret ``model`` field changes; the profiles and the active
+    profile id are preserved untouched, and the credential is never read or
+    rewritten (it lives in the platform credential store, not in this file). An
+    already-canonical or unknown model returns the input unchanged — the unknown
+    case is left for :func:`validate_config` to reject.
+    """
+    model = raw.get("model")
+    canonical = deepseek.migrate_model(model)
+    if canonical is None or canonical == model:
+        return raw
+    out = dict(raw)
+    out["model"] = canonical
+    return out
+
+
 def migrate_structure(raw: Any) -> Optional[Dict[str, Any]]:
     """Return a v2 config from a v1 or v2 raw config, or ``None`` when unknown.
 
@@ -295,6 +313,7 @@ def load(base_dir: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     migrated = migrate_structure(raw)
     if migrated is None:
         return None, "unsupported schema_version"
+    migrated = migrate_model(migrated)
     reason = validate_config(migrated)
     if reason is not None:
         return None, reason
@@ -356,6 +375,7 @@ __all__ = [
     "remove_profile",
     "set_active_profile",
     "validate_config",
+    "migrate_model",
     "migrate_structure",
     "load",
     "save",

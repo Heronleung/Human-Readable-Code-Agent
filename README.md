@@ -312,7 +312,7 @@ it never generates or applies source changes.
   with an explicit `confirmed: true`; cancellation sends nothing.
 - **Fixed, code-owned provider.** The official `https://api.deepseek.com`
   origin, bearer authentication, and the single allowlisted model
-  (`deepseek-v4-flash`) are constants in `hrca.deepseek`/`hrca.deepseek_transport` —
+  (`deepseek-flash`) are constants in `hrca.deepseek`/`hrca.deepseek_transport` —
   never user-configurable, no arbitrary endpoint, model, proxy or fallback.
 - **Authority.** The deterministic P4.1 proposal (target scope, source anchors,
   preserved constraints, baseline, stale/conflict decisions) stays authoritative.
@@ -444,18 +444,25 @@ runtime or verifier settings.
   user-confirmed request and never adopts or writes the repository.
 - **Exact binding.** Every run binds the document id, head revision id, content
   fingerprint, accepted-baseline fingerprint, schema, allowlisted model
-  (`deepseek-v4-flash`), disclosure manifest, delta fingerprint, runner identity
-  (`hrca-runner:v1`) and verifier identity (`hrca-rule-delta-verifier:1`). A
-  changed document or accepted predecessor makes any in-flight/returned result
-  stale and non-adoptable.
+  (`deepseek-flash`, effective version DeepSeek-V4.1-Flash), disclosure manifest,
+  delta fingerprint, runner identity (`hrca-runner:v1`) and verifier identity
+  (`hrca-rule-delta-verifier:1`). A changed document or accepted predecessor
+  makes any in-flight/returned result stale and non-adoptable.
+- **Model routing and pricing snapshot** (`hrca.rule_delta_interpret`,
+  `hrca.deepseek`). The requested API id (`deepseek-flash`), the canonical id
+  (`deepseek-flash`) and the effective routed version (DeepSeek-V4.1-Flash) are
+  kept distinct; the retired `deepseek-v4-flash` /
+  `deepseek-v4-flash-vision-exp` aliases are recorded as compatibility aliases
+  that only temporarily route to V4.1-Flash and are never dispatched. The fact
+  snapshot records its verification date (2026-09-12) and source URLs.
 - **Fail-closed pre-network limits** (`hrca.rule_delta_interpret`,
   `hrca.delta_transport`). One request, zero retries, zero paid repairs, a 12 KiB
   serialized body, ≤4,096 input tokens, ≤1,024 output tokens, a 45-second
   provider deadline, a 120-second workflow deadline, an atomic US$0.01 local
-  reservation (from the verified peak $0.44 input / $1.32 output per 1M), and a
-  fixed origin/model/auth with thinking explicitly disabled. Unknown pricing,
-  insufficient reservation, unknown usage after dispatch, a stale scope or an
-  unconfirmed disclosure all fail closed.
+  reservation (from the verified peak $0.30 cache-miss input / $1.20 output per
+  1M), and a fixed origin/model/auth with thinking explicitly disabled. Unknown
+  pricing, insufficient reservation, unknown usage after dispatch, a stale scope
+  or an unconfirmed disclosure all fail closed.
 - **Exactly one structured outcome.** The provider output is either a valid
   `hrca.rule_delta` 1.0.0, `clarification_required`, or `unsupported`. Prose-
   wrapped JSON, unknown fields, code/script/command/path/env/network/UI/runtime/
@@ -476,14 +483,16 @@ runtime or verifier settings.
   the current document) prepares the offline disclosure, shows it in a
   confirmation dialog that **defaults to Cancel**, and only on explicit
   confirmation dispatches one `interpret_rule_delta` request. The disclosure
-  names the DeepSeek recipient, `deepseek-v4-flash`, the exact outgoing item
-  names and byte sizes, the policy/retention warning, the one-request/
-  zero-retry/zero-repair policy, the token/byte/deadline caps, the US$0.01
-  reservation, and that **US$8 is not an enforced account cap**. Prepare,
-  cancel, document switching and navigation retrieve no credential and make
-  zero HTTP calls; duplicate clicks and late/stale confirmations cannot create
-  a second request. A reviewable Candidate is never auto-adopted — **Use this
-  version** remains the separate, backend-revalidated adoption step.
+  names the DeepSeek recipient, the requested API model (`deepseek-flash`), the
+  effective routed model (DeepSeek-V4.1-Flash), the compatibility/retirement
+  warning, the verification date, the exact outgoing item names and byte sizes,
+  the policy/retention warning, the one-request/zero-retry/zero-repair policy,
+  the token/byte/deadline caps, the US$0.01 reservation, and that **US$8 is not
+  an enforced account cap**. Prepare, cancel, document switching and navigation
+  retrieve no credential and make zero HTTP calls; duplicate clicks and
+  late/stale confirmations cannot create a second request. A reviewable
+  Candidate is never auto-adopted — **Use this version** remains the separate,
+  backend-revalidated adoption step.
 
 ## Scope and limitations
 

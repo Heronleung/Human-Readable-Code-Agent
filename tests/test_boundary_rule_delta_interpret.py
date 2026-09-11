@@ -118,7 +118,7 @@ def _delta_result(payload, usage=None):
         task_id="delta:abc",
         content=rule_delta_interpret.dumps(payload),
         provider="deepseek",
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         structured_payload=payload,
         usage=usage if usage is not None else _usage(),
     )
@@ -178,7 +178,7 @@ class BoundaryRuleDeltaInterpretTests(unittest.TestCase):
         result = env["result"]
         self.assertTrue(result["available"])
         self.assertEqual(result["provider_id"], "deepseek")
-        self.assertEqual(result["model"], "deepseek-v4-flash")
+        self.assertEqual(result["model"], "deepseek-flash")
         self.assertTrue(result["token"].startswith("delta:"))
         disclosure = result["disclosure"]
         self.assertTrue(disclosure["one_attempt"])
@@ -353,7 +353,7 @@ class BoundaryRuleDeltaInterpretTests(unittest.TestCase):
             task_id="delta:abc",
             content=rule_delta_interpret.dumps(_delta_payload()),
             provider="deepseek",
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             structured_payload=_delta_payload(),
             usage=None,
         )
@@ -421,6 +421,46 @@ class BoundaryRuleDeltaInterpretTests(unittest.TestCase):
         combined = captured["task"] + "\n".join(captured["context"])
         for forbidden in ("subtotal", "200.00", "180.00", "west", "days_late"):
             self.assertNotIn(forbidden, combined)
+
+    # -- unresolved snapshot blocks before transport ------------------------
+
+    def test_unknown_pricing_blocks_before_transport(self):
+        from unittest import mock
+
+        document_id = self._saved()
+        token = self._prepare(document_id)["result"]["token"]
+        transport = FakeDeltaTransport(result=_delta_result(_delta_payload()))
+        self.session.delta_transport = transport
+        # Remove the model from the pricing table so the reservation cannot be
+        # established; the confirmed interpret must fail closed *before* the
+        # transport is ever constructed/called.
+        with mock.patch.object(rule_delta_interpret, "PRICING", {}):
+            env = self._interpret(document_id, token, confirmed=True)
+        result = env["result"]
+        self.assertEqual(result["state"], rule_delta_interpret.STATE_PRICING_UNKNOWN)
+        self.assertFalse(result["sent"])
+        self.assertIsNone(result["candidate"])
+        self.assertEqual(transport.calls, 0)
+        self.assertEqual(self.session.runner.run_calls, 0)
+
+    def test_model_facts_are_internally_consistent(self):
+        # The snapshot is only dispatchable when requested id, canonical id and
+        # effective version agree with an available peak-rate entry.
+        self.assertEqual(
+            rule_delta_interpret.MODEL_ID, rule_delta_interpret.CANONICAL_MODEL_ID
+        )
+        self.assertEqual(rule_delta_interpret.MODEL_ID, "deepseek-flash")
+        self.assertEqual(
+            rule_delta_interpret.EFFECTIVE_MODEL_VERSION, "DeepSeek-V4.1-Flash"
+        )
+        self.assertIn("deepseek-v4-flash", rule_delta_interpret.COMPATIBILITY_ALIASES)
+        self.assertEqual(
+            rule_delta_interpret.COMPATIBILITY_ALIAS_STATUS,
+            "retired_routes_to_v4_1_flash",
+        )
+        self.assertIsNotNone(
+            rule_delta_interpret.pricing_for(rule_delta_interpret.MODEL_ID)
+        )
 
 
 if __name__ == "__main__":

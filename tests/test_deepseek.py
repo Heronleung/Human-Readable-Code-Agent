@@ -21,17 +21,38 @@ class DeepSeekIdentityTests(unittest.TestCase):
         self.assertEqual(deepseek.AUTH_PREFIX, "Bearer")
 
     def test_allowlist_contains_exactly_one_model(self):
-        self.assertEqual(deepseek.ALLOWED_MODELS, frozenset({"deepseek-v4-flash"}))
+        self.assertEqual(deepseek.ALLOWED_MODELS, frozenset({"deepseek-flash"}))
 
     def test_default_model_is_allowlisted(self):
         self.assertIn(deepseek.DEFAULT_MODEL, deepseek.ALLOWED_MODELS)
+        self.assertEqual(deepseek.DEFAULT_MODEL, deepseek.CANONICAL_MODEL_ID)
 
     def test_is_allowed_model(self):
-        self.assertTrue(deepseek.is_allowed_model("deepseek-v4-flash"))
+        self.assertTrue(deepseek.is_allowed_model("deepseek-flash"))
+        # The retired alias is not allowlisted; it must be migrated, not dispatched.
+        self.assertFalse(deepseek.is_allowed_model("deepseek-v4-flash"))
         self.assertFalse(deepseek.is_allowed_model("deepseek-chat"))
         self.assertFalse(deepseek.is_allowed_model("https://evil.example"))
         self.assertFalse(deepseek.is_allowed_model(None))
         self.assertFalse(deepseek.is_allowed_model(42))
+
+    def test_compatibility_aliases_are_retired(self):
+        self.assertEqual(
+            deepseek.COMPATIBILITY_ALIASES,
+            frozenset({"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}),
+        )
+        self.assertTrue(deepseek.is_compatibility_alias("deepseek-v4-flash"))
+        self.assertTrue(deepseek.is_compatibility_alias("deepseek-v4-flash-vision-exp"))
+        self.assertFalse(deepseek.is_compatibility_alias("deepseek-flash"))
+
+    def test_migrate_model_is_idempotent(self):
+        self.assertEqual(deepseek.migrate_model("deepseek-flash"), "deepseek-flash")
+        self.assertEqual(deepseek.migrate_model("deepseek-v4-flash"), "deepseek-flash")
+        self.assertEqual(
+            deepseek.migrate_model("deepseek-v4-flash-vision-exp"), "deepseek-flash"
+        )
+        self.assertIsNone(deepseek.migrate_model("deepseek-chat"))
+        self.assertIsNone(deepseek.migrate_model(None))
 
 
 class ReadinessStateTests(unittest.TestCase):
@@ -67,7 +88,7 @@ class RedactedReadinessTests(unittest.TestCase):
             config={
                 "schema_version": "1.0.0",
                 "provider_id": "deepseek",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "label": None,
             },
             config_error=None,
@@ -95,7 +116,7 @@ class RedactedReadinessTests(unittest.TestCase):
     def test_configured_never_claims_network(self):
         result = self._ready(credential_present=True)
         self.assertEqual(result["state"], "configured")
-        self.assertEqual(result["model"], "deepseek-v4-flash")
+        self.assertEqual(result["model"], "deepseek-flash")
         self.assertFalse(result["authenticated"])
         self.assertFalse(result["online"])
         self.assertFalse(result["executable"])
@@ -123,7 +144,7 @@ class RedactedReadinessTests(unittest.TestCase):
             config={
                 "schema_version": "1.0.0",
                 "provider_id": "deepseek",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "label": None,
                 "api_key": "secret-token-abc123",
             }

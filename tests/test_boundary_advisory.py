@@ -49,7 +49,7 @@ def _valid_result():
         task_id="advisory:abc",
         content='{"impact":"documentation only"}',
         provider="deepseek",
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         structured_payload={"impact": "documentation only"},
         usage=provider.ProviderUsage(
             prompt_tokens=10, completion_tokens=5, total_tokens=15

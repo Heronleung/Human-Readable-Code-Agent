@@ -711,7 +711,7 @@ class ProviderReadinessTests(unittest.TestCase):
             {
                 "state": "configured",
                 "provider_id": "deepseek",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "credential_present": True,
                 "authenticated": False,
                 "online": False,
@@ -720,7 +720,7 @@ class ProviderReadinessTests(unittest.TestCase):
         )
         self.assertIn("Provider: deepseek", text)
         self.assertIn("State: Configured", text)
-        self.assertIn("Model: deepseek-v4-flash", text)
+        self.assertIn("Model: deepseek-flash", text)
         self.assertIn("Authenticated: false", text)
         self.assertIn("Online: false", text)
         self.assertIn("Executable: false", text)
@@ -730,7 +730,7 @@ class ProviderReadinessTests(unittest.TestCase):
             {
                 "state": "configured",
                 "provider_id": "deepseek",
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-flash",
                 "credential_present": True,
                 "authenticated": True,
                 "online": True,
@@ -1037,21 +1037,32 @@ class DeltaInterpretClientVocabularyTests(unittest.TestCase):
     def test_format_disclosure_shows_recipient_and_limits(self):
         disclosure = {
             "provider_id": "deepseek",
-            "model": "deepseek-v4-flash",
+            "model": {
+                "requested_id": "deepseek-flash",
+                "canonical_id": "deepseek-flash",
+                "effective_version": "DeepSeek-V4.1-Flash",
+                "compatibility_aliases": ["deepseek-v4-flash"],
+                "compatibility_alias_status": "retired_routes_to_v4_1_flash",
+                "verified_at": "2026-09-12",
+                "sources": ["https://api-docs.deepseek.com/quick_start/pricing"],
+                "retirement_warning": "deepseek-v4-flash is a retired compatibility alias",
+            },
             "one_attempt": True,
             "items": [{"kind": "requirement", "label": "text", "bytes": 5}],
             "caps": {"request_bytes": 12288, "input_tokens": 4096,
                      "output_tokens": 1024, "timeout_seconds": 45.0,
                      "workflow_timeout_seconds": 120.0},
-            "reservation": {"amount_usd": "0.01", "worst_case_cost_usd": "0.00315",
-                            "input_rate_usd_per_1m": "0.44", "output_rate_usd_per_1m": "1.32"},
+            "reservation": {"amount_usd": "0.01", "worst_case_cost_usd": "0.00246",
+                            "input_rate_usd_per_1m": "0.30", "output_rate_usd_per_1m": "1.20"},
             "egress_statement": "data leaves this machine",
             "policy_warning": "no zero-retention promise",
             "account_cap_statement": "US$8 is not an enforced account cap",
         }
         text = format_delta_disclosure(disclosure)
         self.assertIn("deepseek", text)
-        self.assertIn("deepseek-v4-flash", text)
+        self.assertIn("Requested model: deepseek-flash", text)
+        self.assertIn("Effective model: DeepSeek-V4.1-Flash", text)
+        self.assertIn("retired compatibility alias", text)
         self.assertIn("no retry", text)
         self.assertIn("0.01", text)
         self.assertIn("US$8 is not an enforced account cap", text)
@@ -1060,7 +1071,7 @@ class DeltaInterpretClientVocabularyTests(unittest.TestCase):
         result = {
             "state": "reviewable_candidate",
             "provider_id": "deepseek",
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-flash",
             "sent": True,
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
             "candidate": {"provenance": "provider_delta",
@@ -1073,7 +1084,7 @@ class DeltaInterpretClientVocabularyTests(unittest.TestCase):
 
     def test_format_delta_result_usage_unknown(self):
         result = {"state": "usage_unknown", "provider_id": "deepseek",
-                  "model": "deepseek-v4-flash", "sent": True,
+                  "model": "deepseek-flash", "sent": True,
                   "usage": None, "candidate": None, "limitations": []}
         text = format_delta_interpret_result(result)
         self.assertIn("Usage: unknown", text)

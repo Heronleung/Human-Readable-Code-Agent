@@ -108,7 +108,7 @@ class OriginModelAuthTests(unittest.TestCase):
         )
         transport.generate(_request())
         sent = json.loads(post.last_body.decode("utf-8"))
-        self.assertEqual(sent["model"], "deepseek-v4-flash")
+        self.assertEqual(sent["model"], "deepseek-flash")
 
     def test_disables_thinking(self):
         post = _CapturingPost()
@@ -161,7 +161,7 @@ class SuccessTests(unittest.TestCase):
         )
         result = transport.generate(_request())
         self.assertEqual(result.provider, "deepseek")
-        self.assertEqual(result.model, "deepseek-v4-flash")
+        self.assertEqual(result.model, "deepseek-flash")
         self.assertEqual(
             result.structured_payload["outcome"],
             rule_delta_interpret.OUTCOME_DELTA,

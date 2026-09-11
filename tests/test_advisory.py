@@ -269,7 +269,7 @@ class AuthorityTests(unittest.TestCase):
         result = advisory.assemble_result(
             state=advisory.STATE_READY,
             provider_id="deepseek",
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             advisory_token="advisory:abc",
             sent=True,
             deterministic={"proposal": _ready_proposal()},
@@ -285,7 +285,7 @@ class AuthorityTests(unittest.TestCase):
         result = advisory.assemble_result(
             state=advisory.STATE_TIMEOUT,
             provider_id="deepseek",
-            model="deepseek-v4-flash",
+            model="deepseek-flash",
             advisory_token="advisory:abc",
             sent=True,
             deterministic={"proposal": _ready_proposal()},

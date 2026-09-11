@@ -448,7 +448,7 @@ def build_context(
     ]
     disclosure = {
         "provider_id": "deepseek",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "one_attempt": True,
         "egress_statement": _EGRESS_STATEMENT,
         "caps": {

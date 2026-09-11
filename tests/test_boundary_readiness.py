@@ -55,7 +55,7 @@ class BoundaryReadinessTests(unittest.TestCase):
         result = env["result"]
         self.assertEqual(result["state"], "missing_credential")
         self.assertEqual(result["provider_id"], "deepseek")
-        self.assertEqual(result["model"], "deepseek-v4-flash")
+        self.assertEqual(result["model"], "deepseek-flash")
         self.assertFalse(result["credential_present"])
 
     def test_readiness_configured_when_credential_present(self):

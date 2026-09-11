@@ -45,13 +45,50 @@ from . import app_package, rule_delta
 RULE_DELTA_INTERPRET_SCHEMA_VERSION = "1.0.0"
 RULE_DELTA_INTERPRET_GENERATOR = "hrca-rule-delta-interpret"
 
-# -- provider / model identity (verified against official pages 2026-09-11) --
+# -- provider / model identity (verified against official pages 2026-09-12) --
 #
-# The recipient and allowlisted model are fixed code-owned constants, mirroring
+# The recipient and the model are fixed code-owned constants, mirroring
 # :mod:`hrca.deepseek`. They are never user-configurable and never taken from a
 # document, a CLI flag or an environment variable.
+#
+# On 2026-09-12 the official Models & Pricing page and the DeepSeek-V4.1-Flash
+# release note are internally consistent: the canonical API model id is
+# ``deepseek-flash`` (effective version DeepSeek-V4.1-Flash); the retired
+# ``deepseek-v4-flash`` / ``deepseek-v4-flash-vision-exp`` aliases only
+# *temporarily* route to V4.1-Flash and must never be presented as the effective
+# model. Requested id, canonical id and effective version are kept distinct.
 PROVIDER_ID = "deepseek"
-MODEL_ID = "deepseek-v4-flash"
+# The requested API model id — the value sent in the chat-completions body.
+MODEL_ID = "deepseek-flash"
+# The canonical model id per the official Models & Pricing page.
+CANONICAL_MODEL_ID = "deepseek-flash"
+# The effective model version that actually serves the request.
+EFFECTIVE_MODEL_VERSION = "DeepSeek-V4.1-Flash"
+# Retired compatibility aliases that only temporarily route to the effective
+# model. They are never dispatched by this slice.
+COMPATIBILITY_ALIASES = frozenset(
+    {"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}
+)
+# Official routing/retirement status token, and the verification date + sources
+# the snapshot was derived from.
+COMPATIBILITY_ALIAS_STATUS = "retired_routes_to_v4_1_flash"
+PROVIDER_FACTS_VERIFIED_AT = "2026-09-12"
+PROVIDER_FACT_SOURCES = frozenset(
+    {
+        "https://api-docs.deepseek.com/quick_start/pricing",
+        "https://api-docs.deepseek.com/news/news260910/",
+        "https://api-docs.deepseek.com/guides/thinking_mode/",
+        "https://api-docs.deepseek.com/api/deepseek-api",
+    }
+)
+
+# Fixed compatibility/retirement statement rendered into every disclosure so the
+# alias-versus-effective fact can never be missed. It is a constant and never
+# names a path, a secret or a host detail.
+_RETIREMENT_WARNING = (
+    "deepseek-v4-flash is a retired compatibility alias; requests using it are "
+    "temporarily served by DeepSeek-V4.1-Flash and billed at the Flash price."
+)
 
 # -- provider-output outcomes ---------------------------------------------
 
@@ -79,23 +116,26 @@ MAX_EXAMPLES = 8
 MAX_NOTES = 8
 MAX_NOTE_CHARS = 256
 
-# -- cost reservation (verified peak rates 2026-09-11) ----------------------
+# -- cost reservation (verified peak rates 2026-09-12) ----------------------
 #
 # Peak cache-miss input and peak output rates are used for a worst-case
 # reservation, so a single request can never exceed the reserved amount even at
 # peak pricing. Off-peak is half; the reservation deliberately assumes peak.
 #
-#   * input  (cache miss): US$0.44 per 1M tokens
-#   * output              : US$1.32 per 1M tokens
+#   * input  (cache miss, peak): US$0.30 per 1M tokens
+#   * output            (peak) : US$1.20 per 1M tokens
+#
+# Verified 2026-09-12 from the official Models & Pricing page for deepseek-flash
+# / DeepSeek-V4.1-Flash.
 #
 # The atomic local reservation is US$0.01. With 4,096 input + 1,024 output
-# tokens the worst-case cost is 4096/1e6*0.44 + 1024/1e6*1.32 ≈ US$0.00315,
+# tokens the worst-case cost is 4096/1e6*0.30 + 1024/1e6*1.20 ≈ US$0.00246,
 # comfortably below the reservation. "Unknown pricing" (a model absent from the
 # table) and "insufficient reservation" both fail closed.
 PRICING = {
     MODEL_ID: {
-        "input_usd_per_1m": Decimal("0.44"),
-        "output_usd_per_1m": Decimal("1.32"),
+        "input_usd_per_1m": Decimal("0.30"),
+        "output_usd_per_1m": Decimal("1.20"),
     },
 }
 RESERVATION_USD = Decimal("0.01")
@@ -503,7 +543,16 @@ def build_disclosure(*, requirement_text: str) -> Dict[str, Any]:
     return {
         "schema_version": RULE_DELTA_INTERPRET_SCHEMA_VERSION,
         "provider_id": PROVIDER_ID,
-        "model": MODEL_ID,
+        "model": {
+            "requested_id": MODEL_ID,
+            "canonical_id": CANONICAL_MODEL_ID,
+            "effective_version": EFFECTIVE_MODEL_VERSION,
+            "compatibility_aliases": sorted(COMPATIBILITY_ALIASES),
+            "compatibility_alias_status": COMPATIBILITY_ALIAS_STATUS,
+            "verified_at": PROVIDER_FACTS_VERIFIED_AT,
+            "sources": sorted(PROVIDER_FACT_SOURCES),
+            "retirement_warning": _RETIREMENT_WARNING,
+        },
         "one_attempt": True,
         "no_retry": True,
         "no_paid_repair": True,
@@ -672,6 +721,12 @@ __all__ = [
     "RULE_DELTA_INTERPRET_GENERATOR",
     "PROVIDER_ID",
     "MODEL_ID",
+    "CANONICAL_MODEL_ID",
+    "EFFECTIVE_MODEL_VERSION",
+    "COMPATIBILITY_ALIASES",
+    "COMPATIBILITY_ALIAS_STATUS",
+    "PROVIDER_FACTS_VERIFIED_AT",
+    "PROVIDER_FACT_SOURCES",
     "OUTCOME_DELTA",
     "OUTCOME_CLARIFICATION_REQUIRED",
     "OUTCOME_UNSUPPORTED",

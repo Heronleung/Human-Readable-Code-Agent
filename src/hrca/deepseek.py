@@ -32,15 +32,49 @@ AUTH_SCHEME = "bearer"
 AUTH_HEADER = "Authorization"
 AUTH_PREFIX = "Bearer"
 
-# Closed allowlist of verified model identifiers. Exactly one model is enabled
-# for P4.2a; adding another is a separate, gated change.
-ALLOWED_MODELS = frozenset({"deepseek-v4-flash"})
-DEFAULT_MODEL = "deepseek-v4-flash"
+# Canonical API model id, verified 2026-09-12 against the official Models &
+# Pricing page (https://api-docs.deepseek.com/quick_start/pricing) and the
+# DeepSeek-V4.1-Flash release note (https://api-docs.deepseek.com/news/news260910/):
+# "Use deepseek-flash as the model name." The effective model serving requests is
+# DeepSeek-V4.1-Flash.
+CANONICAL_MODEL_ID = "deepseek-flash"
+DEFAULT_MODEL = CANONICAL_MODEL_ID
+
+# Closed allowlist of the single enabled model. The retired compatibility aliases
+# below are *not* allowlisted: they route to V4.1-Flash only temporarily and must
+# be migrated, never dispatched.
+ALLOWED_MODELS = frozenset({CANONICAL_MODEL_ID})
+
+# Retired compatibility aliases. Official language (pricing footnote + release
+# note): "the legacy names deepseek-v4-flash and deepseek-v4-flash-vision-exp are
+# still accepted, but the corresponding models have been retired, their requests
+# are served by the DeepSeek-V4.1-Flash model and billed at the Flash price."
+COMPATIBILITY_ALIASES = frozenset(
+    {"deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}
+)
 
 
 def is_allowed_model(model: Any) -> bool:
-    """Return True when ``model`` is one of the allowlisted identifiers."""
+    """Return True when ``model`` is the allowlisted canonical id."""
     return isinstance(model, str) and model in ALLOWED_MODELS
+
+
+def is_compatibility_alias(model: Any) -> bool:
+    """Return True when ``model`` is a retired alias that routes to canonical."""
+    return isinstance(model, str) and model in COMPATIBILITY_ALIASES
+
+
+def migrate_model(model: Any) -> Optional[str]:
+    """Return the canonical model id for ``model``, or ``None`` when unknown.
+
+    Maps the canonical id and every retired compatibility alias to
+    :data:`CANONICAL_MODEL_ID`. Idempotent: migrating the canonical id returns it
+    unchanged. Any other value returns ``None`` (the caller keeps or rejects the
+    original value — no guess is made).
+    """
+    if model == CANONICAL_MODEL_ID or is_compatibility_alias(model):
+        return CANONICAL_MODEL_ID
+    return None
 
 
 # -- redacted local readiness states ---------------------------------------
@@ -130,7 +164,11 @@ __all__ = [
     "AUTH_PREFIX",
     "ALLOWED_MODELS",
     "DEFAULT_MODEL",
+    "CANONICAL_MODEL_ID",
+    "COMPATIBILITY_ALIASES",
     "is_allowed_model",
+    "is_compatibility_alias",
+    "migrate_model",
     "READY_STATE_CONFIGURED",
     "READY_STATE_MISSING_CREDENTIAL",
     "READY_STATE_UNAVAILABLE",
