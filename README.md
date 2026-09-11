@@ -471,6 +471,19 @@ runtime or verifier settings.
   verification failed, stale, over-limit, pricing/reservation failure and
   reviewable Candidate. The live request is separately gated and is never made
   by save/open/select/preview/cancel.
+- **Desktop wiring.** After a save, the single contextual **Build preview**
+  action (relabelled **Update preview** once a reviewable candidate exists for
+  the current document) prepares the offline disclosure, shows it in a
+  confirmation dialog that **defaults to Cancel**, and only on explicit
+  confirmation dispatches one `interpret_rule_delta` request. The disclosure
+  names the DeepSeek recipient, `deepseek-v4-flash`, the exact outgoing item
+  names and byte sizes, the policy/retention warning, the one-request/
+  zero-retry/zero-repair policy, the token/byte/deadline caps, the US$0.01
+  reservation, and that **US$8 is not an enforced account cap**. Prepare,
+  cancel, document switching and navigation retrieve no credential and make
+  zero HTTP calls; duplicate clicks and late/stale confirmations cannot create
+  a second request. A reviewable Candidate is never auto-adopted — **Use this
+  version** remains the separate, backend-revalidated adoption step.
 
 ## Scope and limitations
 

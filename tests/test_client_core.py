@@ -1047,12 +1047,14 @@ class DeltaInterpretClientVocabularyTests(unittest.TestCase):
                             "input_rate_usd_per_1m": "0.44", "output_rate_usd_per_1m": "1.32"},
             "egress_statement": "data leaves this machine",
             "policy_warning": "no zero-retention promise",
+            "account_cap_statement": "US$8 is not an enforced account cap",
         }
         text = format_delta_disclosure(disclosure)
         self.assertIn("deepseek", text)
         self.assertIn("deepseek-v4-flash", text)
         self.assertIn("no retry", text)
         self.assertIn("0.01", text)
+        self.assertIn("US$8 is not an enforced account cap", text)
 
     def test_format_delta_result_reviewable(self):
         result = {

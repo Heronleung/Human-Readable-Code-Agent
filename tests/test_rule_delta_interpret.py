@@ -184,6 +184,8 @@ class DisclosureTests(unittest.TestCase):
         self.assertTrue(disclosure["no_paid_repair"])
         self.assertIn("policy_warning", disclosure)
         self.assertIn("egress_statement", disclosure)
+        self.assertIn("account_cap_statement", disclosure)
+        self.assertIn("US$8 is not an enforced account cap", disclosure["account_cap_statement"])
         self.assertEqual(
             disclosure["caps"]["request_bytes"],
             rule_delta_interpret.MAX_REQUEST_BYTES,

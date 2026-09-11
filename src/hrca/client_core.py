@@ -1349,6 +1349,8 @@ def format_delta_disclosure(disclosure: Dict[str, Any]) -> str:
     lines.append(str(disclosure.get("egress_statement", "")))
     lines.append("")
     lines.append(str(disclosure.get("policy_warning", "")))
+    lines.append("")
+    lines.append(str(disclosure.get("account_cap_statement", "")))
     return "\n".join(lines)
 
 

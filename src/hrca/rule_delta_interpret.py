@@ -114,6 +114,13 @@ _POLICY_WARNING = (
     "purpose, account and legal needs, and data may be stored and processed in "
     "China. Only synthetic, non-sensitive text is permitted."
 )
+# Fixed, honest account-cap statement. The enforced limit is the atomic
+# per-request reservation; the product does not enforce a US$8 account cap, so
+# the disclosure must never imply one exists.
+_ACCOUNT_CAP_STATEMENT = (
+    "US$8 is not an enforced account cap; the enforced reservation for this "
+    "single request is US$0.01."
+)
 
 # -- normalized terminal states ---------------------------------------------
 #
@@ -502,6 +509,7 @@ def build_disclosure(*, requirement_text: str) -> Dict[str, Any]:
         "no_paid_repair": True,
         "egress_statement": _EGRESS_STATEMENT,
         "policy_warning": _POLICY_WARNING,
+        "account_cap_statement": _ACCOUNT_CAP_STATEMENT,
         "caps": {
             "request_bytes": MAX_REQUEST_BYTES,
             "input_tokens": MAX_INPUT_TOKENS,

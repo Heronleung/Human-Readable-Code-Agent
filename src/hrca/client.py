@@ -199,6 +199,11 @@ from .client_core import (
     build_move_item_request,
     build_trash_item_request,
     build_restore_item_request,
+    build_prepare_rule_delta_request,
+    build_interpret_rule_delta_request,
+    format_delta_disclosure,
+    format_delta_interpret_result,
+    delta_interpret_state_label,
 )
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -246,6 +251,38 @@ _PREVIEW_STATE_TOKEN = {
     "invalid": style.STATE_ERROR,
     "insufficient_evidence": style.STATE_WARNING,
 }
+
+# Provider-to-rule-delta interpretation state -> semantic colour token (P4.8).
+# The badge always carries the state word (via client_core's label table), so
+# colour is never the sole signal. Only the reviewable candidate is a success.
+_RULE_DELTA_STATE_TOKEN = {
+    "reviewable_candidate": style.STATE_SUCCESS,
+    "preflight": style.STATE_NEUTRAL,
+    "cancel_requested": style.STATE_NEUTRAL,
+    "stale": style.STATE_WARNING,
+    "clarification_required": style.STATE_WARNING,
+    "unsupported": style.STATE_WARNING,
+    "invalid_output": style.STATE_ERROR,
+    "usage_unknown": style.STATE_ERROR,
+    "pricing_unknown": style.STATE_ERROR,
+    "reservation_failed": style.STATE_ERROR,
+    "runner_unavailable": style.STATE_ERROR,
+    "verification_failed": style.STATE_ERROR,
+    "over_limit": style.STATE_ERROR,
+    "credential_missing": style.STATE_ERROR,
+    "network_denied": style.STATE_ERROR,
+    "timeout": style.STATE_ERROR,
+    "rate_limited": style.STATE_ERROR,
+    "quota_exceeded": style.STATE_ERROR,
+    "provider_unavailable": style.STATE_ERROR,
+    "context_rejected": style.STATE_ERROR,
+    "provider_failure": style.STATE_ERROR,
+}
+
+# The only interpretation state that produces a reviewable (never auto-adopted)
+# candidate. Held as a client-side literal so the shell never imports the
+# interpretation domain.
+_RULE_DELTA_REVIEWABLE = "reviewable_candidate"
 
 # Fixed, honest unavailable messages for the document surface. Each ``reason``
 # is one of the workspace's bounded unavailable reasons; the banner never echoes
@@ -776,6 +813,21 @@ class MainWindow(QMainWindow):
         # confirmed request. Neither holds a credential, prompt or source text.
         self._pending_advisory_token: Optional[str] = None
         self._pending_advisory_disclosure: str = ""
+        # Pending provider-to-rule-delta interpretation state (P4.8): the
+        # content-addressed token and itemized disclosure shown before the single
+        # confirmed request, the document the token is bound to, the in-flight
+        # flag (duplicate-click suppression) and a monotonic generation that tags
+        # each prepare/interpret chain so a late or stale response for a previous
+        # document is discarded. None of these holds a credential or raw text.
+        self._pending_rule_delta_token: Optional[str] = None
+        self._pending_rule_delta_document_id: Optional[str] = None
+        self._pending_rule_delta_disclosure: str = ""
+        self._rule_delta_pending: bool = False
+        self._rule_delta_generation: int = 0
+        # The document id that currently holds a reviewable candidate, so the
+        # single contextual action reads "Update preview" rather than "Build
+        # preview" when re-interpreting the same saved requirement.
+        self._rule_delta_reviewable_for: Optional[str] = None
         # Document/version-authority surface state (P4.4): the list of documents,
         # the currently open document's identity and base revision, the dirty
         # flag, the accepted-version list, and the mounted widgets.
@@ -1787,14 +1839,16 @@ class MainWindow(QMainWindow):
         actions_layout.setSpacing(style.GAP_TIGHT)
         self._document_save_button = QPushButton("Save")
         self._document_save_button.setObjectName("primaryButton")
-        self._document_candidate_button = QPushButton("Create preview")
+        self._document_candidate_button = QPushButton("Build preview")
         self._document_review_button = QPushButton("Review candidate")
         self._document_adopt_button = QPushButton("Use this version")
         self._document_save_button.setAccessibleName("Save document")
-        self._document_candidate_button.setAccessibleName("Create preview")
+        self._document_candidate_button.setAccessibleName("Build preview")
         self._document_candidate_button.setToolTip(
-            "Create a demonstration preview bound to the hand-written quotation "
-            "fixture. It does not interpret your document or generate code."
+            "Interpret this saved requirement as a rule change. It first shows "
+            "an offline disclosure (default Cancel), then makes one confirmed "
+            "provider request that becomes a reviewable — never auto-adopted — "
+            "candidate."
         )
         self._document_review_button.setAccessibleName("Review candidate")
         self._document_adopt_button.setAccessibleName("Use this version")
@@ -1803,7 +1857,7 @@ class MainWindow(QMainWindow):
             "explicit step that revalidates the candidate — never automatic."
         )
         self._document_save_button.clicked.connect(self._save_document)
-        self._document_candidate_button.clicked.connect(self._create_candidate)
+        self._document_candidate_button.clicked.connect(self._build_preview)
         self._document_review_button.clicked.connect(self._review_candidate)
         self._document_adopt_button.clicked.connect(self._adopt_candidate)
         actions_layout.addWidget(self._document_save_button)
@@ -3579,9 +3633,11 @@ class MainWindow(QMainWindow):
     def _update_document_actions(self) -> None:
         """Show candidate actions only in their meaningful states.
 
-        Save is always the primary action. Create preview appears only after a
-        saved (clean) document is current, and is disabled while a candidate
-        request is in flight; Review candidate appears only when a candidate
+        Save is always the primary action. The single contextual preview action
+        reads "Build preview" (or "Update preview" once a reviewable candidate
+        exists for the current document) and appears only after a saved (clean)
+        document is current; it is disabled while a prepare/interpret request is
+        in flight. Review candidate appears only when a document candidate
         exists; Adopt appears only when that candidate's evidence is current.
         """
         has_doc = self._document_id is not None
@@ -3594,8 +3650,14 @@ class MainWindow(QMainWindow):
             self._document_candidate_button.setVisible(
                 has_doc and has_revision and not self._document_dirty
             )
+            if self._rule_delta_reviewable_for == self._document_id:
+                label = "Update preview"
+            else:
+                label = "Build preview"
+            self._document_candidate_button.setText(label)
+            self._document_candidate_button.setAccessibleName(label)
             self._document_candidate_button.setEnabled(
-                not self._document_candidate_pending
+                not self._document_candidate_pending and not self._rule_delta_pending
             )
         if self._document_review_button is not None:
             self._document_review_button.setVisible(has_candidate)
@@ -4063,6 +4125,10 @@ class MainWindow(QMainWindow):
         the explorer selection is re-pointed at it by id.
         """
         document = result.get("document") or {}
+        # Invalidate any pending/in-flight interpretation for the previous
+        # document so a late response can never render against this one.
+        self._next_rule_delta_generation()
+        self._reset_rule_delta_state()
         self._document_id = document.get("document_id")
         self._document_name = document.get("name")
         head = result.get("head_revision") or {}
@@ -4084,6 +4150,8 @@ class MainWindow(QMainWindow):
         user action. The editor is emptied and actions/candidate state are reset;
         a clear message is shown and the user can Open another document.
         """
+        self._next_rule_delta_generation()
+        self._reset_rule_delta_state()
         self._document_id = None
         self._document_name = None
         self._document_base_revision_id = None
@@ -4216,6 +4284,192 @@ class MainWindow(QMainWindow):
             target = self._pending_document_switch_id
             self._pending_document_switch_id = None
             self._do_open_document(target)
+
+    # -- Provider-to-rule-delta interpretation flow (P4.8) ------------------
+
+    def _next_rule_delta_generation(self) -> int:
+        """Advance the interpretation generation and return its new value.
+
+        Every prepare/interpret chain is tagged with the generation that started
+        it, so a late or stale response for a previously opened document is
+        discarded rather than shown against the wrong document.
+        """
+        self._rule_delta_generation += 1
+        return self._rule_delta_generation
+
+    def _reset_rule_delta_state(self) -> None:
+        """Clear any pending interpretation scope and reviewable flag.
+
+        Called when the open document changes so a confirmation dialog left
+        open, or an in-flight response, can never bind to a different document.
+        """
+        self._pending_rule_delta_token = None
+        self._pending_rule_delta_document_id = None
+        self._pending_rule_delta_disclosure = ""
+        self._rule_delta_reviewable_for = None
+
+    def _build_preview(self) -> None:
+        """Build (or update) the provider-backed rule-delta preview.
+
+        The first call only builds the offline disclosure manifest
+        (``prepare_rule_delta``); it never contacts the provider. A confirmation
+        dialog (default Cancel) then gates the single ``interpret_rule_delta``
+        request. Duplicate clicks and late/stale responses are suppressed.
+        """
+        if (
+            not self._document_id
+            or self._rule_delta_pending
+            or self._document_candidate_pending
+        ):
+            return
+        generation = self._next_rule_delta_generation()
+        self._rule_delta_pending = True
+        self._update_document_actions()
+        cid = contract.new_correlation_id()
+        request = build_prepare_rule_delta_request(cid, self._document_id)
+        self._set_status(STATE_RUNNING, "preparing preview")
+        if not self._send(
+            request,
+            partial(self._on_rule_delta_prepared, generation),
+            self._on_rule_delta_error,
+        ):
+            self._rule_delta_pending = False
+            self._update_document_actions()
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_rule_delta_prepared(self, generation: int, result: Dict[str, Any]) -> None:
+        """Store the disclosure and open the confirmation dialog (offline so far)."""
+        if generation != self._rule_delta_generation:
+            return
+        self._rule_delta_pending = False
+        self._update_document_actions()
+        if not result.get("available"):
+            reason = str(result.get("reason", "unknown"))
+            self._set_status(STATE_FAILED, delta_interpret_state_label(reason))
+            self._render_rule_delta_failure(delta_interpret_state_label(reason))
+            return
+        token = result.get("token")
+        disclosure = result.get("disclosure") or {}
+        if not token:
+            self._set_status(STATE_FAILED, "preview disclosure is incomplete")
+            return
+        self._pending_rule_delta_token = token
+        self._pending_rule_delta_document_id = self._document_id
+        self._pending_rule_delta_disclosure = format_delta_disclosure(disclosure)
+        self._confirm_rule_delta()
+
+    def _confirm_rule_delta(self) -> None:
+        """Show the itemized disclosure and require explicit confirmation.
+
+        The default action is Cancel; cancelling (or closing the box) sends
+        nothing. Only an explicit "Build preview" proceeds to the single request.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle("Confirm rule interpretation request")
+        box.setText("Send this disclosure to DeepSeek for one rule-interpretation call?")
+        box.setInformativeText(self._pending_rule_delta_disclosure)
+        box.setDetailedText(
+            "The requirement and code-owned instructions listed above will leave "
+            "this machine and be sent to the fixed provider endpoint. Exactly one "
+            "request is made, with no retry, no repair and no fallback. The result "
+            "is a reviewable candidate — never an automatic change. Cancelling "
+            "sends nothing."
+        )
+        build_button = box.addButton("Build preview", QMessageBox.AcceptRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        if box.clickedButton() is not build_button:
+            self._pending_rule_delta_token = None
+            self._pending_rule_delta_document_id = None
+            self._pending_rule_delta_disclosure = ""
+            self._set_status(STATE_SUCCESS, "preview cancelled")
+            return
+        self._send_rule_delta()
+
+    def _send_rule_delta(self) -> None:
+        """Send the single confirmed interpretation request.
+
+        Only the bound token travels; the scope is re-derived and re-bound by the
+        boundary. A document switch between the dialog and this dispatch makes
+        the token stale, so nothing is sent.
+        """
+        token = self._pending_rule_delta_token
+        document_id = self._pending_rule_delta_document_id
+        self._pending_rule_delta_token = None
+        self._pending_rule_delta_document_id = None
+        self._pending_rule_delta_disclosure = ""
+        if not token or document_id != self._document_id:
+            self._set_status(STATE_FAILED, "preview is out of date")
+            return
+        generation = self._rule_delta_generation
+        cid = contract.new_correlation_id()
+        request = build_interpret_rule_delta_request(cid, document_id, token, True)
+        self._rule_delta_pending = True
+        self._update_document_actions()
+        self._set_status(STATE_RUNNING, "interpreting requirement")
+        if not self._send(
+            request,
+            partial(self._on_rule_delta_result, generation),
+            self._on_rule_delta_error,
+        ):
+            self._rule_delta_pending = False
+            self._update_document_actions()
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_rule_delta_result(self, generation: int, result: Dict[str, Any]) -> None:
+        """Render the bounded interpretation result, discarding a late response."""
+        if generation != self._rule_delta_generation:
+            return
+        self._rule_delta_pending = False
+        state = str(result.get("state", "unknown"))
+        self._rule_delta_reviewable_for = (
+            self._document_id if state == _RULE_DELTA_REVIEWABLE else None
+        )
+        self._update_document_actions()
+        self._render_rule_delta_result(result)
+        self._set_status(STATE_SUCCESS, f"preview {delta_interpret_state_label(state)}")
+
+    def _on_rule_delta_error(self, reason: str) -> None:
+        self._rule_delta_pending = False
+        self._update_document_actions()
+        self._set_status(STATE_FAILED, document_failure_message(reason))
+
+    def _render_rule_delta_result(self, result: Dict[str, Any]) -> None:
+        """Populate the Preview surface from a bounded interpretation result."""
+        state = str(result.get("state", "unknown"))
+        label = delta_interpret_state_label(state)
+        if self._preview_state_label is not None:
+            self._preview_state_label.setText(label)
+            token = _RULE_DELTA_STATE_TOKEN.get(state, style.STATE_NEUTRAL)
+            self._preview_state_label.setStyleSheet(
+                style.state_chip_style(self._palette, token)
+            )
+        if self._preview_document_label is not None:
+            self._preview_document_label.setText(self._document_name or "Untitled")
+        if self._preview_body is not None:
+            text = format_delta_interpret_result(result)
+            if state == _RULE_DELTA_REVIEWABLE:
+                text += (
+                    "\n\nReviewable only. 'Use this version' is a separate, "
+                    "explicit step and is never automatic."
+                )
+            self._preview_body.setPlainText(text)
+
+    def _render_rule_delta_failure(self, label: str) -> None:
+        """Show a calm, bounded unavailable state for a failed prepare."""
+        if self._preview_state_label is not None:
+            self._preview_state_label.setText(label)
+            self._preview_state_label.setStyleSheet(
+                style.state_chip_style(self._palette, style.STATE_ERROR)
+            )
+        if self._preview_document_label is not None:
+            self._preview_document_label.setText(self._document_name or "Untitled")
+        if self._preview_body is not None:
+            self._preview_body.setPlainText(
+                "This requirement cannot be interpreted as a rule change. "
+                "Nothing was sent."
+            )
 
     def _create_candidate(self) -> None:
         if not self._document_id or self._document_candidate_pending:
