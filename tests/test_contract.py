@@ -54,11 +54,14 @@ from hrca.contract import (
     ACTION_CANDIDATE_PACKAGE_STAGE,
     ACTION_RULE_DELTA_STAGE,
     ACTION_RULE_DELTA_RUN,
+    ACTION_PREPARE_RULE_DELTA,
+    ACTION_INTERPRET_RULE_DELTA,
     PACKAGE_ACTIONS,
     DOCUMENT_ACTIONS,
     LIBRARY_ACTIONS,
     CANDIDATE_PACKAGE_ACTIONS,
     RULE_DELTA_ACTIONS,
+    RULE_DELTA_INTERPRET_ACTIONS,
     ALLOWED_ACTIONS,
     CONTRACT_VERSION,
     CORRELATION_ID_MAX_CHARS,
@@ -134,7 +137,8 @@ class AllowedActionTests(unittest.TestCase):
             | DOCUMENT_ACTIONS
             | LIBRARY_ACTIONS
             | CANDIDATE_PACKAGE_ACTIONS
-            | RULE_DELTA_ACTIONS,
+            | RULE_DELTA_ACTIONS
+            | RULE_DELTA_INTERPRET_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):
@@ -396,6 +400,25 @@ class AllowedActionTests(unittest.TestCase):
             self.assertNotIn(action, SCAN_ACTIONS)
             self.assertNotIn(action, DOCUMENT_ACTIONS)
             self.assertNotIn(action, ADVISORY_ACTIONS)
+            self.assertNotIn(action, PROFILE_ACTIONS)
+            self.assertNotIn(action, CREDENTIAL_ACTIONS)
+
+    def test_rule_delta_interpret_actions_are_allowlisted(self):
+        self.assertEqual(
+            RULE_DELTA_INTERPRET_ACTIONS,
+            frozenset({ACTION_PREPARE_RULE_DELTA, ACTION_INTERPRET_RULE_DELTA}),
+        )
+
+    def test_rule_delta_interpret_actions_are_bounded(self):
+        # The interpretation protocol is distinct from the advisory protocol and
+        # from the offline rule-delta protocol; it never adopts a candidate or
+        # touches the scan/document/profile/credential actions.
+        for action in RULE_DELTA_INTERPRET_ACTIONS:
+            self.assertIn(action, ALLOWED_ACTIONS)
+            self.assertNotIn(action, SCAN_ACTIONS)
+            self.assertNotIn(action, DOCUMENT_ACTIONS)
+            self.assertNotIn(action, ADVISORY_ACTIONS)
+            self.assertNotIn(action, RULE_DELTA_ACTIONS)
             self.assertNotIn(action, PROFILE_ACTIONS)
             self.assertNotIn(action, CREDENTIAL_ACTIONS)
 

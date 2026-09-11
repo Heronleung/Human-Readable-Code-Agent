@@ -15,6 +15,7 @@ from hrca.client_core import (
     CREDENTIAL_ACTION_PENDING,
     CREDENTIAL_FAILURE_MESSAGES,
     CREDENTIAL_MASK,
+    DELTA_INTERPRET_STATE_LABELS,
     INTENT_CLASS_LABELS,
     OPERATION_LABELS,
     PROFILE_ACTION_MESSAGES,
@@ -40,6 +41,7 @@ from hrca.client_core import (
     behavior_node_label,
     block_type_label,
     credential_action_message,
+    delta_interpret_state_label,
     profile_failure_message,
     build_add_profile_request,
     build_compare_draft_request,
@@ -55,9 +57,11 @@ from hrca.client_core import (
     build_get_readiness_request,
     build_get_tree_request,
     build_get_twin_request,
+    build_interpret_rule_delta_request,
     build_manage_credential_request,
     build_open_project_request,
     build_plan_proposal_request,
+    build_prepare_rule_delta_request,
     build_remove_credential_request,
     build_rename_profile_request,
     build_request,
@@ -68,6 +72,8 @@ from hrca.client_core import (
     build_set_active_profile_request,
     build_sync_twin_request,
     default_fixture_root,
+    format_delta_disclosure,
+    format_delta_interpret_result,
     format_draft_operations,
     format_entity_list,
     format_intent_delta,
@@ -1000,6 +1006,75 @@ class ClientStateConstantsTests(unittest.TestCase):
     def test_provider_and_repository_defaults(self):
         self.assertEqual(PROVIDER_UNAVAILABLE, "unavailable")
         self.assertEqual(REPOSITORY_UNVERIFIED, "Unverified")
+
+
+class DeltaInterpretClientVocabularyTests(unittest.TestCase):
+    """P4.8 client vocabulary: request builders, state labels and formatters."""
+
+    def test_state_labels_cover_all_states(self):
+        from hrca import rule_delta_interpret
+
+        for state in rule_delta_interpret.STATES:
+            label = delta_interpret_state_label(state)
+            self.assertIsInstance(label, str)
+            self.assertNotEqual(label, "")
+
+    def test_unknown_state_falls_back_to_token(self):
+        self.assertEqual(delta_interpret_state_label("bogus"), "bogus")
+
+    def test_prepare_request_shape(self):
+        req = build_prepare_rule_delta_request("cid", "doc:1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["action"], contract.ACTION_PREPARE_RULE_DELTA)
+        self.assertEqual(req["document_id"], "doc:1")
+
+    def test_interpret_request_shape(self):
+        req = build_interpret_rule_delta_request("cid", "doc:1", "delta:abc", True)
+        self.assertEqual(req["action"], contract.ACTION_INTERPRET_RULE_DELTA)
+        self.assertEqual(req["task"]["token"], "delta:abc")
+        self.assertIs(req["task"]["confirmed"], True)
+
+    def test_format_disclosure_shows_recipient_and_limits(self):
+        disclosure = {
+            "provider_id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "one_attempt": True,
+            "items": [{"kind": "requirement", "label": "text", "bytes": 5}],
+            "caps": {"request_bytes": 12288, "input_tokens": 4096,
+                     "output_tokens": 1024, "timeout_seconds": 45.0,
+                     "workflow_timeout_seconds": 120.0},
+            "reservation": {"amount_usd": "0.01", "worst_case_cost_usd": "0.00315",
+                            "input_rate_usd_per_1m": "0.44", "output_rate_usd_per_1m": "1.32"},
+            "egress_statement": "data leaves this machine",
+            "policy_warning": "no zero-retention promise",
+        }
+        text = format_delta_disclosure(disclosure)
+        self.assertIn("deepseek", text)
+        self.assertIn("deepseek-v4-flash", text)
+        self.assertIn("no retry", text)
+        self.assertIn("0.01", text)
+
+    def test_format_delta_result_reviewable(self):
+        result = {
+            "state": "reviewable_candidate",
+            "provider_id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "sent": True,
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "candidate": {"provenance": "provider_delta",
+                          "binding": {"document_revision_id": "rev:1"}},
+            "limitations": [],
+        }
+        text = format_delta_interpret_result(result)
+        self.assertIn("Reviewable", text)
+        self.assertIn("not adopted", text)
+
+    def test_format_delta_result_usage_unknown(self):
+        result = {"state": "usage_unknown", "provider_id": "deepseek",
+                  "model": "deepseek-v4-flash", "sent": True,
+                  "usage": None, "candidate": None, "limitations": []}
+        text = format_delta_interpret_result(result)
+        self.assertIn("Usage: unknown", text)
 
 
 if __name__ == "__main__":

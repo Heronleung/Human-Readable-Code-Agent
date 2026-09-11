@@ -138,6 +138,14 @@ ACTION_CANDIDATE_PACKAGE_STAGE = "stage_candidate_package"
 # credential/network/token call, or writes the repository.
 ACTION_RULE_DELTA_STAGE = "stage_rule_delta"
 ACTION_RULE_DELTA_RUN = "run_rule_delta"
+# The P4.8 bounded provider-to-rule-delta interpretation protocol.
+# ``prepare_rule_delta`` builds the visible preflight disclosure (offline, no
+# network); ``interpret_rule_delta`` performs exactly one user-confirmed provider
+# request, then validates, executes and independently verifies the delta into a
+# reviewable Candidate. Neither action adopts a Candidate, writes the repository,
+# or carries/returns a credential.
+ACTION_PREPARE_RULE_DELTA = "prepare_rule_delta"
+ACTION_INTERPRET_RULE_DELTA = "interpret_rule_delta"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -242,6 +250,12 @@ CANDIDATE_PACKAGE_ACTIONS = frozenset({ACTION_CANDIDATE_PACKAGE_STAGE})
 # The P4.7a declarative rule-delta protocol. Offline validation/binding/
 # verification plus isolated-runner execution of reviewed deltas only.
 RULE_DELTA_ACTIONS = frozenset({ACTION_RULE_DELTA_STAGE, ACTION_RULE_DELTA_RUN})
+# The P4.8 bounded provider-to-rule-delta interpretation protocol. ``prepare``
+# is read-only and offline; ``interpret`` performs exactly one confirmed request
+# through the distinct delta transport, then validates/executes/verifies only.
+RULE_DELTA_INTERPRET_ACTIONS = frozenset(
+    {ACTION_PREPARE_RULE_DELTA, ACTION_INTERPRET_RULE_DELTA}
+)
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -257,6 +271,7 @@ ALLOWED_ACTIONS = (
     | LIBRARY_ACTIONS
     | CANDIDATE_PACKAGE_ACTIONS
     | RULE_DELTA_ACTIONS
+    | RULE_DELTA_INTERPRET_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -548,6 +563,8 @@ __all__ = [
     "ACTION_CANDIDATE_PACKAGE_STAGE",
     "ACTION_RULE_DELTA_STAGE",
     "ACTION_RULE_DELTA_RUN",
+    "ACTION_PREPARE_RULE_DELTA",
+    "ACTION_INTERPRET_RULE_DELTA",
     "SCAN_ACTIONS",
     "WORKSPACE_ACTIONS",
     "TWIN_ACTIONS",
@@ -562,6 +579,7 @@ __all__ = [
     "LIBRARY_ACTIONS",
     "CANDIDATE_PACKAGE_ACTIONS",
     "RULE_DELTA_ACTIONS",
+    "RULE_DELTA_INTERPRET_ACTIONS",
     "ALLOWED_ACTIONS",
     "READ_ONLY_TASK_ACTIONS",
     "MAX_MESSAGE_BYTES",

@@ -52,7 +52,8 @@ _PROVIDER_SEAM = frozenset(
      "credential_sheet_win", "provider_config", "provider_cli", "credential_host",
      "deepseek_transport", "advisory",
      "app_package", "runner_broker", "container_runner", "runtime_handlers",
-     "verifier", "candidate_package", "rule_delta", "delta_verifier", "delta_candidate"}
+     "verifier", "candidate_package", "rule_delta", "delta_verifier", "delta_candidate",
+     "rule_delta_interpret", "delta_transport"}
 )
 
 # Network primitives a client must never import: only the backend transport may
@@ -211,7 +212,8 @@ class ClientArchitectureTests(unittest.TestCase):
     def test_candidate_package_modules_do_not_import_network(self):
         # The candidate-package contract and protected verifier are offline:
         # they never open a socket, so validation/staging stays network-free.
-        for name in ("candidate_package", "verifier", "rule_delta", "delta_verifier", "delta_candidate"):
+        for name in ("candidate_package", "verifier", "rule_delta", "delta_verifier",
+                     "delta_candidate", "rule_delta_interpret"):
             path = os.path.join(_SRC, name + ".py")
             imported = _imported_top_level_names(path)
             self.assertTrue(
@@ -221,23 +223,24 @@ class ClientArchitectureTests(unittest.TestCase):
             )
 
     def test_boundary_imports_transport_lazily(self):
-        # ``deepseek_transport`` (the only socket-opening module) must be
-        # imported inside a function body, never at module top level, so a
-        # frozen scan/serve/readiness loop never pulls in HTTP/socket code.
+        # ``deepseek_transport`` and ``delta_transport`` (the only
+        # socket-opening modules) must be imported inside a function body, never
+        # at module top level, so a frozen scan/serve/readiness loop never pulls
+        # in HTTP/socket code.
         boundary_path = os.path.join(_SRC, "boundary.py")
         with open(boundary_path, "r", encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         violations = []
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
-                if node.level and "deepseek_transport" in {
+                if node.level and {"deepseek_transport", "delta_transport"} & {
                     a.name for a in node.names
                 }:
                     if not _inside_function(node, tree):
                         violations.append(node.lineno)
         self.assertFalse(
             violations,
-            "boundary.py imports deepseek_transport at module top level "
+            "boundary.py imports a transport at module top level "
             f"(lines {violations}); import it lazily inside a function",
         )
 

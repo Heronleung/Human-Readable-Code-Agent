@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from . import app_package, rule_delta
+from . import app_package, delta_verifier, rule_delta
 from .container_runner import (
     ContainerRunner,
     PREFLIGHT_RUNTIME_BLOCKED,
@@ -208,8 +208,53 @@ def run_rule_delta(
     )
 
 
+def collect_delta_evidence(
+    delta: Any,
+    runner: Optional[ContainerRunner] = None,
+):
+    """Run each protected input through the isolated runner and return evidence.
+
+    Returns ``(evidence, error)`` where exactly one is ``None``. ``evidence`` is
+    a list of ``{"input": ..., "output": ...}`` claims produced by *actual*
+    isolated runner execution over the code-owned protected inputs (never by the
+    provider and never by a repair loop); ``error`` is a bounded state token
+    (``package_invalid`` / ``runtime_unavailable`` / ``runtime_blocked`` / a run
+    error). The protected inputs never enter the provider context — they are read
+    from :mod:`hrca.delta_verifier` here, after the network call.
+    """
+    runner = runner if runner is not None else ContainerRunner()
+    resolved = rule_delta.resolve_delta(delta)
+    if resolved is None:
+        return None, app_package.STATE_PACKAGE_INVALID
+    rule_id = resolved["rule_id"]
+    parameters = resolved["parameters"]
+    package = _rule_package(rule_id)
+    if package is None:  # pragma: no cover - guarded by the resolver
+        return None, app_package.STATE_PACKAGE_INVALID
+
+    preflight = runner.preflight()
+    if not preflight.get("available"):
+        state = (
+            app_package.STATE_RUNTIME_BLOCKED
+            if preflight.get("reason") == PREFLIGHT_RUNTIME_BLOCKED
+            else app_package.STATE_RUNTIME_UNAVAILABLE
+        )
+        return None, state
+
+    evidence = []
+    for inp in delta_verifier.protected_inputs(rule_id):
+        result, run_err = runner.run(
+            handler=package["handler"], input_payload=inp, parameters=parameters
+        )
+        if run_err is not None:
+            return None, run_err
+        evidence.append({"input": inp, "output": result})
+    return evidence, None
+
+
 __all__ = [
     "BROKER_SCHEMA_VERSION",
     "run_package",
     "run_rule_delta",
+    "collect_delta_evidence",
 ]

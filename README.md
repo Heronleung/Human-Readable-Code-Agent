@@ -429,6 +429,49 @@ bounded rule change without ever supplying code.
   document-interpretation, host-Python fallback, repository/Git or adoption
   side effect is introduced.
 
+## Provider-to-rule-delta interpretation (P4.8)
+
+The first honest provider-backed document-interpretation path: one explicitly
+confirmed DeepSeek request may translate one current saved **synthetic**
+quotation requirement into the existing `hrca.rule_delta` 1.0.0 data-only
+contract — never into code, commands, dependencies, paths, environment, UI,
+runtime or verifier settings.
+
+- **Distinct capability** (`prepare_rule_delta` / `interpret_rule_delta`). A
+  separate action pair, never a widening of the P4.2b advisory flow.
+  `prepare_rule_delta` builds a visible preflight disclosure **offline** (no
+  network, no credential); `interpret_rule_delta` performs exactly one
+  user-confirmed request and never adopts or writes the repository.
+- **Exact binding.** Every run binds the document id, head revision id, content
+  fingerprint, accepted-baseline fingerprint, schema, allowlisted model
+  (`deepseek-v4-flash`), disclosure manifest, delta fingerprint, runner identity
+  (`hrca-runner:v1`) and verifier identity (`hrca-rule-delta-verifier:1`). A
+  changed document or accepted predecessor makes any in-flight/returned result
+  stale and non-adoptable.
+- **Fail-closed pre-network limits** (`hrca.rule_delta_interpret`,
+  `hrca.delta_transport`). One request, zero retries, zero paid repairs, a 12 KiB
+  serialized body, ≤4,096 input tokens, ≤1,024 output tokens, a 45-second
+  provider deadline, a 120-second workflow deadline, an atomic US$0.01 local
+  reservation (from the verified peak $0.44 input / $1.32 output per 1M), and a
+  fixed origin/model/auth with thinking explicitly disabled. Unknown pricing,
+  insufficient reservation, unknown usage after dispatch, a stale scope or an
+  unconfirmed disclosure all fail closed.
+- **Exactly one structured outcome.** The provider output is either a valid
+  `hrca.rule_delta` 1.0.0, `clarification_required`, or `unsupported`. Prose-
+  wrapped JSON, unknown fields, code/script/command/path/env/network/UI/runtime/
+  verifier fields, unknown operations/families/parameters, duplicate changes and
+  invalid decimals are rejected before staging or runner startup.
+- **Code-owned verification path.** A valid quotation delta becomes a reviewable
+  Candidate only after strict delta validation, **real isolated runner
+  execution** over the code-owned protected inputs, and **independent-oracle**
+  match — never merely on the provider's word. The protected oracle cases never
+  enter the provider context. Adoption remains a separate explicit action.
+- **Calm user-visible states** cover preflight, cancellation, sending, usage
+  known/unknown, clarification, unsupported, invalid output, runner unavailable,
+  verification failed, stale, over-limit, pricing/reservation failure and
+  reviewable Candidate. The live request is separately gated and is never made
+  by save/open/select/preview/cancel.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:

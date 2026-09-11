@@ -1234,6 +1234,171 @@ def format_advisory_result(result: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# -- Provider-to-rule-delta interpretation client vocabulary (P4.8) ---------
+#
+# The normalized interpretation states and the request builders are held here as
+# literals so the client never imports the interpretation or transport domain
+# (which it must not import). Unknown values fall back to their raw token, so an
+# unexpected value can never surface raw text.
+
+DELTA_INTERPRET_STATE_LABELS = {
+    "preflight": "Ready to review",
+    "sending": "Sending…",
+    "cancel_requested": "Cancelled",
+    "stale": "Out of date",
+    "clarification_required": "Needs clarification",
+    "unsupported": "Unsupported",
+    "invalid_output": "Invalid response",
+    "usage_unknown": "Usage unknown",
+    "pricing_unknown": "Pricing unknown",
+    "reservation_failed": "Reservation failed",
+    "runner_unavailable": "Runtime unavailable",
+    "verification_failed": "Verification failed",
+    "over_limit": "Over limit",
+    "reviewable_candidate": "Reviewable",
+    "credential_missing": "Credential missing",
+    "network_denied": "Network denied",
+    "timeout": "Timed out",
+    "rate_limited": "Rate limited",
+    "quota_exceeded": "Quota exceeded",
+    "provider_unavailable": "Provider unavailable",
+    "context_rejected": "Context rejected",
+    "provider_failure": "Provider failure",
+}
+
+
+def delta_interpret_state_label(state: str) -> str:
+    """Return the human label for an interpretation ``state``."""
+    return DELTA_INTERPRET_STATE_LABELS.get(state, state)
+
+
+def build_prepare_rule_delta_request(
+    correlation_id: str, document_id: str
+) -> Dict[str, Any]:
+    """Build a ``prepare_rule_delta`` request (build the disclosure manifest).
+
+    Carries only the document id; the boundary derives the disclosure from the
+    saved requirement text and the code-owned instructions. No network access.
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_PREPARE_RULE_DELTA,
+        "document_id": document_id,
+    }
+
+
+def build_interpret_rule_delta_request(
+    correlation_id: str, document_id: str, token: str, confirmed: bool
+) -> Dict[str, Any]:
+    """Build an ``interpret_rule_delta`` request for one confirmed provider call.
+
+    ``token`` is the content-addressed token from a prior ``prepare_rule_delta``;
+    ``confirmed`` must be ``True`` for any network request, and ``False`` sends
+    nothing (the boundary returns ``cancel_requested``).
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_INTERPRET_RULE_DELTA,
+        "document_id": document_id,
+        "task": {"token": token, "confirmed": bool(confirmed)},
+    }
+
+
+def format_delta_disclosure(disclosure: Dict[str, Any]) -> str:
+    """Render a preflight interpretation disclosure as deterministic plain text.
+
+    Shows the exact recipient/model, the itemized outgoing manifest, the
+    policy/retention warning, the worst-case reservation and the one-attempt
+    limits. It never renders a credential or an endpoint.
+    """
+    if not disclosure:
+        return ""
+    caps = disclosure.get("caps") or {}
+    reservation = disclosure.get("reservation") or {}
+    lines = [
+        f"Provider: {disclosure.get('provider_id', 'unknown')}",
+        f"Model: {disclosure.get('model', 'unknown')}",
+        "One attempt: yes — no retry, no paid repair",
+        "",
+        "Disclosure — the items below will be sent to the provider:",
+    ]
+    for item in disclosure.get("items") or []:
+        lines.append(
+            f"  - {item.get('kind', 'unknown')}: {item.get('label', '?')} "
+            f"({item.get('bytes', 0)} bytes)"
+        )
+    lines.append("")
+    lines.append(
+        f"Limits: {caps.get('request_bytes', 0)} request bytes, "
+        f"{caps.get('input_tokens', 0)} input tokens, "
+        f"{caps.get('output_tokens', 0)} output tokens, "
+        f"{caps.get('timeout_seconds', 0)}s provider deadline, "
+        f"{caps.get('workflow_timeout_seconds', 0)}s workflow deadline."
+    )
+    lines.append("")
+    lines.append(
+        "Reservation: US$" + str(reservation.get("amount_usd", "?"))
+        + " (worst case US$" + str(reservation.get("worst_case_cost_usd", "?"))
+        + " at peak input US$" + str(reservation.get("input_rate_usd_per_1m", "?"))
+        + " / output US$" + str(reservation.get("output_rate_usd_per_1m", "?"))
+        + " per 1M tokens)."
+    )
+    lines.append("")
+    lines.append(str(disclosure.get("egress_statement", "")))
+    lines.append("")
+    lines.append(str(disclosure.get("policy_warning", "")))
+    return "\n".join(lines)
+
+
+def format_delta_interpret_result(result: Dict[str, Any]) -> str:
+    """Render a versioned interpretation result as deterministic plain text.
+
+    A reviewable candidate is shown as a distinct, non-adopted record with its
+    bound revision and the evidence produced by the isolated runner; every other
+    state is a calm bounded sentence. A credential, raw prompt, raw response or
+    hidden reasoning never appears.
+    """
+    if not result:
+        return ""
+    state = delta_interpret_state_label(str(result.get("state", "unknown")))
+    lines = [
+        "Rule interpretation (provider-backed)",
+        f"State: {state}",
+        f"Provider: {result.get('provider_id', 'unknown')}",
+        f"Model: {result.get('model', 'unknown')}",
+        f"Sent: {'yes' if result.get('sent') else 'no'}",
+    ]
+    usage = result.get("usage")
+    if usage:
+        lines.append(
+            "Usage: "
+            f"prompt {usage.get('prompt_tokens')}, "
+            f"completion {usage.get('completion_tokens')}, "
+            f"total {usage.get('total_tokens')}"
+        )
+    else:
+        lines.append("Usage: unknown")
+    candidate = result.get("candidate")
+    if candidate:
+        binding = candidate.get("binding") or {}
+        lines += [
+            "",
+            "Candidate (not adopted)",
+            f"Provenance: {candidate.get('provenance', 'unknown')}",
+            f"Bound revision: {binding.get('document_revision_id', 'unknown')}",
+            "Evidence: isolated runner output, independently verified.",
+        ]
+    limitations = result.get("limitations") or []
+    if limitations:
+        lines.append("")
+        lines.append("Limitations:")
+        for limitation in limitations:
+            lines.append(f"  - {limitation}")
+    return "\n".join(lines)
+
+
 # -- Document-driven app-package client vocabulary (P4.3) -----------------
 #
 # The normalized run-result states are held here as literals so the client never
@@ -1978,6 +2143,12 @@ __all__ = [
     "build_plan_advisory_request",
     "format_advisory_disclosure",
     "format_advisory_result",
+    "DELTA_INTERPRET_STATE_LABELS",
+    "delta_interpret_state_label",
+    "build_prepare_rule_delta_request",
+    "build_interpret_rule_delta_request",
+    "format_delta_disclosure",
+    "format_delta_interpret_result",
     "RUN_STATE_LABELS",
     "run_state_label",
     "build_get_package_request",

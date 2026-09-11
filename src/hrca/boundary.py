@@ -52,6 +52,7 @@ from . import (
     provider,
     provider_config,
     rule_delta,
+    rule_delta_interpret,
     twin,
     twin_store,
     verifier,
@@ -84,6 +85,7 @@ class WorkspaceSession:
         credential_store: Any = None,
         credential_prompt: Any = None,
         advisory_transport: Any = None,
+        delta_transport: Any = None,
         runner: Any = None,
     ) -> None:
         self.root: Optional[str] = None
@@ -100,6 +102,12 @@ class WorkspaceSession:
         # Provider double). When absent the confirmed plan-advisory handler
         # constructs the real DeepSeek transport lazily.
         self.advisory_transport = advisory_transport
+        # Backend-owned rule-delta interpretation transport, injected for tests
+        # (a deterministic Provider double). When absent the confirmed
+        # interpret-rule-delta handler constructs the real delta transport
+        # lazily. Distinct from ``advisory_transport``: the delta flow is a
+        # separate capability and is never served by the advisory transport.
+        self.delta_transport = delta_transport
         # Backend-owned isolated runner, injected for tests (a deterministic
         # runner double). When absent the run-package handler constructs the
         # real container runner lazily.
@@ -322,6 +330,10 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _stage_rule_delta_result(request, session)
     elif action == contract.ACTION_RULE_DELTA_RUN:
         result = _run_rule_delta_result(request, session)
+    elif action == contract.ACTION_PREPARE_RULE_DELTA:
+        result = _prepare_rule_delta_result(request, session)
+    elif action == contract.ACTION_INTERPRET_RULE_DELTA:
+        result = _interpret_rule_delta_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -2298,6 +2310,369 @@ def _run_rule_delta_result(
     from . import runner_broker
 
     return runner_broker.run_rule_delta(delta, form_input, session.runner)
+
+
+# -- Provider-to-rule-delta interpretation handlers (P4.8) -------------------
+#
+# ``prepare_rule_delta`` builds the bounded disclosure manifest offline;
+# ``interpret_rule_delta`` performs exactly one confirmed provider request, then
+# validates the delta, executes it through the isolated runner, and verifies the
+# runner output against the independent oracle before producing a reviewable
+# Candidate. Neither action adopts a Candidate, writes the repository, or
+# carries/returns a credential. The provider output is untrusted data and never
+# selects policy, permission, runtime, verifier, expected result, adoption or
+# retry behaviour.
+
+
+def _interpret_head(
+    session: WorkspaceSession, document_id: str
+) -> Dict[str, Any]:
+    """Return the head revision, accepted baseline and requirement text for a
+    document, raising ``document_not_saved`` when no revision has been saved."""
+    store = _load_document_store(session, document_id)
+    state = document.document_state(store)
+    head = state.get("head_revision") or {}
+    if not isinstance(head.get("content_fingerprint"), str) or not head.get("revision_id"):
+        raise contract.ContractError("document_not_saved")
+    accepted = state.get("accepted")
+    return {
+        "document_name": state.get("document", {}).get("name"),
+        "revision_id": head["revision_id"],
+        "revision_number": head.get("revision_number"),
+        "fingerprint": head["content_fingerprint"],
+        "requirement_text": head.get("content") or "",
+        "baseline_fingerprint": (
+            accepted.get("document_fingerprint") if accepted else None
+        ),
+    }
+
+
+def _interpret_result(
+    *,
+    token: str,
+    state: str,
+    sent: bool,
+    usage: Optional[Dict[str, Optional[int]]] = None,
+    candidate: Optional[Dict[str, Any]] = None,
+    limitations: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Assemble a bounded interpretation result envelope."""
+    return rule_delta_interpret.assemble_result(
+        state=state,
+        token=token,
+        sent=sent,
+        usage=usage,
+        candidate=candidate,
+        limitations=limitations if limitations is not None else [],
+    )
+
+
+def _prepare_rule_delta_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Build the visible preflight disclosure for one Working Document (offline).
+
+    Performs no network, credential or provider access. Returns the itemized
+    disclosure manifest and a content-addressed token, or a bounded ``reason``
+    when the requirement text would exceed a limit. The only variable content is
+    the selected saved requirement text; every other disclosure item is
+    code-owned.
+    """
+    document_id = _document_id(request)
+    head = _interpret_head(session, document_id)
+    requirement_text = head["requirement_text"]
+
+    base = {
+        "provider_id": rule_delta_interpret.PROVIDER_ID,
+        "model": rule_delta_interpret.MODEL_ID,
+        "document_id": document_id,
+        "document_name": head["document_name"],
+        "revision_id": head["revision_id"],
+        "revision_number": head["revision_number"],
+        "token": None,
+        "disclosure": None,
+    }
+    instruction = rule_delta_interpret.build_instruction()
+    if rule_delta_interpret.request_too_large(instruction, requirement_text):
+        return {
+            **base,
+            "available": False,
+            "reason": rule_delta_interpret.STATE_OVER_LIMIT,
+        }
+
+    token = rule_delta_interpret.interpretation_token(
+        document_id=document_id,
+        revision_id=head["revision_id"],
+        fingerprint=head["fingerprint"],
+        baseline_fingerprint=head["baseline_fingerprint"],
+        requirement_text=requirement_text,
+    )
+    return {
+        **base,
+        "available": True,
+        "reason": None,
+        "token": token,
+        "disclosure": rule_delta_interpret.build_disclosure(
+            requirement_text=requirement_text
+        ),
+    }
+
+
+def _interpret_rule_delta_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Perform exactly one confirmed provider interpretation request.
+
+    ``task`` must carry a boolean ``confirmed`` and the ``token`` from a prior
+    ``prepare_rule_delta``. An absent/false ``confirmed`` sends nothing
+    (``cancel_requested``). The scope is re-derived deterministically and must
+    match the token (else ``stale``). Limits, pricing and reservation are
+    enforced before any network access. On a valid quotation delta the isolated
+    runner executes the protected inputs and the independent oracle verifies the
+    output before a reviewable Candidate is produced. Every failure state
+    preserves the current Accepted Version and never retries.
+    """
+    document_id = _document_id(request)
+    task = request.get("task")
+    if not isinstance(task, dict):
+        raise contract.ContractError("invalid_request")
+    confirmed = task.get("confirmed")
+    if not isinstance(confirmed, bool):
+        raise contract.ContractError("invalid_request")
+    token = task.get("token")
+    if not isinstance(token, str) or not token:
+        raise contract.ContractError("invalid_request")
+
+    head = _interpret_head(session, document_id)
+    requirement_text = head["requirement_text"]
+
+    def result(
+        state: str,
+        *,
+        sent: bool,
+        usage: Optional[Dict[str, Optional[int]]] = None,
+        candidate: Optional[Dict[str, Any]] = None,
+        limitations: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        return _interpret_result(
+            token=token, state=state, sent=sent, usage=usage,
+            candidate=candidate, limitations=limitations,
+        )
+
+    if not confirmed:
+        return result(
+            rule_delta_interpret.STATE_CANCEL_REQUESTED,
+            sent=False,
+            limitations=["cancelled by the user; nothing was sent"],
+        )
+
+    current_token = rule_delta_interpret.interpretation_token(
+        document_id=document_id,
+        revision_id=head["revision_id"],
+        fingerprint=head["fingerprint"],
+        baseline_fingerprint=head["baseline_fingerprint"],
+        requirement_text=requirement_text,
+    )
+    if current_token != token:
+        return result(
+            rule_delta_interpret.STATE_STALE,
+            sent=False,
+            limitations=["prepared scope no longer matches the current document"],
+        )
+
+    # Enforce bounds before any network access.
+    instruction = rule_delta_interpret.build_instruction()
+    if rule_delta_interpret.request_too_large(instruction, requirement_text):
+        return result(
+            rule_delta_interpret.STATE_OVER_LIMIT,
+            sent=False,
+            limitations=[rule_delta_interpret.REASON_TOO_LARGE],
+        )
+    if rule_delta_interpret.pricing_for(rule_delta_interpret.MODEL_ID) is None:
+        return result(
+            rule_delta_interpret.STATE_PRICING_UNKNOWN,
+            sent=False,
+            limitations=[rule_delta_interpret.REASON_PRICING_UNKNOWN],
+        )
+    if not rule_delta_interpret.reservation_record()["sufficient"]:
+        return result(
+            rule_delta_interpret.STATE_RESERVATION_FAILED,
+            sent=False,
+            limitations=[rule_delta_interpret.REASON_RESERVATION_INSUFFICIENT],
+        )
+
+    # Exactly one backend-owned network attempt. The transport is imported
+    # lazily (inside this handler only) so frozen scan/serve/readiness never
+    # pull in HTTP/socket code.
+    from . import delta_transport
+
+    if session.delta_transport is not None:
+        transport = session.delta_transport
+    else:
+        credential_store_impl = _resolve_store(session)
+        target = _active_credential_target(session)
+
+        def get_credential() -> Optional[str]:
+            if (
+                target is None
+                or credential_store_impl is None
+                or not credential_store_impl.available()
+            ):
+                return None
+            try:
+                return credential_store_impl.read(target)
+            except credential_store.CredentialStoreError:
+                return None
+
+        transport = delta_transport.DeltaInterpretProvider(
+            credential_getter=get_credential
+        )
+
+    provider_request = rule_delta_interpret.build_provider_request(
+        token=token, requirement_text=requirement_text
+    )
+    try:
+        provider_result = transport.generate(
+            provider.ProviderRequest(
+                task_id=provider_request["task_id"],
+                task=provider_request["task"],
+                context=tuple(provider_request["context"]),
+            )
+        )
+    except delta_transport.TransportError as exc:
+        return result(exc.code, sent=True, limitations=[exc.code])
+    except (provider.ProviderError, Exception):
+        return result(
+            rule_delta_interpret.STATE_PROVIDER_FAILURE,
+            sent=True,
+            limitations=["the provider request failed"],
+        )
+
+    usage = provider_result.usage.to_dict() if provider_result.usage is not None else None
+    if usage is None:
+        return result(
+            rule_delta_interpret.STATE_USAGE_UNKNOWN,
+            sent=True,
+            limitations=["provider usage was not returned"],
+        )
+    if not rule_delta_interpret.usage_within_reservation(usage):
+        return result(
+            rule_delta_interpret.STATE_RESERVATION_FAILED,
+            sent=True,
+            usage=usage,
+            limitations=[rule_delta_interpret.REASON_RESERVATION_INSUFFICIENT],
+        )
+
+    payload = provider_result.structured_payload
+    if not isinstance(payload, dict):
+        return result(
+            rule_delta_interpret.STATE_INVALID_OUTPUT,
+            sent=True,
+            usage=usage,
+            limitations=["provider output is not structured"],
+        )
+
+    outcome = payload.get("outcome")
+    if outcome == rule_delta_interpret.OUTCOME_CLARIFICATION_REQUIRED:
+        return result(
+            rule_delta_interpret.STATE_CLARIFICATION_REQUIRED,
+            sent=True,
+            usage=usage,
+        )
+    if outcome == rule_delta_interpret.OUTCOME_UNSUPPORTED:
+        return result(
+            rule_delta_interpret.STATE_UNSUPPORTED,
+            sent=True,
+            usage=usage,
+        )
+    if outcome != rule_delta_interpret.OUTCOME_DELTA:
+        return result(
+            rule_delta_interpret.STATE_INVALID_OUTPUT,
+            sent=True,
+            usage=usage,
+            limitations=["unknown outcome"],
+        )
+
+    delta = payload.get("delta")
+    if rule_delta.validate_delta(delta) is not None:
+        return result(
+            rule_delta_interpret.STATE_INVALID_OUTPUT,
+            sent=True,
+            usage=usage,
+            limitations=["delta is invalid"],
+        )
+    resolved = rule_delta.resolve_delta(delta)
+    rule_id = resolved["rule_id"]
+    parameters = resolved["parameters"]
+
+    # Defensive re-binding: the token already matched, but re-assert the exact
+    # binding is still current before any runner starts.
+    current = _interpret_head(session, document_id)
+    if (
+        current["revision_id"] != head["revision_id"]
+        or current["fingerprint"] != head["fingerprint"]
+        or current["baseline_fingerprint"] != head["baseline_fingerprint"]
+    ):
+        return result(
+            rule_delta_interpret.STATE_STALE,
+            sent=True,
+            usage=usage,
+            limitations=["document or baseline changed during interpretation"],
+        )
+
+    # Isolated runner execution over the code-owned protected inputs (the
+    # protected inputs never enter the provider context).
+    from . import runner_broker
+
+    evidence, evidence_err = runner_broker.collect_delta_evidence(delta, session.runner)
+    if evidence_err is not None:
+        return result(
+            rule_delta_interpret.STATE_RUNNER_UNAVAILABLE,
+            sent=True,
+            usage=usage,
+            limitations=[evidence_err],
+        )
+
+    # Independent oracle verification of the runner output.
+    verify_reason = delta_verifier.verify(rule_id, parameters, evidence)
+    if verify_reason is not None:
+        return result(
+            rule_delta_interpret.STATE_VERIFICATION_FAILED,
+            sent=True,
+            usage=usage,
+            limitations=[verify_reason],
+        )
+
+    # Build the reviewable delta candidate (never auto-adopted).
+    binding = {
+        "document_revision_id": head["revision_id"],
+        "document_fingerprint": head["fingerprint"],
+        "baseline_fingerprint": head["baseline_fingerprint"],
+        "delta_fingerprint": delta_candidate.fingerprint(delta),
+        "runner_identity": app_package.RUNNER_IDENTITY,
+        "verifier_identity": delta_verifier.DELTA_VERIFIER_IDENTITY,
+    }
+    candidate = {
+        "schema_version": delta_candidate.DELTA_CANDIDATE_SCHEMA_VERSION,
+        "provenance": rule_delta.PROVENANCE_PROVIDER_DELTA,
+        "delta": delta,
+        "binding": binding,
+        "evidence": evidence,
+    }
+    if delta_candidate.validate_candidate(candidate) is not None:
+        return result(
+            rule_delta_interpret.STATE_VERIFICATION_FAILED,
+            sent=True,
+            usage=usage,
+            limitations=["candidate record is invalid"],
+        )
+
+    return result(
+        rule_delta_interpret.STATE_REVIEWABLE_CANDIDATE,
+        sent=True,
+        usage=usage,
+        candidate=candidate,
+    )
 
 
 if __name__ == "__main__":
