@@ -761,6 +761,43 @@ def _plan_proposal_result(request: Dict[str, Any], session: WorkspaceSession) ->
 # -- Provider readiness handler (P4.2a) ----------------------------------
 
 
+def _credential_target_for(config: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Return the credential-store target for ``config``, or ``None``.
+
+    Delegates to :func:`provider_config.active_credential_target` so the
+    readiness surface and the provider action resolve the same opaque target:
+    the active profile's ``hrca:profile:<id>`` target, or the legacy
+    ``hrca:deepseek`` target when no profile exists yet.
+    """
+    return provider_config.active_credential_target(config)
+
+
+def _credential_state_for(
+    store: Any, config: Optional[Dict[str, Any]]
+) -> str:
+    """Return the bounded retrieval classification for ``config``'s credential.
+
+    The credential is read transiently — inside the backend-owned credential
+    boundary — and only the bounded token from
+    :func:`credential_store.classify_retrieval` escapes; the secret is never
+    returned, logged or serialized. This is the single point where the
+    readiness/status surface distinguishes *metadata presence* from *actually
+    retrievable*.
+    """
+    return credential_store.classify_retrieval(
+        store, _credential_target_for(config)
+    )
+
+
+def _credential_recovery(state: str) -> str:
+    """Return a bounded, secret-free recovery instruction for a credential state."""
+    if state == credential_store.CREDENTIAL_NO_TARGET:
+        return "no active API-key profile is selected — add one in Settings"
+    if state == credential_store.CREDENTIAL_UNRETRIEVABLE:
+        return "the stored API key could not be read — replace it in Settings"
+    return "the active profile has no stored API key — replace it in Settings"
+
+
 def _get_readiness_result(
     request: Dict[str, Any], session: WorkspaceSession
 ) -> Dict[str, Any]:
@@ -768,29 +805,22 @@ def _get_readiness_result(
 
     Only non-secret facts are reported: the fixed provider id, the allowlisted
     model (or ``None`` when the config is invalid) and a bounded state derived
-    from the *active* profile's credential presence — or the legacy credential
-    presence when no profile exists yet. The credential value is never read or
-    surfaced, and the result never claims network authentication or
-    availability. This path performs no migration (it must stay read-free).
+    from the *active* profile's credential retrievability — or the legacy
+    credential retrievability when no profile exists yet. The credential is read
+    transiently for the retrieval check but is never surfaced; the result never
+    claims network authentication or availability. This path performs no
+    migration.
     """
     store = _resolve_store(session)
     store_available = store.available()
     config, config_error = provider_config.load(session.store_base)
     if config is None and config_error is None:
         config = provider_config.default_config()
-    credential_present = False
-    if config is not None:
-        active = config.get("active_profile_id")
-        if active is not None:
-            credential_present = store_available and store.has(
-                credential_store.profile_target(active)
-            )
-        elif not config.get("profiles") and store_available:
-            credential_present = store.has(credential_store.TARGET_NAME)
+    credential_state = _credential_state_for(store, config)
     return deepseek.redacted_readiness(
         config=config,
         config_error=config_error,
-        credential_present=credential_present,
+        credential_state=credential_state,
         store_available=store_available,
     )
 
@@ -1009,9 +1039,7 @@ def _profiles_result(
                 }
             )
     active = config.get("active_profile_id") if config is not None else None
-    active_present = any(
-        p["profile_id"] == active and p["credential_present"] for p in profiles
-    )
+    credential_state = _credential_state_for(store, config)
     model = None
     if config_error is None and config is not None:
         candidate = config.get("model")
@@ -1019,7 +1047,7 @@ def _profiles_result(
             model = candidate
     state = deepseek.readiness_state(
         config_error=config_error,
-        credential_present=active_present,
+        credential_state=credential_state,
         store_available=store_available,
     )
     return {
@@ -1028,7 +1056,7 @@ def _profiles_result(
         "state": state,
         "profiles": profiles,
         "active_profile_id": active,
-        "credential_present": active_present,
+        "credential_present": credential_state == credential_store.CREDENTIAL_RETRIEVABLE,
         "authenticated": False,
         "online": False,
         "executable": False,
@@ -1266,14 +1294,7 @@ def _active_credential_target(session: WorkspaceSession) -> Optional[str]:
     config, config_error = provider_config.load(session.store_base)
     if config is None and config_error is None:
         config = provider_config.default_config()
-    if config is None:
-        return None
-    active = config.get("active_profile_id")
-    if active is not None:
-        return credential_store.profile_target(active)
-    if not config.get("profiles"):
-        return credential_store.TARGET_NAME
-    return None
+    return _credential_target_for(config)
 
 
 def _advisory_result(
@@ -1446,6 +1467,19 @@ def _plan_advisory_result(
     else:
         credential_store_impl = _resolve_store(session)
         target = _active_credential_target(session)
+        # Fail before transport when the credential is not retrievable: zero
+        # HTTP and no provider attempt is consumed (``sent: false``).
+        cred_state = credential_store.classify_retrieval(credential_store_impl, target)
+        if cred_state != credential_store.CREDENTIAL_RETRIEVABLE:
+            return _advisory_result(
+                state=advisory.STATE_CREDENTIAL_MISSING,
+                token=token,
+                sent=False,
+                authority=authority,
+                provider_suggested=None,
+                usage=None,
+                limitations=[_credential_recovery(cred_state)],
+            )
 
         def get_credential() -> Optional[str]:
             if target is None or credential_store_impl is None or not credential_store_impl.available():
@@ -2511,6 +2545,17 @@ def _interpret_rule_delta_result(
     else:
         credential_store_impl = _resolve_store(session)
         target = _active_credential_target(session)
+        # Resolve and verify retrievability BEFORE the transport is built or any
+        # HTTP is attempted: a missing, orphaned or unreadable credential fails
+        # here with zero network access, consumes no provider attempt and is
+        # reported as ``sent: false`` with a clear recovery instruction.
+        cred_state = credential_store.classify_retrieval(credential_store_impl, target)
+        if cred_state != credential_store.CREDENTIAL_RETRIEVABLE:
+            return result(
+                rule_delta_interpret.STATE_CREDENTIAL_MISSING,
+                sent=False,
+                limitations=[_credential_recovery(cred_state)],
+            )
 
         def get_credential() -> Optional[str]:
             if (

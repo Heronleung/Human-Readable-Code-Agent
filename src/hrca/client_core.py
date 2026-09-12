@@ -63,6 +63,8 @@ PROVIDER_UNAVAILABLE = "unavailable"
 PROVIDER_READINESS_STATE_LABELS = {
     "configured": "Configured",
     "missing_credential": "Credential missing",
+    "no_profile": "No API key profile",
+    "credential_unretrievable": "API key unreadable",
     "unavailable": "Unavailable",
     "invalid_config": "Invalid configuration",
 }
@@ -89,6 +91,11 @@ PROVIDER_STATUS_MESSAGES = {
     PROVIDER_STATUS_PENDING: "Checking local provider configuration…",
     PROVIDER_STATUS_CONFIGURED: "DeepSeek is configured locally",
     PROVIDER_STATUS_MISSING_CREDENTIAL: "DeepSeek API key not configured",
+    # The two new bounded states (P4.8b): the boundary now distinguishes a
+    # metadata-only/orphaned profile and an unreadable credential from a real,
+    # retrievable key, so a misleading "configured" success can no longer occur.
+    "no_profile": "No DeepSeek API key profile — add one in Settings",
+    "credential_unretrievable": "DeepSeek API key unreadable — replace it in Settings",
     PROVIDER_STATUS_UNAVAILABLE: "Provider setup is unavailable on this platform",
     PROVIDER_STATUS_INVALID_CONFIG: "Provider configuration needs repair",
     PROVIDER_STATUS_FAILED: "Provider check failed; try again.",

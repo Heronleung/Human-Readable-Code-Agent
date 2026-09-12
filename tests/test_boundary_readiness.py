@@ -94,20 +94,110 @@ class BoundaryReadinessTests(unittest.TestCase):
         for token in ("secret", "token", "api_key", "password", "authorization", "bearer"):
             self.assertNotIn(token, serialized)
 
-    def test_readiness_uses_presence_not_read(self):
-        # The readiness handler must use ``has`` (presence) and never
-        # materialize the credential; a store that fails on ``read`` still
-        # reports the credential as present.
-        class PresenceOnlyStore(credential_store.FakeCredentialStore):
+    def test_readiness_reads_for_retrievability_not_presence(self):
+        # P4.8b: readiness must distinguish "metadata present" from "actually
+        # retrievable". An empty-blob credential reports ``has`` true but reads
+        # an empty secret, so it must be ``missing_credential`` — never the
+        # misleading ``configured``.
+        class EmptyBlobStore(credential_store.FakeCredentialStore):
             def read(self, target):
-                raise AssertionError("read() must not be called for readiness")
+                _ = self._values.get(target)
+                return ""  # present (has=True) but not retrievable
 
-        store = PresenceOnlyStore()
-        store.store(credential_store.TARGET_NAME, "test-value")
+        store = EmptyBlobStore()
+        store.store(credential_store.TARGET_NAME, "x")
         self.session.credential_store = store
         env = self._do()
         self.assertTrue(env["ok"])
+        self.assertEqual(env["result"]["state"], "missing_credential")
+        self.assertFalse(env["result"]["credential_present"])
+
+    def test_readiness_unretrievable_credential_is_distinct(self):
+        # A bounded read failure is ``credential_unretrievable``, distinct from
+        # a plain missing credential.
+        class ReadFailsStore(credential_store.FakeCredentialStore):
+            def read(self, target):
+                raise credential_store.CredentialStoreError("store_failed")
+
+        store = ReadFailsStore()
+        store.store(credential_store.TARGET_NAME, "x")
+        self.session.credential_store = store
+        env = self._do()
+        self.assertTrue(env["ok"])
+        self.assertEqual(env["result"]["state"], "credential_unretrievable")
+        self.assertFalse(env["result"]["credential_present"])
+
+    def test_readiness_active_profile_retrievable_is_configured(self):
+        profile_id = "a" * 32
+        target = credential_store.profile_target(profile_id)
+        self.store.store(target, "secret-token-abc123")
+        self._write_config(
+            {
+                "schema_version": provider_config.CONFIG_SCHEMA_VERSION,
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "profiles": [
+                    {
+                        "profile_id": profile_id,
+                        "provider_id": "deepseek",
+                        "display_name": "Work",
+                    }
+                ],
+                "active_profile_id": profile_id,
+            }
+        )
+        env = self._do()
+        self.assertTrue(env["ok"])
         self.assertEqual(env["result"]["state"], "configured")
+        self.assertTrue(env["result"]["credential_present"])
+
+    def test_readiness_orphaned_profile_is_missing_credential(self):
+        # Profile metadata exists (and is active) but no credential is stored:
+        # metadata-only must never produce a "configured" success.
+        profile_id = "a" * 32
+        self._write_config(
+            {
+                "schema_version": provider_config.CONFIG_SCHEMA_VERSION,
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "profiles": [
+                    {
+                        "profile_id": profile_id,
+                        "provider_id": "deepseek",
+                        "display_name": "Work",
+                    }
+                ],
+                "active_profile_id": profile_id,
+            }
+        )
+        env = self._do()
+        self.assertTrue(env["ok"])
+        self.assertEqual(env["result"]["state"], "missing_credential")
+        self.assertFalse(env["result"]["credential_present"])
+
+    def test_readiness_no_active_profile_is_no_profile(self):
+        # Profiles exist but none is active: no credential applies.
+        profile_id = "a" * 32
+        self.store.store(credential_store.profile_target(profile_id), "x")
+        self._write_config(
+            {
+                "schema_version": provider_config.CONFIG_SCHEMA_VERSION,
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "profiles": [
+                    {
+                        "profile_id": profile_id,
+                        "provider_id": "deepseek",
+                        "display_name": "Work",
+                    }
+                ],
+                "active_profile_id": None,
+            }
+        )
+        env = self._do()
+        self.assertTrue(env["ok"])
+        self.assertEqual(env["result"]["state"], "no_profile")
+        self.assertFalse(env["result"]["credential_present"])
 
 
 if __name__ == "__main__":

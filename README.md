@@ -463,6 +463,16 @@ runtime or verifier settings.
   1M), and a fixed origin/model/auth with thinking explicitly disabled. Unknown
   pricing, insufficient reservation, unknown usage after dispatch, a stale scope
   or an unconfirmed disclosure all fail closed.
+- **Retrievable-vs-metadata readiness (P4.8b).** The redacted local readiness/
+  status surface now distinguishes `no_profile`, `missing_credential`
+  (metadata-only / orphaned), `credential_unretrievable` (a bounded read
+  failure) and `configured` (an actually-retrieved non-empty secret) — instead
+  of a single presence-derived "configured". The readiness check reads the
+  credential transiently inside the backend credential boundary and never
+  surfaces it. A missing, orphaned or unreadable credential fails **before
+  transport construction** with zero HTTP, `sent: false` and a recovery
+  instruction, so profile metadata alone can never produce a misleading
+  "configured" success.
 - **Exactly one structured outcome.** The provider output is either a valid
   `hrca.rule_delta` 1.0.0, `clarification_required`, or `unsupported`. Prose-
   wrapped JSON, unknown fields, code/script/command/path/env/network/UI/runtime/

@@ -9,6 +9,8 @@ after isolated execution and independent verification.
 
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 import unittest
 
@@ -461,6 +463,115 @@ class BoundaryRuleDeltaInterpretTests(unittest.TestCase):
         self.assertIsNotNone(
             rule_delta_interpret.pricing_for(rule_delta_interpret.MODEL_ID)
         )
+
+    # -- transport-before-credential ordering (P4.8b) ----------------------
+
+    def test_missing_credential_fails_before_transport_construction(self):
+        from unittest import mock
+
+        from hrca import credential_store, delta_transport
+
+        self.session.credential_store = credential_store.FakeCredentialStore()
+        document_id = self._saved()
+        token = self._prepare(document_id)["result"]["token"]
+
+        def _boom(*args, **kwargs):
+            raise AssertionError(
+                "transport must not be constructed without a retrievable credential"
+            )
+
+        with mock.patch.object(
+            delta_transport, "DeltaInterpretProvider", side_effect=_boom
+        ):
+            env = self._interpret(document_id, token, confirmed=True)
+
+        result = env["result"]
+        self.assertEqual(result["state"], rule_delta_interpret.STATE_CREDENTIAL_MISSING)
+        self.assertFalse(result["sent"])
+        self.assertIsNone(result["candidate"])
+        self.assertEqual(self.session.runner.run_calls, 0)
+        # A clear, bounded recovery instruction is returned — never a secret.
+        self.assertTrue(result["limitations"])
+        self.assertIn("Settings", result["limitations"][0])
+
+    def test_orphaned_active_profile_fails_before_transport(self):
+        # A profile is present and active in the config but its credential is
+        # absent (metadata-only): the confirmed interpret fails before any
+        # transport with ``sent: false`` and a recovery instruction.
+        from unittest import mock
+
+        from hrca import credential_store, delta_transport, provider_config
+
+        profile_id = "a" * 32
+        self.session.credential_store = credential_store.FakeCredentialStore()
+        os.makedirs(self._tmp.name, exist_ok=True)
+        with open(
+            provider_config.config_path(self._tmp.name), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(
+                {
+                    "schema_version": provider_config.CONFIG_SCHEMA_VERSION,
+                    "provider_id": "deepseek",
+                    "model": "deepseek-flash",
+                    "profiles": [
+                        {
+                            "profile_id": profile_id,
+                            "provider_id": "deepseek",
+                            "display_name": "Work",
+                        }
+                    ],
+                    "active_profile_id": profile_id,
+                },
+                fh,
+            )
+        document_id = self._saved()
+        token = self._prepare(document_id)["result"]["token"]
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("transport must not be constructed")
+
+        with mock.patch.object(
+            delta_transport, "DeltaInterpretProvider", side_effect=_boom
+        ):
+            env = self._interpret(document_id, token, confirmed=True)
+        result = env["result"]
+        self.assertEqual(result["state"], rule_delta_interpret.STATE_CREDENTIAL_MISSING)
+        self.assertFalse(result["sent"])
+
+    def test_retrievable_credential_passes_precheck_and_dispatches(self):
+        # With a retrievable credential the pre-check passes, the transport is
+        # constructed with a working credential getter (resolving the same
+        # opaque target) and the single provider request proceeds.
+        from unittest import mock
+
+        from hrca import credential_store, delta_transport
+
+        store = credential_store.FakeCredentialStore()
+        store.store(credential_store.TARGET_NAME, "sk-test-secret")
+        self.session.credential_store = store
+        document_id = self._saved()
+        token = self._prepare(document_id)["result"]["token"]
+
+        captured = {}
+
+        class FakeProvider:
+            def __init__(self, credential_getter=None, **kwargs):
+                captured["credential_getter"] = credential_getter
+
+            def generate(self, request):
+                captured["generate_called"] = True
+                return _delta_result(_delta_payload())
+
+        with mock.patch.object(delta_transport, "DeltaInterpretProvider", FakeProvider):
+            env = self._interpret(document_id, token, confirmed=True)
+
+        result = env["result"]
+        self.assertEqual(
+            result["state"], rule_delta_interpret.STATE_REVIEWABLE_CANDIDATE
+        )
+        self.assertTrue(result["sent"])
+        self.assertTrue(captured.get("generate_called"))
+        self.assertEqual(captured["credential_getter"](), "sk-test-secret")
 
 
 if __name__ == "__main__":

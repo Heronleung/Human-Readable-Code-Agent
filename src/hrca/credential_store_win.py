@@ -162,7 +162,12 @@ class WindowsCredentialStore(CredentialStore):
                 return ""
             blob = ctypes.cast(pcred.contents.CredentialBlob, ctypes.c_void_p)
             data = ctypes.string_at(blob, size)
-            return data.decode("utf-8")
+            try:
+                return data.decode("utf-8")
+            except UnicodeDecodeError:
+                # A non-UTF-8 blob is a bounded retrieval failure, never a raw
+                # decode error (which could carry credential-derived bytes).
+                raise CredentialStoreError("store_failed")
         finally:
             self._advapi32.CredFree(ctypes.cast(pcred, ctypes.c_void_p))
 

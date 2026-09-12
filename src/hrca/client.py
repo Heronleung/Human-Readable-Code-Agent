@@ -4428,7 +4428,14 @@ class MainWindow(QMainWindow):
         )
         self._update_document_actions()
         self._render_rule_delta_result(result)
-        self._set_status(STATE_SUCCESS, f"preview {delta_interpret_state_label(state)}")
+        # Only a reviewable candidate is a successful preview outcome; a
+        # credential-missing (or any other bounded) failure must not render the
+        # protocol envelope as "success".
+        label = delta_interpret_state_label(state)
+        if state == _RULE_DELTA_REVIEWABLE:
+            self._set_status(STATE_SUCCESS, f"preview {label}")
+        else:
+            self._set_status(STATE_FAILED, f"preview {label}")
 
     def _on_rule_delta_error(self, reason: str) -> None:
         self._rule_delta_pending = False

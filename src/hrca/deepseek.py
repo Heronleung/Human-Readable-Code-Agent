@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from . import credential_store
+
 # Fixed provider identity. The desktop/NDJSON surface may display this id, but
 # must never receive an endpoint, header, model free-text or credential.
 PROVIDER_ID = "deepseek"
@@ -81,12 +83,16 @@ def migrate_model(model: Any) -> Optional[str]:
 
 READY_STATE_CONFIGURED = "configured"
 READY_STATE_MISSING_CREDENTIAL = "missing_credential"
+READY_STATE_NO_PROFILE = "no_profile"
+READY_STATE_CREDENTIAL_UNRETRIEVABLE = "credential_unretrievable"
 READY_STATE_UNAVAILABLE = "unavailable"
 READY_STATE_INVALID_CONFIG = "invalid_config"
 READY_STATES = frozenset(
     {
         READY_STATE_CONFIGURED,
         READY_STATE_MISSING_CREDENTIAL,
+        READY_STATE_NO_PROFILE,
+        READY_STATE_CREDENTIAL_UNRETRIEVABLE,
         READY_STATE_UNAVAILABLE,
         READY_STATE_INVALID_CONFIG,
     }
@@ -96,48 +102,62 @@ READY_STATES = frozenset(
 def readiness_state(
     *,
     config_error: Optional[str],
-    credential_present: bool,
+    credential_state: str,
     store_available: bool,
 ) -> str:
     """Return the deterministic redacted readiness state.
 
-    Precedence:
+    ``credential_state`` is one of the bounded
+    :data:`~hrca.credential_store.CREDENTIAL_RETRIEVAL_STATES` classifications
+    produced by :func:`hrca.credential_store.classify_retrieval` — never the
+    secret. Precedence:
 
     * ``unavailable`` when the platform has no credential store;
     * ``invalid_config`` when the non-secret config cannot be validated;
-    * ``missing_credential`` when the config is valid but no credential exists;
-    * ``configured`` otherwise.
+    * ``no_profile`` when the config is valid but no active profile (and no
+      legacy credential) applies;
+    * ``missing_credential`` when a target applies but no non-empty secret can
+      be read (metadata-only / orphaned / empty);
+    * ``credential_unretrievable`` when the read failed with a bounded store
+      error (inaccessible / corrupted);
+    * ``configured`` only when a non-empty secret was actually read.
 
-    ``configured`` means local configuration plus credential presence only —
-    never authenticated, online, authorized, billed or request-capable.
+    ``configured`` means local configuration plus an actually-retrievable
+    credential only — never authenticated, online, authorized, billed or
+    request-capable.
     """
     if not store_available:
         return READY_STATE_UNAVAILABLE
     if config_error is not None:
         return READY_STATE_INVALID_CONFIG
-    if not credential_present:
-        return READY_STATE_MISSING_CREDENTIAL
-    return READY_STATE_CONFIGURED
+    if credential_state == credential_store.CREDENTIAL_RETRIEVABLE:
+        return READY_STATE_CONFIGURED
+    if credential_state == credential_store.CREDENTIAL_UNRETRIEVABLE:
+        return READY_STATE_CREDENTIAL_UNRETRIEVABLE
+    if credential_state == credential_store.CREDENTIAL_NO_TARGET:
+        return READY_STATE_NO_PROFILE
+    return READY_STATE_MISSING_CREDENTIAL
 
 
 def redacted_readiness(
     *,
     config: Optional[Dict[str, Any]],
     config_error: Optional[str],
-    credential_present: bool,
+    credential_state: str,
     store_available: bool,
 ) -> Dict[str, Any]:
     """Assemble the redacted readiness result from non-secret facts only.
 
     The result never contains a credential, an endpoint detail, a header value
     or a ``config_error`` reason; it carries only a bounded state, the fixed
-    provider id, the allowlisted model (or ``None`` when the config is invalid)
-    and explicit ``authenticated``/``online``/``executable`` flags that are
-    always false in P4.2a.
+    provider id, the allowlisted model (or ``None`` when the config is invalid),
+    a redacted ``credential_present`` flag (true only when a non-empty secret
+    was actually read) and explicit ``authenticated``/``online``/``executable``
+    flags that are always false in P4.2a.
     """
     state = readiness_state(
         config_error=config_error,
-        credential_present=credential_present,
+        credential_state=credential_state,
         store_available=store_available,
     )
     model = None
@@ -149,7 +169,7 @@ def redacted_readiness(
         "state": state,
         "provider_id": PROVIDER_ID,
         "model": model,
-        "credential_present": bool(credential_present),
+        "credential_present": credential_state == credential_store.CREDENTIAL_RETRIEVABLE,
         "authenticated": False,
         "online": False,
         "executable": False,
@@ -171,6 +191,8 @@ __all__ = [
     "migrate_model",
     "READY_STATE_CONFIGURED",
     "READY_STATE_MISSING_CREDENTIAL",
+    "READY_STATE_NO_PROFILE",
+    "READY_STATE_CREDENTIAL_UNRETRIEVABLE",
     "READY_STATE_UNAVAILABLE",
     "READY_STATE_INVALID_CONFIG",
     "READY_STATES",

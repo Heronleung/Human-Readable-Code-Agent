@@ -331,5 +331,73 @@ class ProviderConfigPersistenceTests(unittest.TestCase):
         self.assertEqual(os.path.basename(path), provider_config.CONFIG_FILENAME)
 
 
+class ActiveCredentialTargetTests(unittest.TestCase):
+    """``active_credential_target`` resolves the same opaque target the provider
+    action uses — never the editable display name, never the working directory."""
+
+    _PID = "a" * 32
+
+    def _config(self, *, profiles=(), active=None):
+        return {
+            "schema_version": provider_config.CONFIG_SCHEMA_VERSION,
+            "provider_id": "deepseek",
+            "model": "deepseek-flash",
+            "profiles": [
+                {
+                    "profile_id": pid,
+                    "provider_id": "deepseek",
+                    "display_name": name,
+                }
+                for pid, name in profiles
+            ],
+            "active_profile_id": active,
+        }
+
+    def test_active_profile_target_is_profile_target(self):
+        from hrca import credential_store
+
+        cfg = self._config(profiles=[(self._PID, "Work")], active=self._PID)
+        self.assertEqual(
+            provider_config.active_credential_target(cfg),
+            credential_store.profile_target(self._PID),
+        )
+
+    def test_legacy_target_when_no_profiles(self):
+        from hrca import credential_store
+
+        self.assertEqual(
+            provider_config.active_credential_target(self._config()),
+            credential_store.TARGET_NAME,
+        )
+
+    def test_no_target_when_profiles_but_none_active(self):
+        cfg = self._config(profiles=[(self._PID, "Work")], active=None)
+        self.assertIsNone(provider_config.active_credential_target(cfg))
+
+    def test_no_target_when_config_is_none(self):
+        self.assertIsNone(provider_config.active_credential_target(None))
+
+    def test_target_is_independent_of_display_name(self):
+        from hrca import credential_store
+
+        before = self._config(profiles=[(self._PID, "Work")], active=self._PID)
+        after = self._config(profiles=[(self._PID, "Renamed")], active=self._PID)
+        self.assertEqual(
+            provider_config.active_credential_target(before),
+            provider_config.active_credential_target(after),
+        )
+        self.assertEqual(
+            provider_config.active_credential_target(before),
+            credential_store.profile_target(self._PID),
+        )
+
+    def test_target_never_contains_the_display_name(self):
+        target = provider_config.active_credential_target(
+            self._config(profiles=[(self._PID, "Top Secret Name")], active=self._PID)
+        )
+        self.assertNotIn("Top Secret Name", target)
+        self.assertIn(self._PID, target)
+
+
 if __name__ == "__main__":
     unittest.main()

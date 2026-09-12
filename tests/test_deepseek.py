@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from hrca import deepseek
+from hrca import credential_store, deepseek
 
 
 class DeepSeekIdentityTests(unittest.TestCase):
@@ -59,25 +59,44 @@ class ReadinessStateTests(unittest.TestCase):
     def test_states_are_bounded(self):
         self.assertEqual(
             deepseek.READY_STATES,
-            {"configured", "missing_credential", "unavailable", "invalid_config"},
+            {
+                "configured",
+                "missing_credential",
+                "no_profile",
+                "credential_unretrievable",
+                "unavailable",
+                "invalid_config",
+            },
         )
 
     def test_state_precedence(self):
         ready = deepseek.readiness_state
+        R = credential_store.CREDENTIAL_RETRIEVABLE
+        A = credential_store.CREDENTIAL_ABSENT
+        U = credential_store.CREDENTIAL_UNRETRIEVABLE
+        N = credential_store.CREDENTIAL_NO_TARGET
         self.assertEqual(
-            ready(config_error=None, credential_present=False, store_available=False),
+            ready(config_error=None, credential_state=R, store_available=False),
             "unavailable",
         )
         self.assertEqual(
-            ready(config_error="bad", credential_present=True, store_available=True),
+            ready(config_error="bad", credential_state=R, store_available=True),
             "invalid_config",
         )
         self.assertEqual(
-            ready(config_error=None, credential_present=False, store_available=True),
+            ready(config_error=None, credential_state=N, store_available=True),
+            "no_profile",
+        )
+        self.assertEqual(
+            ready(config_error=None, credential_state=A, store_available=True),
             "missing_credential",
         )
         self.assertEqual(
-            ready(config_error=None, credential_present=True, store_available=True),
+            ready(config_error=None, credential_state=U, store_available=True),
+            "credential_unretrievable",
+        )
+        self.assertEqual(
+            ready(config_error=None, credential_state=R, store_available=True),
             "configured",
         )
 
@@ -92,7 +111,7 @@ class RedactedReadinessTests(unittest.TestCase):
                 "label": None,
             },
             config_error=None,
-            credential_present=False,
+            credential_state=credential_store.CREDENTIAL_ABSENT,
             store_available=True,
         )
         kwargs.update(overrides)
@@ -114,12 +133,25 @@ class RedactedReadinessTests(unittest.TestCase):
         )
 
     def test_configured_never_claims_network(self):
-        result = self._ready(credential_present=True)
+        result = self._ready(credential_state=credential_store.CREDENTIAL_RETRIEVABLE)
         self.assertEqual(result["state"], "configured")
         self.assertEqual(result["model"], "deepseek-flash")
+        self.assertTrue(result["credential_present"])
         self.assertFalse(result["authenticated"])
         self.assertFalse(result["online"])
         self.assertFalse(result["executable"])
+
+    def test_absent_credential_is_missing_not_configured(self):
+        result = self._ready(credential_state=credential_store.CREDENTIAL_ABSENT)
+        self.assertEqual(result["state"], "missing_credential")
+        self.assertFalse(result["credential_present"])
+
+    def test_unretrievable_credential_is_distinct(self):
+        result = self._ready(
+            credential_state=credential_store.CREDENTIAL_UNRETRIEVABLE
+        )
+        self.assertEqual(result["state"], "credential_unretrievable")
+        self.assertFalse(result["credential_present"])
 
     def test_invalid_config_drops_model(self):
         result = self._ready(config_error="unsupported model")

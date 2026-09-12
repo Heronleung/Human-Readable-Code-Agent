@@ -38,13 +38,12 @@ def _readiness_result(
     if config is None and config_error is None:
         config = provider_config.default_config()
     store_available = store.available()
-    credential_present = (
-        store.has(credential_store.TARGET_NAME) if store_available else False
-    )
+    target = provider_config.active_credential_target(config)
+    credential_state = credential_store.classify_retrieval(store, target)
     return deepseek.redacted_readiness(
         config=config,
         config_error=config_error,
-        credential_present=credential_present,
+        credential_state=credential_state,
         store_available=store_available,
     )
 

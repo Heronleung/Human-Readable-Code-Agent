@@ -234,6 +234,57 @@ def redacted_credential_result(
     return result
 
 
+# Bounded retrieval classification for the offline readiness check (P4.8b).
+#
+# The readiness/status surface must be able to tell "profile metadata is
+# present" from "the credential is actually retrievable by the provider action".
+# ``classify_retrieval`` reads the credential transiently — inside the
+# backend-owned credential boundary — and returns one of these tokens; the
+# secret itself never escapes, is never logged and is never serialized.
+CREDENTIAL_NO_TARGET = "no_target"
+CREDENTIAL_RETRIEVABLE = "retrievable"
+CREDENTIAL_ABSENT = "absent"
+CREDENTIAL_UNRETRIEVABLE = "unretrievable"
+CREDENTIAL_RETRIEVAL_STATES = frozenset(
+    {
+        CREDENTIAL_NO_TARGET,
+        CREDENTIAL_RETRIEVABLE,
+        CREDENTIAL_ABSENT,
+        CREDENTIAL_UNRETRIEVABLE,
+    }
+)
+
+
+def classify_retrieval(store: CredentialStore, target: Optional[str]) -> str:
+    """Return a bounded, secret-free retrieval classification for ``target``.
+
+    ``target`` may be ``None`` — no active profile and no legacy credential
+    applies — which classifies as :data:`CREDENTIAL_NO_TARGET`. Otherwise the
+    credential is read transiently and classified:
+
+    * :data:`CREDENTIAL_RETRIEVABLE` — a non-empty secret was read;
+    * :data:`CREDENTIAL_ABSENT` — no secret (or an empty blob) is present;
+    * :data:`CREDENTIAL_UNRETRIEVABLE` — the read failed with a bounded store
+      error (an inaccessible, corrupted or undecodable credential).
+
+    Only the token escapes; the secret is dropped the instant the classification
+    is decided and is never returned, logged or serialized.
+    """
+    if target is None:
+        return CREDENTIAL_NO_TARGET
+    try:
+        secret = store.read(target)
+    except CredentialStoreError:
+        return CREDENTIAL_UNRETRIEVABLE
+    except Exception:
+        # A malformed or undecodable blob must fail closed, never surface a raw
+        # error (and any secret a raw error might carry).
+        return CREDENTIAL_UNRETRIEVABLE
+    if secret:
+        return CREDENTIAL_RETRIEVABLE
+    return CREDENTIAL_ABSENT
+
+
 def native_credential_prompt():
     """Return the platform secure credential prompt, or ``None`` when absent.
 
@@ -282,6 +333,12 @@ __all__ = [
     "CREDENTIAL_STATE_FAILED",
     "CREDENTIAL_RESULT_STATES",
     "redacted_credential_result",
+    "CREDENTIAL_NO_TARGET",
+    "CREDENTIAL_RETRIEVABLE",
+    "CREDENTIAL_ABSENT",
+    "CREDENTIAL_UNRETRIEVABLE",
+    "CREDENTIAL_RETRIEVAL_STATES",
+    "classify_retrieval",
     "native_credential_prompt",
     "native_entry_sheet",
 ]

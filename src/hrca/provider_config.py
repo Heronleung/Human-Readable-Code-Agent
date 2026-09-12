@@ -23,7 +23,7 @@ import os
 import tempfile
 from typing import Any, Dict, Optional, Tuple
 
-from . import contract, deepseek
+from . import contract, credential_store, deepseek
 
 CONFIG_SCHEMA_VERSION = "2.0.0"
 _LEGACY_SCHEMA_VERSION = "1.0.0"
@@ -241,6 +241,29 @@ def validate_config(value: Any) -> Optional[str]:
     return None
 
 
+# -- credential target derivation ------------------------------------------
+
+
+def active_credential_target(config: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Return the credential-store target for ``config``, or ``None``.
+
+    The target is the active profile's ``hrca:profile:<opaque-id>`` target, or
+    the legacy ``hrca:deepseek`` target when no profile exists yet, or ``None``
+    when no credential applies (profiles exist but none is active, or no config).
+    The target is derived from the immutable profile id — never the editable
+    display name — so the readiness surface and the provider action resolve the
+    same opaque target. No secret is read or returned here.
+    """
+    if config is None:
+        return None
+    active = config.get("active_profile_id")
+    if active is not None:
+        return credential_store.profile_target(active)
+    if not config.get("profiles"):
+        return credential_store.TARGET_NAME
+    return None
+
+
 # -- migration -------------------------------------------------------------
 
 
@@ -375,6 +398,7 @@ __all__ = [
     "remove_profile",
     "set_active_profile",
     "validate_config",
+    "active_credential_target",
     "migrate_model",
     "migrate_structure",
     "load",

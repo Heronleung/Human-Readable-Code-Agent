@@ -703,7 +703,14 @@ class ProviderReadinessTests(unittest.TestCase):
     def test_readiness_state_labels_cover_all_states(self):
         self.assertEqual(
             set(PROVIDER_READINESS_STATE_LABELS),
-            {"configured", "missing_credential", "unavailable", "invalid_config"},
+            {
+                "configured",
+                "missing_credential",
+                "no_profile",
+                "credential_unretrievable",
+                "unavailable",
+                "invalid_config",
+            },
         )
 
     def test_format_provider_readiness_is_redacted_and_bounded(self):
@@ -775,6 +782,8 @@ class ProviderStatusMessageTests(unittest.TestCase):
                 "pending",
                 "configured",
                 "missing_credential",
+                "no_profile",
+                "credential_unretrievable",
                 "unavailable",
                 "invalid_config",
                 "failed",
