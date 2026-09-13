@@ -280,6 +280,52 @@ class ProviderConfigPersistenceTests(unittest.TestCase):
         self.assertIsNotNone(provider_config.save(self.base, cfg))
         self.assertFalse(os.path.exists(provider_config.config_path(self.base)))
 
+    def _alias_config(self):
+        # A valid config whose model field is a retired compatibility alias.
+        cfg = provider_config.default_config()
+        cfg["model"] = "deepseek-v4-flash"
+        cfg, _ = provider_config.add_profile(cfg, _profile_id(), "dev")
+        cfg, _ = provider_config.set_active_profile(cfg, _profile_id())
+        return cfg
+
+    def test_save_canonicalizes_retired_alias(self):
+        cfg = self._alias_config()
+        self.assertIsNone(provider_config.save(self.base, cfg))
+        loaded, err = provider_config.load(self.base)
+        self.assertIsNone(err)
+        self.assertEqual(loaded["model"], "deepseek-flash")
+        # The on-disk file is canonical too, not just the in-memory load.
+        with open(provider_config.config_path(self.base), "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        self.assertEqual(raw["model"], "deepseek-flash")
+
+    def test_save_canonicalization_is_idempotent(self):
+        cfg = self._alias_config()
+        self.assertIsNone(provider_config.save(self.base, cfg))
+        loaded, _ = provider_config.load(self.base)
+        self.assertIsNone(provider_config.save(self.base, loaded))
+        loaded_again, _ = provider_config.load(self.base)
+        self.assertEqual(loaded_again, loaded)
+        self.assertEqual(loaded_again["model"], "deepseek-flash")
+
+    def test_save_canonicalization_preserves_profile_and_target(self):
+        from hrca import credential_store
+
+        cfg = self._alias_config()
+        self.assertIsNone(provider_config.save(self.base, cfg))
+        loaded, err = provider_config.load(self.base)
+        self.assertIsNone(err)
+        # Profile id, display name and active selection are preserved; the
+        # credential target is derived from the unchanged profile id.
+        self.assertEqual(loaded["active_profile_id"], _profile_id())
+        self.assertEqual(len(loaded["profiles"]), 1)
+        self.assertEqual(loaded["profiles"][0]["profile_id"], _profile_id())
+        self.assertEqual(loaded["profiles"][0]["display_name"], "dev")
+        self.assertEqual(
+            credential_store.profile_target(loaded["profiles"][0]["profile_id"]),
+            credential_store.profile_target(_profile_id()),
+        )
+
     def test_load_malformed_json_is_fail_closed(self):
         os.makedirs(self.base, exist_ok=True)
         with open(provider_config.config_path(self.base), "w", encoding="utf-8") as fh:

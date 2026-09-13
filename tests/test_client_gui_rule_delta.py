@@ -398,6 +398,65 @@ class RuleDeltaGuiTests(unittest.TestCase):
         self.window._on_rule_delta_error("document_not_saved")
         self.assertFalse(self.window._rule_delta_pending)
 
+    # -- provider-refresh invalidation of a stale terminal result ----------
+
+    def _render_credential_missing(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation, _interpret_result("credential_missing")
+        )
+        return fake
+
+    def test_provider_refresh_clears_stale_credential_missing(self):
+        fake = self._render_credential_missing()
+        self.assertIn("Credential missing", self.window._preview_body.toPlainText())
+        self.assertEqual(
+            self.window._preview_state_label.text(), "Credential missing"
+        )
+
+        before = len(fake.requests)
+        self.window._apply_provider_state(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "credential_present": True,
+            }
+        )
+
+        # The stale failure is cleared and no prepare/interpret is re-dispatched.
+        self.assertNotIn("Credential missing", self.window._preview_body.toPlainText())
+        self.assertNotEqual(
+            self.window._preview_state_label.text(), "Credential missing"
+        )
+        self.assertEqual(len(fake.requests), before)
+        actions = [r["action"] for r in fake.requests]
+        self.assertNotIn(contract.ACTION_INTERPRET_RULE_DELTA, actions)
+
+    def test_provider_refresh_keeps_reviewable_candidate(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation, _interpret_result("reviewable_candidate")
+        )
+        self.assertIn("Reviewable", self.window._preview_body.toPlainText())
+
+        self.window._apply_provider_state(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "credential_present": True,
+            }
+        )
+        # A reviewable candidate stays bound to its produced revision.
+        self.assertIn("Reviewable", self.window._preview_body.toPlainText())
+
 
 if __name__ == "__main__":
     unittest.main()

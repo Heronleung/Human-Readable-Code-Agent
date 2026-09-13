@@ -374,7 +374,17 @@ def _atomic_write(dirpath: str, path: str, data: bytes, label: str) -> Optional[
 
 
 def save(base_dir: str, config: Dict[str, Any]) -> Optional[str]:
-    """Atomically persist ``config``; returns a reason on failure or ``None``."""
+    """Atomically persist ``config``; returns a reason on failure or ``None``.
+
+    The non-secret ``model`` field is canonicalized before validation and write:
+    a supported retired compatibility alias (for example ``deepseek-v4-flash``)
+    is migrated to ``deepseek-flash`` so the persisted config never retains a
+    retired alias. Profiles, the active profile id and any credential material
+    are preserved untouched (the credential never lives in this file). An
+    unknown model is left unchanged and rejected by :func:`validate_config`
+    (fail-closed).
+    """
+    config = migrate_model(config)
     reason = validate_config(config)
     if reason is not None:
         return reason

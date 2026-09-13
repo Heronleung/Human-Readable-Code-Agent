@@ -828,6 +828,10 @@ class MainWindow(QMainWindow):
         # single contextual action reads "Update preview" rather than "Build
         # preview" when re-interpreting the same saved requirement.
         self._rule_delta_reviewable_for: Optional[str] = None
+        # True while the Preview surface shows a rendered rule-delta
+        # interpretation result (e.g. "Credential missing"); cleared when the
+        # regular document preview replaces it or the provider state refreshes.
+        self._rule_delta_result_shown: bool = False
         # Document/version-authority surface state (P4.4): the list of documents,
         # the currently open document's identity and base revision, the dirty
         # flag, the accepted-version list, and the mounted widgets.
@@ -2066,6 +2070,33 @@ class MainWindow(QMainWindow):
             self._set_status(STATE_FAILED, "a request is already in progress")
             self._set_validation_state(VALIDATION_IDLE)
 
+    def _invalidate_rule_delta_result(self) -> None:
+        """Clear a rendered, non-reviewable interpretation result on refresh.
+
+        After the provider/config state changes (startup or a credential/profile
+        change), a previously rendered failure — for example "Credential
+        missing" — no longer reflects the current process and must not be
+        presented as fresh. The Preview surface is reset to the neutral "no
+        preview yet" state. A reviewable candidate is left untouched because it
+        stays bound to the revision it was produced from. This never re-dispatches
+        a prepare/interpret request and never contacts the provider.
+        """
+        if not self._rule_delta_result_shown:
+            return
+        if self._rule_delta_reviewable_for is not None:
+            return
+        self._rule_delta_result_shown = False
+        if self._preview_state_label is not None:
+            self._preview_state_label.setText(preview_state_label("no_candidate"))
+            self._preview_state_label.setStyleSheet(
+                style.state_chip_style(self._palette, style.STATE_NEUTRAL)
+            )
+            self._preview_state_label.setToolTip(
+                preview_state_message("no_candidate")
+            )
+        if self._preview_body is not None:
+            self._preview_body.setPlainText("")
+
     def _apply_provider_state(self, result: Dict[str, Any]) -> None:
         state = str(result.get("state", PROVIDER_UNAVAILABLE))
         self._provider_state = state
@@ -2074,6 +2105,7 @@ class MainWindow(QMainWindow):
         self._update_status()
         self._set_status(STATE_SUCCESS, provider_readiness_state_label(state))
         self._set_provider_status(state)
+        self._invalidate_rule_delta_result()
         self._refresh_settings_dialog()
 
     def _refresh_profiles(self) -> None:
@@ -3517,6 +3549,7 @@ class MainWindow(QMainWindow):
 
     def _render_preview(self, preview: Dict[str, Any]) -> None:
         """Populate the read-only Preview from the boundary's preview record."""
+        self._rule_delta_result_shown = False
         doc = preview.get("document") or {}
         state = str(preview.get("state", "unknown"))
         binding = preview.get("binding")
@@ -3548,6 +3581,7 @@ class MainWindow(QMainWindow):
 
     def _clear_preview(self) -> None:
         """Reset the read-only Preview to the bounded no-document empty state."""
+        self._rule_delta_result_shown = False
         if self._preview_state_label is not None:
             self._preview_state_label.setText(preview_state_label("no_document"))
             self._preview_state_label.setStyleSheet(
@@ -4444,6 +4478,7 @@ class MainWindow(QMainWindow):
 
     def _render_rule_delta_result(self, result: Dict[str, Any]) -> None:
         """Populate the Preview surface from a bounded interpretation result."""
+        self._rule_delta_result_shown = True
         state = str(result.get("state", "unknown"))
         label = delta_interpret_state_label(state)
         if self._preview_state_label is not None:
@@ -4465,6 +4500,7 @@ class MainWindow(QMainWindow):
 
     def _render_rule_delta_failure(self, label: str) -> None:
         """Show a calm, bounded unavailable state for a failed prepare."""
+        self._rule_delta_result_shown = True
         if self._preview_state_label is not None:
             self._preview_state_label.setText(label)
             self._preview_state_label.setStyleSheet(
