@@ -1034,7 +1034,10 @@ def _profiles_result(
                     "display_name": profile.get("display_name"),
                     "credential_present": (
                         store_available
-                        and store.has(credential_store.profile_target(profile_id))
+                        and credential_store.classify_retrieval(
+                            store, credential_store.profile_target(profile_id)
+                        )
+                        == credential_store.CREDENTIAL_RETRIEVABLE
                     ),
                 }
             )

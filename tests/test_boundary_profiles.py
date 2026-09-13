@@ -49,6 +49,49 @@ class BoundaryProfileTests(unittest.TestCase):
         self.assertEqual(result["state"], "missing_credential")
         self.assertFalse(result["credential_present"])
 
+    def test_profile_presence_follows_retrievability_not_blob(self):
+        # A credential blob that is present (CredReadW succeeds) but empty must
+        # not render the profile's key as "present": the per-profile presence
+        # fact follows classify_retrieval (an actual non-empty read), so it
+        # agrees with the top-level readiness state and the interpret action.
+        from hrca import provider_config
+
+        class EmptyBlobStore(credential_store.FakeCredentialStore):
+            def has(self, target):
+                return target.startswith(credential_store.PROFILE_TARGET_PREFIX)
+
+            def read(self, target):
+                return ""
+
+        store = EmptyBlobStore()
+        self.session.credential_store = store
+        profile_id = "c" * 32
+        provider_config.save(
+            self.store_base,
+            {
+                "schema_version": provider_config.CONFIG_SCHEMA_VERSION,
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "profiles": [
+                    {
+                        "profile_id": profile_id,
+                        "provider_id": "deepseek",
+                        "display_name": "Empty",
+                    }
+                ],
+                "active_profile_id": profile_id,
+            },
+        )
+        env = self._do(contract.ACTION_GET_PROFILES)
+        self.assertTrue(env["ok"])
+        result = env["result"]
+        profile = result["profiles"][0]
+        # Per-profile presence is now retrieval-based, not blob-presence based.
+        self.assertFalse(profile["credential_present"])
+        # Top-level state and presence agree: the empty blob is "missing".
+        self.assertFalse(result["credential_present"])
+        self.assertEqual(result["state"], "missing_credential")
+
     def test_migration_creates_default_profile(self):
         self.store.store(credential_store.TARGET_NAME, _SECRET_LIKE)
         env = self._do(contract.ACTION_GET_PROFILES)
