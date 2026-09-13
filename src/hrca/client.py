@@ -2071,16 +2071,20 @@ class MainWindow(QMainWindow):
             self._set_validation_state(VALIDATION_IDLE)
 
     def _invalidate_rule_delta_result(self) -> None:
-        """Clear a rendered, non-reviewable interpretation result on refresh.
+        """Invalidate an interpretation result on provider refresh.
 
-        After the provider/config state changes (startup or a credential/profile
-        change), a previously rendered failure — for example "Credential
-        missing" — no longer reflects the current process and must not be
-        presented as fresh. The Preview surface is reset to the neutral "no
-        preview yet" state. A reviewable candidate is left untouched because it
-        stays bound to the revision it was produced from. This never re-dispatches
-        a prepare/interpret request and never contacts the provider.
+        Called at startup and whenever the provider/config state changes (a
+        credential/profile change). First the interpretation generation is
+        advanced so a late ``interpret_rule_delta`` response — whose stale
+        generation no longer matches — can never render an old, now-stale
+        result (neither the Preview body nor the global status strip). Then a
+        rendered, non-reviewable failure (for example "Credential missing") is
+        cleared back to the neutral "no preview yet" state. A reviewable
+        candidate is left untouched because it stays bound to the revision it
+        was produced from. This never re-dispatches a prepare/interpret request
+        and never contacts the provider.
         """
+        self._next_rule_delta_generation()
         if not self._rule_delta_result_shown:
             return
         if self._rule_delta_reviewable_for is not None:

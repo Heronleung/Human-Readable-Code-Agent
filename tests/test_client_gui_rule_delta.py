@@ -416,6 +416,10 @@ class RuleDeltaGuiTests(unittest.TestCase):
         self.assertEqual(
             self.window._preview_state_label.text(), "Credential missing"
         )
+        self.assertEqual(
+            self.window.status_label.text(),
+            "Status: failed — preview Credential missing",
+        )
 
         before = len(fake.requests)
         self.window._apply_provider_state(
@@ -427,12 +431,50 @@ class RuleDeltaGuiTests(unittest.TestCase):
             }
         )
 
-        # The stale failure is cleared and no prepare/interpret is re-dispatched.
+        # The stale failure is cleared from the Preview body, the badge and the
+        # global status strip, and no prepare/interpret is re-dispatched.
         self.assertNotIn("Credential missing", self.window._preview_body.toPlainText())
         self.assertNotEqual(
             self.window._preview_state_label.text(), "Credential missing"
         )
+        self.assertNotEqual(
+            self.window.status_label.text(),
+            "Status: failed — preview Credential missing",
+        )
         self.assertEqual(len(fake.requests), before)
+        actions = [r["action"] for r in fake.requests]
+        self.assertNotIn(contract.ACTION_INTERPRET_RULE_DELTA, actions)
+
+    def test_provider_refresh_discards_late_interpret_result(self):
+        # An interpretation dispatched before a provider refresh must be
+        # discarded when its response arrives after the refresh (its generation
+        # is stale), so the old "Credential missing" never reaches the Preview
+        # body or the global status strip.
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        in_flight_generation = self.window._rule_delta_generation
+
+        self.window._apply_provider_state(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "credential_present": True,
+            }
+        )
+
+        # A late response for the pre-refresh generation is discarded.
+        self.window._on_rule_delta_result(
+            in_flight_generation, _interpret_result("credential_missing")
+        )
+        self.assertNotIn("Credential missing", self.window._preview_body.toPlainText())
+        self.assertNotEqual(
+            self.window.status_label.text(),
+            "Status: failed — preview Credential missing",
+        )
+        # The refresh itself never dispatched a prepare/interpret.
         actions = [r["action"] for r in fake.requests]
         self.assertNotIn(contract.ACTION_INTERPRET_RULE_DELTA, actions)
 
@@ -456,6 +498,7 @@ class RuleDeltaGuiTests(unittest.TestCase):
         )
         # A reviewable candidate stays bound to its produced revision.
         self.assertIn("Reviewable", self.window._preview_body.toPlainText())
+        self.assertEqual(self.window._rule_delta_reviewable_for, "doc:d1")
 
 
 if __name__ == "__main__":
