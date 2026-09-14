@@ -63,6 +63,8 @@ GAP_TIGHT = visual_tokens.GAP_TIGHT
 GAP_GROUP = visual_tokens.GAP_GROUP
 RADIUS_CONTAINER = visual_tokens.RADIUS_CONTAINER
 RADIUS_CHIP = visual_tokens.RADIUS_CHIP
+RADIUS_INTERACTIVE = visual_tokens.RADIUS_INTERACTIVE
+FOCUS_RING_WIDTH = visual_tokens.FOCUS_RING_WIDTH
 BORDER_WIDTH = visual_tokens.BORDER_WIDTH
 FOCUS_BORDER_WIDTH = visual_tokens.FOCUS_BORDER_WIDTH
 
@@ -606,8 +608,12 @@ def build_stylesheet(palette: Palette) -> str:
         "$accent_pressed": palette.accent_pressed,
         "$focus": palette.focus,
         "$on_accent": palette.on_accent,
+        "$error": palette.error,
+        "$error_bg": palette.state_bg(STATE_ERROR),
         "$radius": f"{RADIUS_CONTAINER}px",
         "$chip_radius": f"{RADIUS_CHIP}px",
+        "$interactive_radius": f"{RADIUS_INTERACTIVE}px",
+        "$focus_ring": f"{FOCUS_RING_WIDTH}px",
         "$tree_row": f"{TREE_ROW_HEIGHT}px",
         "$settings_nav_row": f"{SETTINGS_NAV_ROW_HEIGHT}px",
         "$selection": _rgba(palette.accent, palette._chip_alpha),
@@ -628,7 +634,7 @@ QPushButton {
     background: $surface;
     color: $text;
     border: 1px solid $border;
-    border-radius: $radius;
+    border-radius: $interactive_radius;
     padding: 4px 10px;
 }
 QPushButton:hover { background: $sunken; }
@@ -638,7 +644,36 @@ QPushButton:disabled {
     background: $sunken;
     border-color: $border;
 }
-QPushButton:focus { border: 1px solid $focus; }
+QPushButton:focus { border: $focus_ring solid $focus; }
+
+/* explicit semantic hierarchy: neutral secondary, quiet ghost, bounded danger */
+QPushButton#secondaryButton {
+    background: $surface;
+    color: $text;
+    border: 1px solid $border;
+}
+QPushButton#secondaryButton:hover { background: $sunken; }
+QPushButton#ghostButton {
+    background: transparent;
+    color: $text_secondary;
+    border: 1px solid transparent;
+}
+QPushButton#ghostButton:hover {
+    background: $sunken;
+    color: $text;
+    border-color: $border;
+}
+QPushButton#dangerButton {
+    background: transparent;
+    color: $error;
+    border: 1px solid transparent;
+}
+QPushButton#dangerButton:hover {
+    background: $error_bg;
+    border-color: $error;
+}
+QPushButton#secondaryButton:focus, QPushButton#ghostButton:focus,
+QPushButton#dangerButton:focus { border: $focus_ring solid $focus; }
 
 /* primary action — monochrome: near-black on light, white on dark */
 QPushButton#primaryButton {
@@ -663,7 +698,7 @@ QToolButton {
     padding: 2px 4px;
 }
 QToolButton:hover { color: $text; background: $sunken; }
-QToolButton:focus { border: 1px solid $focus; }
+QToolButton:focus { border: $focus_ring solid $focus; }
 
 /* ---- Code Map pin control (checkable, monochrome lock) ---- */
 QToolButton#twinLockButton { padding: 2px; }
@@ -696,6 +731,13 @@ QLabel#secondary { color: $text_secondary; }
 QLabel#projectRootLabel { color: $text_secondary; padding: 4px 12px 6px 12px; }
 QLabel#emptyState { color: $text_secondary; padding: 16px; }
 QLabel#statusField { color: $text_secondary; font-size: 12px; }
+QLabel#providerStatusChip { min-height: 20px; }
+QFrame#documentEmptyState {
+    background: $surface;
+    border: 1px solid $border;
+    border-radius: $interactive_radius;
+}
+QWidget#libraryContextActions { background: $surface; border-top: 1px solid $border; }
 
 /* ---- Project Explorer tree ---- */
 QTreeView#projectTree {
@@ -713,6 +755,17 @@ QTreeView#projectTree::item:hover { background: $sunken; }
 
 /* ---- code and document views ---- */
 QPlainTextEdit { background: $sunken; color: $text; border: none; }
+QPlainTextEdit#documentEditor, QPlainTextEdit#previewBody {
+    background: $sunken;
+    color: $text;
+    border: 1px solid $border;
+    border-radius: $interactive_radius;
+    padding: 12px;
+    selection-background-color: $selection;
+}
+QPlainTextEdit#documentEditor:focus, QPlainTextEdit#previewBody:focus {
+    border: $focus_ring solid $focus;
+}
 
 /* ---- Twin body is a QLabel (not a text edit), so target the real class ---- */
 QLabel#twinBody { background: $surface; border: none; padding: 0; }
@@ -796,12 +849,13 @@ QPushButton#navRailAdvancedButton {
 QPushButton#navRailButton:hover, QPushButton#navRailGroupButton:hover,
 QPushButton#navRailAdvancedButton:hover { background: $sunken; color: $text; }
 QPushButton#navRailButton:checked, QPushButton#navRailGroupButton:checked {
-    background: $accent;
-    color: $on_accent;
+    background: $selection;
+    color: $text;
+    border-left: 2px solid $accent;
     font-weight: bold;
 }
 QPushButton#navRailButton:focus, QPushButton#navRailGroupButton:focus,
-QPushButton#navRailAdvancedButton:focus { border: 1px solid $focus; }
+QPushButton#navRailAdvancedButton:focus { border: $focus_ring solid $focus; }
 QPushButton#navRailAdvancedButton { font-weight: bold; }
 QPushButton#navRailGroupButton { padding-left: 24px; }
 
@@ -954,6 +1008,8 @@ __all__ = [
     "GAP_GROUP",
     "RADIUS_CONTAINER",
     "RADIUS_CHIP",
+    "RADIUS_INTERACTIVE",
+    "FOCUS_RING_WIDTH",
     "BORDER_WIDTH",
     "FOCUS_BORDER_WIDTH",
     "UI_FONT_SIZE",

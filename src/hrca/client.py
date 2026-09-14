@@ -829,10 +829,11 @@ class MainWindow(QMainWindow):
         # single contextual action reads "Update preview" rather than "Build
         # preview" when re-interpreting the same saved requirement.
         self._rule_delta_reviewable_for: Optional[str] = None
-        # True while the Preview surface shows a rendered rule-delta
-        # interpretation result (e.g. "Credential missing"); cleared when the
-        # regular document preview replaces it or the provider state refreshes.
+        # True while Preview shows the current saved revision's latest rule-
+        # delta attempt. Completed results are retained below; navigation and a
+        # local provider-readiness refresh must never erase or relabel them.
         self._rule_delta_result_shown: bool = False
+        self._rule_delta_attempts: Dict[str, Dict[str, Any]] = {}
         # Document/version-authority surface state (P4.4): the list of documents,
         # the currently open document's identity and base revision, the dirty
         # flag, the accepted-version list, and the mounted widgets.
@@ -851,7 +852,10 @@ class MainWindow(QMainWindow):
         # and the last requested name (used for the name-conflict message).
         self._document_candidate_pending: bool = False
         self._pending_document_name: Optional[str] = None
+        self._document_title_label: Optional[QLabel] = None
         self._document_status_label: Optional[QLabel] = None
+        self._document_empty_state: Optional[QWidget] = None
+        self._document_action_hint: Optional[QLabel] = None
         self._document_editor: Optional[QPlainTextEdit] = None
         self._document_result: Optional[QPlainTextEdit] = None
         self._document_save_button: Optional[QPushButton] = None
@@ -868,6 +872,7 @@ class MainWindow(QMainWindow):
         self._preview_state_label: Optional[QLabel] = None
         self._preview_document_label: Optional[QLabel] = None
         self._preview_body: Optional[QPlainTextEdit] = None
+        self._preview_build_button: Optional[QPushButton] = None
         self._preview_generation: int = 0
         # Deferred exit intents resolved after a save completes: "edit" returns
         # to the read-only projection; "close" closes the window.
@@ -894,6 +899,9 @@ class MainWindow(QMainWindow):
         self._library_model: Optional[QStandardItemModel] = None
         self._library_view: Optional[_DocumentTreeView] = None
         self._library_trash_layout: Optional[QVBoxLayout] = None
+        self._library_trash_header: Optional[QWidget] = None
+        self._library_trash_scroll: Optional[QScrollArea] = None
+        self._library_organise_row: Optional[QWidget] = None
         self._library_new_doc_button: Optional[QPushButton] = None
         self._library_new_folder_button: Optional[QPushButton] = None
         self._library_rename_button: Optional[QPushButton] = None
@@ -940,7 +948,6 @@ class MainWindow(QMainWindow):
         root.setSpacing(style.SPACE_0)
 
         root.addWidget(self._build_command_bar())
-        root.addWidget(self._build_provider_status_region())
 
         # Main row: the compact labelled navigation rail, then the narrow
         # resizable/collapsible document library explorer, then the one content
@@ -998,18 +1005,18 @@ class MainWindow(QMainWindow):
         layout.setSpacing(style.GAP_TIGHT)
 
         self.settings_button = QPushButton("Settings")
-        self.settings_button.setObjectName("commandBarButton")
+        self.settings_button.setObjectName("ghostButton")
         self.settings_button.setAccessibleName("Settings")
         self.settings_button.setToolTip("Settings")
         self.settings_button.clicked.connect(self._open_settings)
 
         self.open_project_button = QPushButton("Open Project")
-        self.open_project_button.setObjectName("primaryButton")
+        self.open_project_button.setObjectName("secondaryButton")
         self.open_project_button.setAccessibleName("Open Project")
         self.open_project_button.clicked.connect(self._on_open_project)
 
         self.scan_button = QPushButton("Run read-only scan")
-        self.scan_button.setObjectName("commandBarButton")
+        self.scan_button.setObjectName("secondaryButton")
         self.scan_button.setAccessibleName("Run read-only scan")
         self.scan_button.setEnabled(False)
         self.scan_button.setToolTip("Open a project to run a local read-only scan.")
@@ -1026,10 +1033,19 @@ class MainWindow(QMainWindow):
         ):
             button.setFixedHeight(style.COMMAND_BAR_BUTTON_HEIGHT)
 
-        layout.addWidget(self.settings_button)
         layout.addWidget(self.open_project_button)
         layout.addWidget(self.scan_button)
         layout.addStretch(1)
+
+        self._provider_status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
+        self._provider_status_label.setObjectName("providerStatusChip")
+        self._provider_status_label.setAccessibleName("Provider status")
+        self._provider_status_label.setStyleSheet(
+            style.state_chip_style(self._palette, style.STATE_NEUTRAL)
+        )
+        self._provider_status_label.setMaximumWidth(style.STATUS_ROOT_MAX_WIDTH)
+        layout.addWidget(self._provider_status_label)
+        layout.addWidget(self.settings_button)
         return bar
 
     def _build_provider_status_region(self) -> QWidget:
@@ -1516,9 +1532,11 @@ class MainWindow(QMainWindow):
         )
         create_layout.setSpacing(style.GAP_TIGHT)
         self._library_new_doc_button = QPushButton("New document")
+        self._library_new_doc_button.setObjectName("primaryButton")
         self._library_new_doc_button.setAccessibleName("New document")
         self._library_new_doc_button.clicked.connect(self._new_document)
         self._library_new_folder_button = QPushButton("New folder")
+        self._library_new_folder_button.setObjectName("ghostButton")
         self._library_new_folder_button.setAccessibleName("New folder")
         self._library_new_folder_button.clicked.connect(self._new_folder)
         create_layout.addWidget(self._library_new_doc_button)
@@ -1528,14 +1546,19 @@ class MainWindow(QMainWindow):
 
         # Compact organise controls (enabled only when an item is selected).
         organise_row = QWidget()
+        organise_row.setObjectName("libraryContextActions")
+        self._library_organise_row = organise_row
         organise_layout = QHBoxLayout(organise_row)
         organise_layout.setContentsMargins(
             style.INSET, style.GAP_TIGHT, style.INSET, style.GAP_TIGHT
         )
         organise_layout.setSpacing(style.GAP_TIGHT)
         self._library_rename_button = QPushButton("Rename")
+        self._library_rename_button.setObjectName("ghostButton")
         self._library_move_button = QPushButton("Move")
+        self._library_move_button.setObjectName("ghostButton")
         self._library_trash_button = QPushButton("Trash")
+        self._library_trash_button.setObjectName("dangerButton")
         self._library_rename_button.setAccessibleName("Rename item")
         self._library_move_button.setAccessibleName("Move item")
         self._library_trash_button.setAccessibleName("Move item to Trash")
@@ -1568,6 +1591,7 @@ class MainWindow(QMainWindow):
 
         # Recoverable Trash section (no permanent deletion).
         trash_header = QWidget()
+        self._library_trash_header = trash_header
         trash_header_layout = QHBoxLayout(trash_header)
         trash_header_layout.setContentsMargins(
             style.INSET, style.GAP_TIGHT, style.INSET, style.SPACE_0
@@ -1587,6 +1611,7 @@ class MainWindow(QMainWindow):
         )
         self._library_trash_layout.setSpacing(style.GAP_TIGHT)
         trash_scroll = QScrollArea()
+        self._library_trash_scroll = trash_scroll
         trash_scroll.setObjectName("libraryTrashScroll")
         trash_scroll.setWidgetResizable(True)
         trash_scroll.setFrameShape(QFrame.NoFrame)
@@ -1722,7 +1747,9 @@ class MainWindow(QMainWindow):
         )
         header_layout.setSpacing(style.GAP_TIGHT)
         title = QLabel("Preview")
-        title.setFont(style.panel_header_font())
+        title_font = style.ui_font()
+        title_font.setBold(True)
+        title.setFont(title_font)
         title.setStyleSheet(style.secondary_text_style(self._palette))
         header_layout.addWidget(title)
 
@@ -1747,6 +1774,18 @@ class MainWindow(QMainWindow):
         self._preview_body.setAccessibleName("Preview content")
         layout.addWidget(self._preview_body, stretch=1)
 
+        preview_actions = QHBoxLayout()
+        preview_actions.addStretch(1)
+        self._preview_build_button = QPushButton("Build preview")
+        self._preview_build_button.setObjectName("primaryButton")
+        self._preview_build_button.setAccessibleName("Build preview")
+        self._preview_build_button.clicked.connect(self._build_preview)
+        preview_actions.addWidget(self._preview_build_button)
+        # Adoption remains a separate explicit action and now appears only in
+        # the review context rather than beside Save in the Document editor.
+        preview_actions.addWidget(self._document_adopt_button)
+        layout.addLayout(preview_actions)
+
         self._clear_preview()
         return body
 
@@ -1766,7 +1805,9 @@ class MainWindow(QMainWindow):
         layout.setSpacing(style.GAP_TIGHT)
 
         title = QLabel("Accepted Versions")
-        title.setFont(style.panel_header_font())
+        title_font = style.ui_font()
+        title_font.setBold(True)
+        title.setFont(title_font)
         title.setStyleSheet(style.secondary_text_style(self._palette))
         layout.addWidget(title)
 
@@ -1814,10 +1855,12 @@ class MainWindow(QMainWindow):
             style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
         )
         header_layout.setSpacing(style.GAP_TIGHT)
-        title = QLabel("Document")
-        title.setFont(style.panel_header_font())
-        title.setStyleSheet(style.secondary_text_style(self._palette))
-        header_layout.addWidget(title)
+        self._document_title_label = QLabel("Document")
+        title_font = style.ui_font()
+        title_font.setBold(True)
+        self._document_title_label.setFont(title_font)
+        self._document_title_label.setAccessibleName("Current document")
+        header_layout.addWidget(self._document_title_label)
         header_layout.addStretch(1)
         layout.addWidget(header)
 
@@ -1827,11 +1870,54 @@ class MainWindow(QMainWindow):
         self._document_status_label.setStyleSheet(
             style.status_label_style(self._palette)
         )
-        layout.addWidget(self._document_status_label)
+        header_layout.addWidget(self._document_status_label)
+
+        self._document_empty_state = QFrame()
+        self._document_empty_state.setObjectName("documentEmptyState")
+        empty_layout = QVBoxLayout(self._document_empty_state)
+        empty_layout.setContentsMargins(
+            style.SPACE_24, style.SPACE_24, style.SPACE_24, style.SPACE_24
+        )
+        empty_layout.setSpacing(style.GAP_TIGHT)
+        empty_layout.addStretch(1)
+        empty_title = QLabel("Create your first document")
+        empty_title_font = style.ui_font()
+        empty_title_font.setBold(True)
+        empty_title.setFont(empty_title_font)
+        empty_title.setAlignment(Qt.AlignCenter)
+        empty_layout.addWidget(empty_title)
+        empty_copy = QLabel(
+            "Write requirements in plain language, save them, then build and "
+            "review a preview before explicitly using a version."
+        )
+        empty_copy.setObjectName("secondary")
+        empty_copy.setWordWrap(True)
+        empty_copy.setAlignment(Qt.AlignCenter)
+        empty_copy.setAccessibleName("Document workflow")
+        empty_layout.addWidget(empty_copy)
+        empty_actions = QHBoxLayout()
+        empty_actions.addStretch(1)
+        empty_new = QPushButton("New document")
+        empty_new.setObjectName("primaryButton")
+        empty_new.setAccessibleName("Create your first document")
+        empty_new.clicked.connect(self._new_document)
+        empty_open = QPushButton("Open project")
+        empty_open.setObjectName("secondaryButton")
+        empty_open.setAccessibleName("Open project")
+        empty_open.clicked.connect(self._on_open_project)
+        empty_actions.addWidget(empty_new)
+        empty_actions.addWidget(empty_open)
+        empty_actions.addStretch(1)
+        empty_layout.addLayout(empty_actions)
+        empty_layout.addStretch(1)
+        layout.addWidget(self._document_empty_state, stretch=1)
 
         self._document_editor = QPlainTextEdit()
         self._document_editor.setObjectName("documentEditor")
         self._document_editor.setAccessibleName("Working Document editor")
+        self._document_editor.setPlaceholderText(
+            "Describe the rule, expected inputs and outputs, and one concrete example."
+        )
         self._document_editor.textChanged.connect(self._mark_document_dirty)
         layout.addWidget(self._document_editor, stretch=1)
 
@@ -1845,6 +1931,7 @@ class MainWindow(QMainWindow):
         self._document_save_button = QPushButton("Save")
         self._document_save_button.setObjectName("primaryButton")
         self._document_candidate_button = QPushButton("Build preview")
+        self._document_candidate_button.setObjectName("primaryButton")
         self._document_review_button = QPushButton("Review candidate")
         self._document_adopt_button = QPushButton("Use this version")
         self._document_save_button.setAccessibleName("Save document")
@@ -1865,11 +1952,12 @@ class MainWindow(QMainWindow):
         self._document_candidate_button.clicked.connect(self._build_preview)
         self._document_review_button.clicked.connect(self._review_candidate)
         self._document_adopt_button.clicked.connect(self._adopt_candidate)
+        self._document_action_hint = QLabel("")
+        self._document_action_hint.setObjectName("secondary")
+        self._document_action_hint.setAccessibleName("Next document action")
+        actions_layout.addWidget(self._document_action_hint, stretch=1)
         actions_layout.addWidget(self._document_save_button)
         actions_layout.addWidget(self._document_candidate_button)
-        actions_layout.addWidget(self._document_review_button)
-        actions_layout.addWidget(self._document_adopt_button)
-        actions_layout.addStretch(1)
         layout.addWidget(actions)
 
         self._update_document_actions()
@@ -1894,15 +1982,23 @@ class MainWindow(QMainWindow):
         self._twin_label = self._status_field()
         self._provider_label = self._status_field()
         self._validation_label = self._status_field()
-        for lbl in (
+        self._diagnostic_labels = (
             self._root_label,
             self._repo_label,
             self._file_label,
             self._twin_label,
             self._provider_label,
             self._validation_label,
-        ):
+        )
+        for lbl in self._diagnostic_labels:
+            lbl.setVisible(False)
             layout.addWidget(lbl)
+        self._status_details_button = QToolButton()
+        self._status_details_button.setText("Details")
+        self._status_details_button.setAccessibleName("Show diagnostics")
+        self._status_details_button.setCheckable(True)
+        self._status_details_button.toggled.connect(self._toggle_status_details)
+        layout.addWidget(self._status_details_button)
         return bar
 
     # -- small widget helpers -------------------------------------------
@@ -1914,8 +2010,10 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(container)
         layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
         layout.setSpacing(style.GAP_TIGHT)
-        label = QLabel(text.upper())
-        label.setFont(style.panel_header_font())
+        label = QLabel(text)
+        heading_font = style.ui_font()
+        heading_font.setBold(True)
+        label.setFont(heading_font)
         label.setStyleSheet(style.secondary_text_style(self._palette))
         layout.addWidget(label)
         return container, layout
@@ -1934,6 +2032,15 @@ class MainWindow(QMainWindow):
         if max_width is not None:
             label.setMaximumWidth(max_width)
         return label
+
+    def _toggle_status_details(self, checked: bool) -> None:
+        """Show technical fields on demand without competing with task status."""
+        for label in self._diagnostic_labels:
+            label.setVisible(checked)
+        self._status_details_button.setText("Hide details" if checked else "Details")
+        self._status_details_button.setAccessibleName(
+            "Hide diagnostics" if checked else "Show diagnostics"
+        )
 
     # -- navigation rail destination selection --------------------------
 
@@ -2072,35 +2179,19 @@ class MainWindow(QMainWindow):
             self._set_validation_state(VALIDATION_IDLE)
 
     def _invalidate_rule_delta_result(self) -> None:
-        """Invalidate an interpretation result on provider refresh.
+        """Invalidate only in-flight work; preserve same-revision terminal evidence.
 
-        Called at startup and whenever the provider/config state changes (a
-        credential/profile change). First the interpretation generation is
-        advanced so a late ``interpret_rule_delta`` response — whose stale
-        generation no longer matches — can never render an old, now-stale
-        result (neither the Preview body nor the global status strip). Then a
-        rendered, non-reviewable failure (for example "Credential missing") is
-        cleared back to the neutral "no preview yet" state. A reviewable
-        candidate is left untouched because it stays bound to the revision it
-        was produced from. This never re-dispatches a prepare/interpret request
-        and never contacts the provider.
+        A local readiness/profile refresh advances the generation so late
+        callbacks remain rejected. It never deletes a completed attempt and
+        never converts a failed action into a passive navigation success.
         """
         self._next_rule_delta_generation()
-        if not self._rule_delta_result_shown:
-            return
-        if self._rule_delta_reviewable_for is not None:
-            return
-        self._rule_delta_result_shown = False
-        if self._preview_state_label is not None:
-            self._preview_state_label.setText(preview_state_label("no_candidate"))
-            self._preview_state_label.setStyleSheet(
-                style.state_chip_style(self._palette, style.STATE_NEUTRAL)
-            )
-            self._preview_state_label.setToolTip(
-                preview_state_message("no_candidate")
-            )
-        if self._preview_body is not None:
-            self._preview_body.setPlainText("")
+        self._rule_delta_pending = False
+        self._pending_rule_delta_token = None
+        self._pending_rule_delta_document_id = None
+        self._pending_rule_delta_disclosure = ""
+        self._update_document_actions()
+        self._restore_rule_delta_attempt()
 
     def _apply_provider_state(self, result: Dict[str, Any]) -> None:
         state = str(result.get("state", PROVIDER_UNAVAILABLE))
@@ -2956,6 +3047,8 @@ class MainWindow(QMainWindow):
         else:
             name = "Pin Code Map"
             tooltip = "No supported source file is active; open one to pin the Code Map."
+        self._twin_lock_button.setText("Pinned" if locked else "Follow selection")
+        self._twin_lock_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self._twin_lock_button.setAccessibleName(name)
         self._twin_lock_button.setToolTip(tooltip)
         self._twin_lock_button.setEnabled(enabled)
@@ -3521,6 +3614,40 @@ class MainWindow(QMainWindow):
         self._preview_generation += 1
         return self._preview_generation
 
+    def _rule_delta_binding_key(self) -> Optional[str]:
+        """Return the in-memory key for the current document and saved revision."""
+        document_id = self._document_id
+        revision_id = (self._document_head or {}).get("revision_id")
+        if not document_id or not revision_id:
+            return None
+        return f"{document_id}\0{revision_id}"
+
+    def _remember_rule_delta_attempt(self, result: Dict[str, Any]) -> None:
+        """Retain one safe typed terminal result for the current saved revision."""
+        key = self._rule_delta_binding_key()
+        if key is not None:
+            self._rule_delta_attempts[key] = dict(result)
+
+    def _restore_rule_delta_attempt(self) -> bool:
+        """Restore current same-session evidence without dispatching any request."""
+        key = self._rule_delta_binding_key()
+        result = self._rule_delta_attempts.get(key) if key is not None else None
+        if result is None:
+            return False
+        state = str(result.get("state", "unknown"))
+        self._rule_delta_reviewable_for = (
+            self._document_id if state == _RULE_DELTA_REVIEWABLE else None
+        )
+        self._render_rule_delta_result(result)
+        label = delta_interpret_state_label(state)
+        status = (
+            STATE_SUCCESS
+            if state in {_RULE_DELTA_REVIEWABLE, "cancelled"}
+            else STATE_FAILED
+        )
+        self._set_status(status, f"preview {label}")
+        return True
+
     def _refresh_preview(self) -> None:
         """Request the version-bound preview for the current document selection.
 
@@ -3531,6 +3658,25 @@ class MainWindow(QMainWindow):
         if not self._document_id:
             self._clear_preview()
             return
+        if self._restore_rule_delta_attempt():
+            return
+        # A request for a different document/revision must immediately replace
+        # any previously rendered body, so stale evidence never appears current
+        # while the passive preview lookup is pending.
+        self._rule_delta_result_shown = False
+        self._rule_delta_reviewable_for = None
+        if self._preview_state_label is not None:
+            self._preview_state_label.setText("Loading")
+            self._preview_state_label.setStyleSheet(
+                style.state_chip_style(self._palette, style.STATE_INFO)
+            )
+        if self._preview_document_label is not None:
+            self._preview_document_label.setText(self._document_name or "Untitled")
+        if self._preview_body is not None:
+            self._preview_body.setPlainText(
+                "Loading the preview for this document's saved revision…"
+            )
+        self._update_preview_actions()
         generation = self._next_preview_generation()
         cid = contract.new_correlation_id()
         request = build_preview_request(cid, self._document_id)
@@ -3543,6 +3689,8 @@ class MainWindow(QMainWindow):
     def _on_preview_loaded(self, generation: int, result: Dict[str, Any]) -> None:
         """Render a loaded preview, discarding a late response for an old document."""
         if generation != self._preview_generation:
+            return
+        if self._restore_rule_delta_attempt():
             return
         self._render_preview(result)
         self._set_status(STATE_SUCCESS, "preview ready")
@@ -3574,6 +3722,21 @@ class MainWindow(QMainWindow):
                     "revision. Your unsaved edits are not represented here."
                 )
             self._preview_body.setPlainText(text)
+        self._update_preview_actions()
+
+    def _update_preview_actions(self) -> None:
+        """Expose only the action valid for the current saved document state."""
+        has_revision = bool((self._document_head or {}).get("revision_id"))
+        if self._preview_build_button is not None:
+            self._preview_build_button.setVisible(
+                bool(self._document_id)
+                and has_revision
+                and not self._document_dirty
+                and not self._candidate_is_current()
+                and not self._rule_delta_pending
+            )
+        if self._document_adopt_button is not None:
+            self._document_adopt_button.setVisible(self._candidate_is_current())
 
     def _set_preview_state_badge(self, state: str, kind: Optional[str]) -> None:
         """Set the Preview state badge word + semantic colour (never colour alone)."""
@@ -3597,8 +3760,10 @@ class MainWindow(QMainWindow):
             self._preview_document_label.setText("")
         if self._preview_body is not None:
             self._preview_body.setPlainText(
-                "No document open. Save a document to see a preview."
+                "No document is open. Create a document, describe the expected "
+                "behaviour, then save it before building a preview."
             )
+        self._update_preview_actions()
 
     # -- Document/version-authority flow (P4.4) ---------------------------
 
@@ -3629,6 +3794,8 @@ class MainWindow(QMainWindow):
             self._library_move_button.setEnabled(has_selection)
         if self._library_trash_button is not None:
             self._library_trash_button.setEnabled(has_selection)
+        if self._library_organise_row is not None:
+            self._library_organise_row.setVisible(has_selection)
 
     def _selected_folder_id(self) -> Optional[str]:
         """Return the selected folder id (for create-under), else ``None`` (root)."""
@@ -3670,38 +3837,51 @@ class MainWindow(QMainWindow):
         )
 
     def _update_document_actions(self) -> None:
-        """Show candidate actions only in their meaningful states.
-
-        Save is always the primary action. The single contextual preview action
-        reads "Build preview" (or "Update preview" once a reviewable candidate
-        exists for the current document) and appears only after a saved (clean)
-        document is current; it is disabled while a prepare/interpret request is
-        in flight. Review candidate appears only when a document candidate
-        exists; Adopt appears only when that candidate's evidence is current.
-        """
+        """Show one clear next action while preserving all existing safety gates."""
         has_doc = self._document_id is not None
         has_revision = bool((self._document_head or {}).get("revision_id"))
-        has_candidate = bool(self._document_candidate)
 
+        if self._document_empty_state is not None:
+            self._document_empty_state.setVisible(not has_doc)
+        if self._document_editor is not None:
+            self._document_editor.setVisible(has_doc)
         if self._document_save_button is not None:
-            self._document_save_button.setEnabled(has_doc)
+            self._document_save_button.setVisible(has_doc)
+            self._document_save_button.setEnabled(
+                has_doc and (self._document_dirty or not has_revision)
+            )
         if self._document_candidate_button is not None:
             self._document_candidate_button.setVisible(
                 has_doc and has_revision and not self._document_dirty
             )
-            if self._rule_delta_reviewable_for == self._document_id:
-                label = "Update preview"
-            else:
-                label = "Build preview"
+            label = (
+                "Update preview"
+                if self._rule_delta_reviewable_for == self._document_id
+                else "Build preview"
+            )
             self._document_candidate_button.setText(label)
             self._document_candidate_button.setAccessibleName(label)
             self._document_candidate_button.setEnabled(
                 not self._document_candidate_pending and not self._rule_delta_pending
             )
+        # Review and adoption live in Preview, not beside Save.
         if self._document_review_button is not None:
-            self._document_review_button.setVisible(has_candidate)
+            self._document_review_button.setVisible(False)
         if self._document_adopt_button is not None:
             self._document_adopt_button.setVisible(self._candidate_is_current())
+        if self._document_action_hint is not None:
+            if not has_doc:
+                hint = ""
+            elif self._document_dirty:
+                hint = "Save changes to continue."
+            elif not has_revision:
+                hint = "Save this document to build a preview."
+            elif self._rule_delta_pending or self._document_candidate_pending:
+                hint = "Preparing the review state…"
+            else:
+                hint = "Preview uses the last saved revision."
+            self._document_action_hint.setText(hint)
+        self._update_preview_actions()
 
     def _review_candidate(self) -> None:
         """Open the Preview surface to review the current candidate."""
@@ -3711,15 +3891,27 @@ class MainWindow(QMainWindow):
         if self._document_status_label is None:
             return
         if self._document_id is None:
-            self._document_status_label.setText("No document open.")
+            if self._document_title_label is not None:
+                self._document_title_label.setText("Document")
+            self._document_status_label.setText("Ready to start")
+            self._document_status_label.setStyleSheet(
+                style.state_chip_style(self._palette, style.STATE_NEUTRAL)
+            )
+            self._update_document_actions()
             return
         name = self._document_name or "Untitled"
+        if self._document_title_label is not None:
+            self._document_title_label.setText(name)
         if self._document_dirty:
-            self._document_status_label.setText(
-                f"{name} — unsaved changes."
-            )
+            self._document_status_label.setText("Unsaved changes")
+            token = style.STATE_WARNING
         else:
-            self._document_status_label.setText(f"{name} — saved.")
+            self._document_status_label.setText("Saved")
+            token = style.STATE_SUCCESS
+        self._document_status_label.setStyleSheet(
+            style.state_chip_style(self._palette, token)
+        )
+        self._update_document_actions()
 
     def _mark_document_dirty(self, *_args: Any) -> None:
         if self._document_loading:
@@ -3878,14 +4070,12 @@ class MainWindow(QMainWindow):
         trash += [d for d in self._library_documents if d.get("trashed")]
         trash.sort(key=lambda x: str(x.get("name") or "").lower())
 
+        has_trash = bool(trash)
+        if self._library_trash_header is not None:
+            self._library_trash_header.setVisible(has_trash)
+        if self._library_trash_scroll is not None:
+            self._library_trash_scroll.setVisible(has_trash)
         if not trash:
-            empty = QLabel("Trash is empty.")
-            empty.setObjectName("secondary")
-            empty.setStyleSheet(style.secondary_text_style(self._palette))
-            empty.setWordWrap(True)
-            empty.setAccessibleName("Trash is empty")
-            layout.addWidget(empty)
-            layout.addStretch(1)
             return
 
         for entry in trash:
@@ -4261,6 +4451,18 @@ class MainWindow(QMainWindow):
             empty.setWordWrap(True)
             empty.setAccessibleName("No accepted app version")
             layout.addWidget(empty)
+            next_button = QPushButton(
+                "Build preview"
+                if self._document_id and self._document_head and not self._document_dirty
+                else "Go to Document"
+            )
+            next_button.setObjectName("primaryButton")
+            next_button.setAccessibleName(next_button.text())
+            if next_button.text() == "Build preview":
+                next_button.clicked.connect(self._build_preview)
+            else:
+                next_button.clicked.connect(partial(self._select_destination, "document"))
+            layout.addWidget(next_button, alignment=Qt.AlignLeft)
             layout.addStretch(1)
             return
 
@@ -4422,6 +4624,18 @@ class MainWindow(QMainWindow):
             self._pending_rule_delta_token = None
             self._pending_rule_delta_document_id = None
             self._pending_rule_delta_disclosure = ""
+            cancelled = {
+                "schema_version": "1.0.0",
+                "state": "cancelled",
+                "provider_id": "deepseek",
+                "model": self._provider_model,
+                "sent": False,
+                "usage": None,
+                "candidate": None,
+                "limitations": ["The confirmation was cancelled; nothing was sent."],
+            }
+            self._remember_rule_delta_attempt(cancelled)
+            self._render_rule_delta_result(cancelled)
             self._set_status(STATE_SUCCESS, "preview cancelled")
             return
         self._send_rule_delta()
@@ -4465,6 +4679,7 @@ class MainWindow(QMainWindow):
         self._rule_delta_reviewable_for = (
             self._document_id if state == _RULE_DELTA_REVIEWABLE else None
         )
+        self._remember_rule_delta_attempt(result)
         self._update_document_actions()
         self._render_rule_delta_result(result)
         # Only a reviewable candidate is a successful preview outcome; a
@@ -4501,7 +4716,10 @@ class MainWindow(QMainWindow):
                     "\n\nReviewable only. 'Use this version' is a separate, "
                     "explicit step and is never automatic."
                 )
+            else:
+                text += "\n\nApp Candidate: none was created by this attempt."
             self._preview_body.setPlainText(text)
+        self._update_preview_actions()
 
     def _render_rule_delta_failure(self, label: str) -> None:
         """Show a calm, bounded unavailable state for a failed prepare."""
