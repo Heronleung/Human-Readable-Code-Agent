@@ -404,6 +404,27 @@ class BoundaryRuleDeltaInterpretTests(unittest.TestCase):
         self.assertIsNone(result["candidate"])
         self.assertEqual(self.session.runner.run_calls, 0)
 
+    def test_credential_rejected_is_distinct_and_sent_true(self):
+        # A provider HTTP 401/403 (key read but rejected) is a distinct state
+        # from a local missing credential: sent:true, no Candidate, no runner,
+        # and a clear recovery instruction.
+        document_id = self._saved()
+        token = self._prepare(document_id)["result"]["token"]
+        from hrca import delta_transport
+
+        transport = FakeDeltaTransport(
+            error=delta_transport.TransportError("credential_rejected")
+        )
+        self.session.delta_transport = transport
+        env = self._interpret(document_id, token, confirmed=True)
+        result = env["result"]
+        self.assertEqual(result["state"], rule_delta_interpret.STATE_CREDENTIAL_REJECTED)
+        self.assertTrue(result["sent"])
+        self.assertIsNone(result["candidate"])
+        self.assertEqual(self.session.runner.run_calls, 0)
+        self.assertTrue(result["limitations"])
+        self.assertIn("API key", result["limitations"][0])
+
     # -- no-egress --------------------------------------------------------
 
     def test_provider_request_never_carries_protected_oracle_data(self):

@@ -1031,6 +1031,16 @@ class DeltaInterpretClientVocabularyTests(unittest.TestCase):
     def test_unknown_state_falls_back_to_token(self):
         self.assertEqual(delta_interpret_state_label("bogus"), "bogus")
 
+    def test_credential_rejected_has_distinct_label(self):
+        # A provider-rejected key must render distinctly from a local missing
+        # credential, and never as "Credential missing".
+        self.assertEqual(
+            delta_interpret_state_label("credential_rejected"), "API key rejected"
+        )
+        self.assertEqual(
+            delta_interpret_state_label("credential_missing"), "Credential missing"
+        )
+
     def test_prepare_request_shape(self):
         req = build_prepare_rule_delta_request("cid", "doc:1")
         self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)

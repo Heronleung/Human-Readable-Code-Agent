@@ -2588,7 +2588,15 @@ def _interpret_rule_delta_result(
             )
         )
     except delta_transport.TransportError as exc:
-        return result(exc.code, sent=True, limitations=[exc.code])
+        limitations = [exc.code]
+        if exc.code == rule_delta_interpret.STATE_CREDENTIAL_REJECTED:
+            # The key was read and sent, then rejected with HTTP 401/403. This
+            # is distinct from a local missing/unreadable credential
+            # (credential_missing, sent:false before transport).
+            limitations = [
+                "the API key was rejected by the provider — replace or verify it in Settings"
+            ]
+        return result(exc.code, sent=True, limitations=limitations)
     except (provider.ProviderError, Exception):
         return result(
             rule_delta_interpret.STATE_PROVIDER_FAILURE,

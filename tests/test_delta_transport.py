@@ -149,6 +149,28 @@ class CredentialTests(unittest.TestCase):
         self.assertEqual(post.calls, 0)
 
 
+class StatusMappingTests(unittest.TestCase):
+    def test_401_maps_to_credential_rejected(self):
+        post = _CapturingPost(status=401, body=b"unauthorized")
+        transport = delta_transport.DeltaInterpretProvider(
+            credential_getter=lambda: "sk-test", http_post=post
+        )
+        with self.assertRaises(delta_transport.TransportError) as ctx:
+            transport.generate(_request())
+        self.assertEqual(ctx.exception.code, "credential_rejected")
+        self.assertEqual(post.calls, 1)
+
+    def test_403_maps_to_credential_rejected(self):
+        post = _CapturingPost(status=403, body=b"forbidden")
+        transport = delta_transport.DeltaInterpretProvider(
+            credential_getter=lambda: "sk-test", http_post=post
+        )
+        with self.assertRaises(delta_transport.TransportError) as ctx:
+            transport.generate(_request())
+        self.assertEqual(ctx.exception.code, "credential_rejected")
+        self.assertEqual(post.calls, 1)
+
+
 class SuccessTests(unittest.TestCase):
     def test_valid_response_returns_normalized_payload(self):
         post = _CapturingPost(

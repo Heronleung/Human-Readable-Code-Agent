@@ -270,6 +270,7 @@ _RULE_DELTA_STATE_TOKEN = {
     "verification_failed": style.STATE_ERROR,
     "over_limit": style.STATE_ERROR,
     "credential_missing": style.STATE_ERROR,
+    "credential_rejected": style.STATE_ERROR,
     "network_denied": style.STATE_ERROR,
     "timeout": style.STATE_ERROR,
     "rate_limited": style.STATE_ERROR,

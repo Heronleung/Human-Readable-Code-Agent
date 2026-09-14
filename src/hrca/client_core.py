@@ -1264,6 +1264,7 @@ DELTA_INTERPRET_STATE_LABELS = {
     "over_limit": "Over limit",
     "reviewable_candidate": "Reviewable",
     "credential_missing": "Credential missing",
+    "credential_rejected": "API key rejected",
     "network_denied": "Network denied",
     "timeout": "Timed out",
     "rate_limited": "Rate limited",

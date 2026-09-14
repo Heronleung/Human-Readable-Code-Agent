@@ -500,6 +500,32 @@ class RuleDeltaGuiTests(unittest.TestCase):
         self.assertIn("Reviewable", self.window._preview_body.toPlainText())
         self.assertEqual(self.window._rule_delta_reviewable_for, "doc:d1")
 
+    def test_credential_rejected_renders_distinctly_from_missing(self):
+        # A provider-rejected key (sent:true) renders as "API key rejected",
+        # never "Credential missing", in the Preview body, badge and status.
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        result = _interpret_result("credential_rejected")
+        result["usage"] = None
+        result["limitations"] = [
+            "the API key was rejected by the provider — replace or verify it in Settings"
+        ]
+        self.window._on_rule_delta_result(self.window._rule_delta_generation, result)
+
+        body = self.window._preview_body.toPlainText()
+        self.assertIn("API key rejected", body)
+        self.assertNotIn("Credential missing", body)
+        self.assertIn("Sent: yes", body)
+        self.assertEqual(
+            self.window._preview_state_label.text(), "API key rejected"
+        )
+        self.assertEqual(
+            self.window.status_label.text(),
+            "Status: failed — preview API key rejected",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

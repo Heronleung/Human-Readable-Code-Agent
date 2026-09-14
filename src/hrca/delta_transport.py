@@ -52,7 +52,8 @@ ENDPOINT_URL = deepseek.API_ORIGIN + CHAT_COMPLETIONS_PATH
 # retains only its code; the message is drawn from this table so an underlying
 # HTTP error, credential or response text can never be retained or serialized.
 _SAFE_MESSAGES = {
-    "credential_missing": "the DeepSeek credential is missing or rejected",
+    "credential_missing": "the DeepSeek credential is missing",
+    "credential_rejected": "the DeepSeek API key was rejected by the provider",
     "network_denied": "the provider request could not reach the network",
     "timeout": "the provider request timed out",
     "rate_limited": "the provider rate-limited the request",
@@ -71,9 +72,9 @@ _TRANSPORT_CODES = frozenset(_SAFE_MESSAGES)
 # transport never follows a redirect to a different origin.
 _HTTP_TO_CODE = {
     400: "context_rejected",
-    401: "credential_missing",
+    401: "credential_rejected",
     402: "quota_exceeded",
-    403: "credential_missing",
+    403: "credential_rejected",
     404: "context_rejected",
     408: "timeout",
     413: "over_limit",

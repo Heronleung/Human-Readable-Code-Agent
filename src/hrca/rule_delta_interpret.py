@@ -183,6 +183,7 @@ STATE_OVER_LIMIT = "over_limit"
 STATE_REVIEWABLE_CANDIDATE = "reviewable_candidate"
 # Transport-failure states (codes the transport raises map 1:1 here).
 STATE_CREDENTIAL_MISSING = "credential_missing"
+STATE_CREDENTIAL_REJECTED = "credential_rejected"
 STATE_NETWORK_DENIED = "network_denied"
 STATE_TIMEOUT = "timeout"
 STATE_RATE_LIMITED = "rate_limited"
@@ -207,6 +208,7 @@ STATES = frozenset(
         STATE_OVER_LIMIT,
         STATE_REVIEWABLE_CANDIDATE,
         STATE_CREDENTIAL_MISSING,
+        STATE_CREDENTIAL_REJECTED,
         STATE_NETWORK_DENIED,
         STATE_TIMEOUT,
         STATE_RATE_LIMITED,
@@ -755,6 +757,7 @@ __all__ = [
     "STATE_OVER_LIMIT",
     "STATE_REVIEWABLE_CANDIDATE",
     "STATE_CREDENTIAL_MISSING",
+    "STATE_CREDENTIAL_REJECTED",
     "STATE_NETWORK_DENIED",
     "STATE_TIMEOUT",
     "STATE_RATE_LIMITED",
