@@ -1,0 +1,554 @@
+"""Tests for the P4.4 document/version GUI surface, run offscreen."""
+
+from __future__ import annotations
+
+import os
+import unittest
+from unittest import mock
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+try:
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    from hrca import client, contract
+    from hrca.client import MainWindow
+
+    HAS_PYSIDE6 = True
+except ImportError:  # pragma: no cover - exercised in the no-Qt environment
+    HAS_PYSIDE6 = False
+
+
+def _app() -> "QApplication":
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    return app
+
+
+def _sample_state():
+    return {
+        "document": {"document_id": "doc:d1", "name": "requirements.md", "kind": "md",
+                      "head_revision_number": 1, "revision_count": 1},
+        "head_revision": {"revision_id": "rev:1", "content": "hello",
+                          "content_fingerprint": "f" * 64},
+        "candidate": {"candidate_id": "cand:c1", "document_revision_id": "rev:1",
+                      "adopted": False, "generation_source": "deterministic_fixture",
+                      "limitation": "no interpretation"},
+        "accepted": None,
+        "current_accepted_version_id": None,
+        "versions": [],
+    }
+
+
+class _FakeSend:
+    def __init__(self):
+        self.requests = []
+
+    def __call__(self, request, on_success, on_error):
+        self.requests.append(request)
+        return True
+
+
+def _preview(state="current", name="requirements.md", kind="candidate"):
+    return {
+        "document": {"document_id": "doc:d1", "name": name, "kind": "md",
+                      "revision_number": 1, "revision_id": "rev:1"},
+        "state": state,
+        "binding": {"kind": kind, "adopted": kind == "accepted",
+                     "document_revision_number": 1},
+        "provenance": "deterministic_fixture",
+        "limitation": "Bound to the hand-written quotation fixture only; "
+                      "no document-to-code interpretation occurred.",
+        "package": {
+            "package_id": "quotation-rules", "title": "Quotation rules",
+            "runtime_identity": "hrca-runner:v1", "schema_version": "1.0.0",
+            "form": [
+                {"name": "subtotal", "type": "decimal", "min": 0},
+                {"name": "member", "type": "boolean"},
+                {"name": "region", "type": "choice", "options": ["west"]},
+            ],
+            "result": [{"name": "discount", "type": "decimal"}],
+        },
+        "evidence": {"package_validates": True, "package_matches": True,
+                     "runtime_matches": True, "validation_matches": True,
+                     "execution_performed": False},
+    }
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class DocumentSurfaceTests(unittest.TestCase):
+    def setUp(self):
+        _app()
+        self.window = MainWindow()
+
+    def tearDown(self):
+        self.window._supervisor.terminate()
+        self.window._credential_supervisor.terminate()
+        self.window.close()
+        self.window.deleteLater()
+
+    def _open_state(self, state=None):
+        state = state or _sample_state()
+        self.window._document_id = "doc:d1"
+        self.window._apply_document_state(state)
+
+    def test_page_builds_and_actions_start_disabled(self):
+        page = self.window._document_page
+        self.assertIsNotNone(page)
+        self.assertIsNotNone(self.window._document_editor)
+        self.assertFalse(self.window._document_save_button.isEnabled())
+
+    def test_library_loaded_populates_explorer(self):
+        self.window._apply_library(
+            {"folders": [], "documents": [{"document_id": "doc:a", "name": "a.md",
+                                            "kind": "md", "head_revision_number": 2,
+                                            "parent_id": None, "trashed": False}]}
+        )
+        self.assertEqual(self.window._library_model.rowCount(), 1)
+        self.assertIn("doc:a", self.window._library_item_by_id)
+
+    def test_one_click_open_dispatches(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._apply_library(
+            {"folders": [], "documents": [{"document_id": "doc:a", "name": "a.md",
+                                            "kind": "md", "parent_id": None,
+                                            "trashed": False}]}
+        )
+        self.window._open_document_by_id("doc:a")
+        self.assertEqual(len(fake.requests), 1)
+        self.assertEqual(fake.requests[0]["action"], contract.ACTION_DOCUMENT_OPEN)
+        self.assertEqual(fake.requests[0]["document_id"], "doc:a")
+
+    def test_open_already_open_clean_document_is_noop(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:a"
+        self.window._document_dirty = False
+        self.window._open_document_by_id("doc:a")
+        self.assertEqual(len(fake.requests), 0)
+
+    def test_apply_state_loads_editor_and_clears_dirty(self):
+        self._open_state()
+        self.assertEqual(self.window._document_editor.toPlainText(), "hello")
+        self.assertEqual(self.window._document_base_revision_id, "rev:1")
+        self.assertFalse(self.window._document_dirty)
+        self.assertEqual(self.window._document_candidate_id, "cand:c1")
+        self.assertTrue(self.window._document_save_button.isEnabled())
+
+    def test_editor_edit_marks_dirty_and_save_clears(self):
+        self._open_state()
+        self.window._document_editor.setPlainText("edited")
+        self.assertTrue(self.window._document_dirty)
+        self.window._on_document_saved(
+            {"revision": {"revision_id": "rev:2"}, "head_revision_number": 2}
+        )
+        self.assertFalse(self.window._document_dirty)
+        self.assertEqual(self.window._document_base_revision_id, "rev:2")
+
+    def test_save_dispatches_content_and_base(self):
+        self._open_state()
+        self.window._document_editor.setPlainText("edited")
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._save_document()
+        self.assertEqual(len(fake.requests), 1)
+        req = fake.requests[0]
+        self.assertEqual(req["action"], contract.ACTION_DOCUMENT_SAVE)
+        self.assertEqual(req["content"], "edited")
+        self.assertEqual(req["base_revision_id"], "rev:1")
+
+    def test_create_candidate_dispatches(self):
+        self._open_state()
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._create_candidate()
+        self.assertEqual(len(fake.requests), 1)
+        self.assertEqual(fake.requests[0]["action"], contract.ACTION_DOCUMENT_CREATE_CANDIDATE)
+        self.assertEqual(fake.requests[0]["document_id"], "doc:d1")
+
+    def test_versions_list_marks_current(self):
+        state = _sample_state()
+        state["versions"] = [
+            {"version_id": "ver:1", "restore_of": None},
+            {"version_id": "ver:2", "restore_of": "ver:1"},
+        ]
+        state["current_accepted_version_id"] = "ver:2"
+        self._open_state(state)
+        labels = [l.text() for l in self.window._versions_list.findChildren(QLabel)]
+        self.assertIn("Accepted app 1", labels)
+        self.assertIn("Accepted app 2 (current) (restored)", labels)
+
+    def test_versions_empty_state_explains_save_not_adoption(self):
+        self.window._document_versions = []
+        self.window._populate_versions_list()
+        labels = [l.text() for l in self.window._versions_list.findChildren(QLabel)]
+        text = "\n".join(labels)
+        self.assertIn("does not adopt an app", text)
+        self.assertIn("create a preview and then adopt it", text)
+
+    def test_failure_maps_to_bounded_message(self):
+        self.window._document_id = "doc:d1"
+        self.window._on_document_error("document_stale")
+        self.assertIn("changed since it was opened", self.window._document_result.toPlainText())
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class LibrarySelectionTests(unittest.TestCase):
+    """Selection is preserved by the opaque id across explorer-tree refreshes."""
+
+    def setUp(self):
+        _app()
+        self.window = MainWindow()
+
+    def tearDown(self):
+        self.window._supervisor.terminate()
+        self.window._credential_supervisor.terminate()
+        self.window.close()
+        self.window.deleteLater()
+
+    def _library(self):
+        return {
+            "folders": [],
+            "documents": [
+                {"document_id": "doc:a", "name": "a.md", "kind": "md",
+                 "parent_id": None, "trashed": False, "head_revision_number": 1},
+                {"document_id": "doc:b", "name": "b.md", "kind": "md",
+                 "parent_id": None, "trashed": False, "head_revision_number": 2},
+                {"document_id": "doc:c", "name": "c.md", "kind": "md",
+                 "parent_id": None, "trashed": False, "head_revision_number": 1},
+            ],
+        }
+
+    def _open(self, document_id, revision_id="rev:1"):
+        self.window._apply_document_state(
+            {
+                "document": {"document_id": document_id, "name": f"{document_id}.md", "kind": "md"},
+                "head_revision": {"revision_id": revision_id, "content": "x"},
+                "candidate": None,
+                "accepted": None,
+                "current_accepted_version_id": None,
+                "versions": [],
+            }
+        )
+
+    def test_apply_state_sets_document_id_and_binds_editor(self):
+        self.window._apply_library(self._library())
+        self.window._apply_document_state(
+            {
+                "document": {"document_id": "doc:b", "name": "b.md", "kind": "md"},
+                "head_revision": {"revision_id": "rev:2", "content": "bee"},
+                "candidate": None,
+                "accepted": None,
+                "current_accepted_version_id": None,
+                "versions": [],
+            }
+        )
+        self.assertEqual(self.window._document_id, "doc:b")
+        self.assertTrue(self.window._document_save_button.isEnabled())
+
+    def test_refresh_preserves_selection_by_document_id(self):
+        self.window._apply_library(self._library())
+        self._open("doc:b", revision_id="rev:2")
+        # A refresh keeps doc:b selected by id, never jumping to the first item.
+        self.window._apply_library(self._library())
+        self.assertEqual(self.window._document_id, "doc:b")
+        selected_item = self.window._library_item_by_id.get("doc:b")
+        self.assertIsNotNone(selected_item)
+        self.assertEqual(self.window._library_view.currentIndex(), selected_item.index())
+
+    def test_external_delete_clears_selection(self):
+        self.window._apply_library(self._library())
+        self._open("doc:b", revision_id="rev:2")
+        lib = self._library()
+        lib["documents"] = [d for d in lib["documents"] if d["document_id"] != "doc:b"]
+        self.window._apply_library(lib)
+        self.assertIsNone(self.window._document_id)
+        self.assertEqual(self.window._document_editor.toPlainText(), "")
+        self.assertFalse(self.window._document_save_button.isEnabled())
+        self.assertIn("removed", self.window._document_result.toPlainText())
+
+    def test_folder_click_selects_but_does_not_open(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._apply_library(
+            {"folders": [{"folder_id": "dir:f", "name": "F", "parent_id": None,
+                          "trashed": False, "created_at": "x"}],
+             "documents": []}
+        )
+        index = self.window._library_item_by_id["dir:f"].index()
+        self.window._on_library_clicked(index)
+        self.assertEqual(self.window._library_selected_id, "dir:f")
+        self.assertEqual(len(fake.requests), 0)
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class PreviewSurfaceTests(unittest.TestCase):
+    """P4.5 read-only version-bound Preview surface."""
+
+    def setUp(self):
+        _app()
+        self.window = MainWindow()
+
+    def tearDown(self):
+        self.window._supervisor.terminate()
+        self.window._credential_supervisor.terminate()
+        self.window.close()
+        self.window.deleteLater()
+
+    def test_preview_is_read_only_without_run_button(self):
+        self.assertTrue(self.window._preview_body.isReadOnly())
+        self.assertFalse(hasattr(self.window, "_builder_run"))
+
+    def test_render_preview_populates_state_and_document(self):
+        self.window._render_preview(_preview(state="current", name="requirements.md"))
+        self.assertIn("requirements.md", self.window._preview_document_label.text())
+        self.assertIn("Candidate", self.window._preview_state_label.text())
+        self.assertIn("Current", self.window._preview_state_label.text())
+        body = self.window._preview_body.toPlainText()
+        self.assertIn("subtotal", body)
+        self.assertIn("discount", body)
+        self.assertIn("Package executed: no", body)
+        self.assertIn("no document-to-code", body)
+
+    def test_render_preview_distinguishes_accepted_version(self):
+        self.window._render_preview(_preview(state="current", kind="accepted"))
+        self.assertIn("Accepted app", self.window._preview_state_label.text())
+
+    def test_refresh_preview_dispatches_for_open_document(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:d1"
+        self.window._refresh_preview()
+        self.assertEqual(len(fake.requests), 1)
+        self.assertEqual(fake.requests[0]["action"], contract.ACTION_DOCUMENT_PREVIEW)
+        self.assertEqual(fake.requests[0]["document_id"], "doc:d1")
+
+    def test_refresh_preview_no_document_clears(self):
+        self.window._document_id = None
+        self.window._refresh_preview()
+        self.assertEqual(self.window._preview_document_label.text(), "")
+        self.assertIn("No document", self.window._preview_state_label.text())
+
+    def test_late_preview_response_is_discarded(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:d1"
+        self.window._refresh_preview()  # generation 1
+        self.window._refresh_preview()  # generation 2
+        self.assertEqual(self.window._preview_generation, 2)
+        # A late response for generation 1 is discarded.
+        self.window._on_preview_loaded(1, _preview(name="old.md"))
+        self.assertEqual(self.window._preview_document_label.text(), "")
+        # The current generation's response renders.
+        self.window._on_preview_loaded(2, _preview(name="new.md"))
+        self.assertIn("new.md", self.window._preview_document_label.text())
+
+    def test_preview_error_clears_surface(self):
+        self.window._document_id = "doc:d1"
+        self.window._on_preview_error("document_not_found")
+        self.assertEqual(self.window._preview_document_label.text(), "")
+        self.assertIn("No document", self.window._preview_state_label.text())
+
+    def test_unsaved_text_notes_preview_is_saved_only(self):
+        self.window._send = _FakeSend()
+        self.window._apply_document_state(_sample_state())
+        self.window._document_dirty = True
+        self.window._render_preview(_preview(state="current"))
+        body = self.window._preview_body.toPlainText()
+        self.assertIn("unsaved edits are not represented", body)
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class DocumentLifecycleTests(unittest.TestCase):
+    """P4.5a: immediate create/selection, save -> Create preview, name conflict."""
+
+    def setUp(self):
+        _app()
+        self.window = MainWindow()
+
+    def tearDown(self):
+        self.window._supervisor.terminate()
+        self.window._credential_supervisor.terminate()
+        self.window.close()
+        self.window.deleteLater()
+
+    def _created(self, document_id="doc:new", name="new.md"):
+        return {
+            "document": {"document_id": document_id, "name": name, "kind": "md",
+                          "head_revision_number": 0, "revision_count": 0},
+            "head_revision": None,
+            "candidate": None,
+            "accepted": None,
+            "current_accepted_version_id": None,
+            "versions": [],
+            "tree": {
+                "folders": [],
+                "documents": [{"document_id": document_id, "name": name,
+                               "kind": "md", "parent_id": None, "trashed": False}],
+            },
+        }
+
+    def test_created_document_is_immediately_selected(self):
+        self.window._send = _FakeSend()
+        self.window._on_document_created(self._created())
+        self.assertEqual(self.window._document_id, "doc:new")
+        self.assertIn("doc:new", self.window._library_item_by_id)
+
+    def test_created_document_needs_no_list_round_trip(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._on_document_created(self._created())
+        actions = [r["action"] for r in fake.requests]
+        self.assertNotIn(contract.ACTION_DOCUMENT_LIST, actions)
+        self.assertNotIn(contract.ACTION_LIBRARY_GET, actions)
+
+    def test_save_enables_create_preview(self):
+        self.window._send = _FakeSend()
+        self.window._apply_document_state(_sample_state())
+        self.assertFalse(self.window._document_candidate_button.isHidden())
+        # Editing hides it (dirty).
+        self.window._document_editor.setPlainText("edited")
+        self.assertTrue(self.window._document_candidate_button.isHidden())
+        # Saving re-enables it and binds the new head.
+        self.window._on_document_saved(
+            {"revision": {"revision_id": "rev:2", "revision_number": 2,
+                           "content_fingerprint": "f" * 64},
+             "head_revision_number": 2}
+        )
+        self.assertFalse(self.window._document_candidate_button.isHidden())
+        self.assertTrue(self.window._document_candidate_button.isEnabled())
+        self.assertEqual(self.window._document_head.get("revision_id"), "rev:2")
+
+    def test_create_preview_disabled_while_pending(self):
+        self.window._send = _FakeSend()
+        self.window._apply_document_state(_sample_state())
+        self.window._create_candidate()
+        self.assertTrue(self.window._document_candidate_pending)
+        self.assertFalse(self.window._document_candidate_button.isEnabled())
+        # A second click is a no-op (pending guard).
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._create_candidate()
+        self.assertEqual(len(fake.requests), 0)
+        # Completing resets the pending flag.
+        self.window._on_candidate_ready(
+            {"candidate": None, "accepted": None,
+             "current_accepted_version_id": None, "versions": []}
+        )
+        self.assertFalse(self.window._document_candidate_pending)
+
+    def test_name_conflict_message_names_the_request(self):
+        self.window._pending_document_name = "requirements.md"
+        self.window._on_create_document_error("document_name_in_use")
+        result_text = self.window._document_result.toPlainText()
+        self.assertIn("requirements.md", result_text)
+        self.assertIn("already in use", result_text)
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class DocumentLibraryTests(unittest.TestCase):
+    """P4.6 explorer mutation actions and the dirty-switch guard."""
+
+    def setUp(self):
+        _app()
+        self.window = MainWindow()
+
+    def tearDown(self):
+        self.window._supervisor.terminate()
+        self.window._credential_supervisor.terminate()
+        self.window.close()
+        self.window.deleteLater()
+
+    def _select(self, item_id):
+        self.window._library_selected_id = item_id
+        self.window._update_library_actions()
+
+    def test_rename_item_dispatches(self):
+        self._select("doc:a")
+        fake = _FakeSend()
+        self.window._send = fake
+        with mock.patch.object(
+            client.QInputDialog, "getText", return_value=("renamed.md", True)
+        ):
+            self.window._rename_item()
+        self.assertEqual(len(fake.requests), 1)
+        self.assertEqual(fake.requests[0]["action"], contract.ACTION_LIBRARY_RENAME)
+        self.assertEqual(fake.requests[0]["item_id"], "doc:a")
+
+    def test_trash_item_dispatches(self):
+        self._select("doc:a")
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._trash_item()
+        self.assertEqual(len(fake.requests), 1)
+        self.assertEqual(fake.requests[0]["action"], contract.ACTION_LIBRARY_TRASH)
+        self.assertEqual(fake.requests[0]["item_id"], "doc:a")
+
+    def test_restore_item_dispatches(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._restore_item("doc:a")
+        self.assertEqual(len(fake.requests), 1)
+        self.assertEqual(fake.requests[0]["action"], contract.ACTION_LIBRARY_RESTORE)
+        self.assertEqual(fake.requests[0]["item_id"], "doc:a")
+
+    def test_new_folder_dispatches(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._selected_folder_id = lambda: None
+        with mock.patch.object(
+            client.QInputDialog, "getText", return_value=("NewFolder", True)
+        ):
+            self.window._new_folder()
+        self.assertEqual(len(fake.requests), 1)
+        self.assertEqual(fake.requests[0]["action"], contract.ACTION_LIBRARY_CREATE_FOLDER)
+
+    def test_organise_actions_disabled_without_selection(self):
+        self.assertFalse(self.window._library_rename_button.isEnabled())
+        self.assertFalse(self.window._library_move_button.isEnabled())
+        self.assertFalse(self.window._library_trash_button.isEnabled())
+
+    def test_library_mutated_applies_tree(self):
+        self.window._on_library_mutated(
+            "renamed",
+            {"folders": [], "documents": [{"document_id": "doc:x", "name": "x.md",
+                                            "kind": "md", "parent_id": None,
+                                            "trashed": False}]},
+        )
+        self.assertEqual(len(self.window._library_documents), 1)
+        self.assertIn("doc:x", self.window._library_item_by_id)
+
+    def test_save_then_pending_switch_opens_target(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:a"
+        self.window._document_base_revision_id = "rev:1"
+        self.window._pending_document_switch_id = "doc:b"
+        self.window._on_document_saved(
+            {"revision": {"revision_id": "rev:2"}, "head_revision_number": 2}
+        )
+        actions = [r["action"] for r in fake.requests]
+        self.assertIn(contract.ACTION_DOCUMENT_OPEN, actions)
+        open_req = [r for r in fake.requests if r["action"] == contract.ACTION_DOCUMENT_OPEN]
+        self.assertEqual(open_req[0]["document_id"], "doc:b")
+        self.assertIsNone(self.window._pending_document_switch_id)
+
+    def test_dirty_open_document_defers_without_dispatching(self):
+        # A dirty open must not dispatch an open request (it shows a prompt).
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:a"
+        self.window._document_dirty = True
+        box = mock.MagicMock()
+        cancel = object()
+        box.addButton.side_effect = ["save", "discard", cancel]
+        box.clickedButton.return_value = cancel
+        with mock.patch.object(client, "QMessageBox", return_value=box):
+            self.window._open_document_by_id("doc:b")
+        self.assertEqual(len(fake.requests), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

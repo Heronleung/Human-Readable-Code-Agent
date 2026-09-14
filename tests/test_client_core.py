@@ -10,12 +10,87 @@ from unittest import mock
 
 from hrca import contract
 from hrca.client_core import (
+    BLOCK_TYPE_LABELS,
+    CREDENTIAL_ACTION_MESSAGES,
+    CREDENTIAL_ACTION_PENDING,
+    CREDENTIAL_FAILURE_MESSAGES,
+    CREDENTIAL_MASK,
+    DELTA_INTERPRET_STATE_LABELS,
+    INTENT_CLASS_LABELS,
+    OPERATION_LABELS,
+    PROFILE_ACTION_MESSAGES,
+    PROFILE_FAILURE_MESSAGES,
+    PROPOSAL_STATE_LABELS,
+    PROVIDER_READINESS_STATE_LABELS,
+    PROVIDER_STATUS_MESSAGES,
+    PROVIDER_UNAVAILABLE,
+    REPOSITORY_UNVERIFIED,
+    TWIN_AVAILABLE,
+    TWIN_CONFLICT,
+    TWIN_EMPTY,
+    TWIN_LOADING,
+    TWIN_STALE,
+    TWIN_UNSUPPORTED,
+    TWIN_STATES,
+    VALIDATION_FAILED,
+    VALIDATION_IDLE,
+    VALIDATION_OK,
+    VALIDATION_RUNNING,
     LineBuffer,
     ResponseRouter,
+    behavior_node_label,
+    block_type_label,
+    credential_action_message,
+    delta_interpret_state_label,
+    profile_failure_message,
+    build_add_profile_request,
+    build_compare_draft_request,
+    build_delete_profile_request,
+    build_discard_draft_request,
     build_fixture_task,
+    build_generate_intent_delta_request,
+    build_get_anchor_request,
+    build_get_code_map_request,
+    build_get_document_request,
+    build_get_draft_request,
+    build_get_profiles_request,
+    build_get_readiness_request,
+    build_get_tree_request,
+    build_get_twin_request,
+    build_interpret_rule_delta_request,
+    build_manage_credential_request,
+    build_open_project_request,
+    build_plan_proposal_request,
+    build_prepare_rule_delta_request,
+    build_remove_credential_request,
+    build_rename_profile_request,
     build_request,
+    build_reset_draft_request,
+    build_save_draft_request,
+    build_scan_request,
+    build_scan_task,
+    build_set_active_profile_request,
+    build_sync_twin_request,
     default_fixture_root,
+    format_delta_disclosure,
+    format_delta_interpret_result,
+    format_draft_operations,
+    format_entity_list,
+    format_intent_delta,
+    format_procedural_document,
+    format_proposal,
+    format_provider_readiness,
+    format_twin_projection,
+    format_twin_sync,
+    intent_class_label,
+    is_twin_source_path,
+    operation_label,
+    proposal_state_label,
+    provider_readiness_state_label,
+    provider_status_message,
     resolve_backend_command,
+    resolve_credential_host_command,
+    twin_state_from_sync,
 )
 
 
@@ -117,6 +192,26 @@ class BackendCommandTests(unittest.TestCase):
             [sys.executable, contract.SERVE_SENTINEL],
         )
 
+    def test_credential_host_source_resolution(self):
+        self.assertEqual(
+            resolve_credential_host_command(frozen=False),
+            [sys.executable, "-m", "hrca.credential_host"],
+        )
+
+    def test_credential_host_frozen_resolution(self):
+        self.assertEqual(
+            resolve_credential_host_command(frozen=True),
+            [sys.executable, contract.CREDENTIAL_SENTINEL],
+        )
+
+    def test_credential_host_command_carries_no_operation_or_handle(self):
+        # The operation and parent handle travel in the stdin request, never in
+        # the command line, so no secret or handle can leak via process args.
+        for frozen in (False, True):
+            command = resolve_credential_host_command(frozen=frozen)
+            self.assertNotIn("enroll", command)
+            self.assertNotIn("delete", command)
+
 
 class DefaultFixtureRootTests(unittest.TestCase):
     def test_source_resolution_points_into_repository(self):
@@ -159,6 +254,859 @@ class DefaultFixtureRootTests(unittest.TestCase):
         doc = scan_directory(root)
         self.assertGreater(len(doc["files"]), 0)
         self.assertGreater(len(doc["symbols"]), 0)
+
+
+class WorkspaceRequestBuilderTests(unittest.TestCase):
+    def test_open_project_request_shape(self):
+        req = build_open_project_request("cid-1", "some/root")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_OPEN_PROJECT)
+        self.assertEqual(req["path"], os.path.abspath("some/root"))
+
+    def test_get_tree_request_has_no_path(self):
+        req = build_get_tree_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_TREE)
+        self.assertNotIn("path", req)
+
+    def test_get_document_request_shape(self):
+        req = build_get_document_request("cid-1", "app/main.py")
+        self.assertEqual(req["action"], contract.ACTION_GET_DOCUMENT)
+        self.assertEqual(req["path"], "app/main.py")
+
+    def test_scan_request_uses_generic_task(self):
+        req = build_scan_request("cid-1", "some/root")
+        self.assertEqual(req["action"], contract.ACTION_SCAN)
+        self.assertEqual(req["task"]["task_id"], "P3.2")
+        self.assertEqual(
+            req["task"]["repository_context"]["status"], REPOSITORY_UNVERIFIED
+        )
+
+    def test_scan_task_is_read_only(self):
+        task = build_scan_task("some/root")
+        self.assertTrue(
+            set(task["allowed_actions"]) <= contract.READ_ONLY_TASK_ACTIONS
+        )
+
+
+class TwinRequestBuilderTests(unittest.TestCase):
+    def test_sync_twin_request_full_sync_has_empty_task(self):
+        req = build_sync_twin_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_SYNC_TWIN)
+        self.assertEqual(req["task"], {})
+        self.assertNotIn("path", req)
+
+    def test_sync_twin_request_scoped_to_changed_paths(self):
+        req = build_sync_twin_request("cid-1", ["app/main.py", "app/service.py"])
+        self.assertEqual(req["task"]["changed_paths"], ["app/main.py", "app/service.py"])
+
+    def test_sync_twin_request_copies_changed_paths(self):
+        source = ["app/main.py"]
+        req = build_sync_twin_request("cid-1", source)
+        source.append("app/extra.py")
+        self.assertEqual(req["task"]["changed_paths"], ["app/main.py"])
+
+    def test_get_twin_request_shape(self):
+        req = build_get_twin_request("cid-1", "app.service.Service.handle")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_TWIN)
+        self.assertEqual(req["task"], {"selector": "app.service.Service.handle"})
+        self.assertNotIn("path", req)
+
+    def test_get_anchor_request_shape(self):
+        req = build_get_anchor_request("cid-1", "behavior:abc123")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_ANCHOR)
+        self.assertEqual(req["task"], {"node_id": "behavior:abc123"})
+        self.assertNotIn("path", req)
+
+
+class TwinPresentationTests(unittest.TestCase):
+    def test_sync_state_maps_to_bounded_presentation_state(self):
+        for sync_state, present in (
+            ("synchronized", TWIN_AVAILABLE),
+            ("no_change", TWIN_AVAILABLE),
+            ("needs_review", TWIN_STALE),
+            ("stale", TWIN_STALE),
+            ("blocked", TWIN_STALE),
+            ("conflict", TWIN_CONFLICT),
+            ("unsupported", TWIN_UNSUPPORTED),
+        ):
+            with self.subTest(sync_state=sync_state):
+                self.assertEqual(twin_state_from_sync(sync_state), present)
+
+    def test_unknown_sync_state_is_bounded(self):
+        self.assertEqual(twin_state_from_sync("not-a-sync-state"), TWIN_AVAILABLE)
+
+    def test_is_twin_source_path_accepts_python_and_stub(self):
+        self.assertTrue(is_twin_source_path("app/main.py"))
+        self.assertTrue(is_twin_source_path("app/stubs.pyi"))
+        self.assertFalse(is_twin_source_path("app/notes.txt"))
+        self.assertFalse(is_twin_source_path("app/data.json"))
+        self.assertFalse(is_twin_source_path("app/module"))
+        self.assertFalse(is_twin_source_path(None))
+        self.assertFalse(is_twin_source_path(""))
+
+    def test_behavior_node_label_lists_items(self):
+        self.assertEqual(
+            behavior_node_label(
+                {"category": "calls", "provenance": "verified",
+                 "items": ["open", "<unresolved>"]}
+            ),
+            "calls: open, <unresolved>",
+        )
+
+    def test_behavior_node_label_marks_unresolved(self):
+        self.assertEqual(
+            behavior_node_label(
+                {"category": "conditions", "provenance": "unresolved", "items": []}
+            ),
+            "conditions (unresolved)",
+        )
+
+    def test_behavior_node_label_without_items_or_reason(self):
+        self.assertEqual(
+            behavior_node_label({"category": "loops", "items": []}), "loops"
+        )
+
+    def test_format_twin_projection_shows_fields_as_text(self):
+        bundle = {
+            "projection": {
+                "kind": "method",
+                "path": "app/service.py",
+                "locator": "app.service.Service.handle",
+                "summary": "Method handle(request)",
+                "provenance": "verified",
+                "confidence": "high",
+                "sync_state": "synchronized",
+                "details": ["Parameters: request"],
+                "limitations": ["a dynamic dependency is marked low confidence"],
+            },
+            "behavior_nodes": [],
+        }
+        text = format_twin_projection(bundle)
+        self.assertIn("Method handle(request)", text)
+        self.assertIn("Kind: method", text)
+        self.assertIn("Path: app/service.py", text)
+        self.assertIn("Provenance: verified", text)
+        self.assertIn("Confidence: high", text)
+        self.assertIn("Sync state: synchronized", text)
+        self.assertIn("Limitations:", text)
+
+    def test_format_twin_projection_is_deterministic(self):
+        bundle = {"projection": {"kind": "file", "summary": "Python module app"}}
+        self.assertEqual(format_twin_projection(bundle), format_twin_projection(bundle))
+
+    def test_format_twin_sync_shows_state_and_counts(self):
+        result = {
+            "state": "synchronized",
+            "counts": {
+                "artifacts": 3,
+                "behavior_nodes": 2,
+                "correspondences": 5,
+                "projections": 4,
+            },
+        }
+        text = format_twin_sync(result)
+        self.assertIn("Twin state: synchronized", text)
+        self.assertIn("artifacts: 3", text)
+        self.assertIn("behavior nodes: 2", text)
+
+    def test_format_twin_sync_includes_reason_when_present(self):
+        result = {"state": "stale", "counts": {}, "reason": "parse error"}
+        self.assertIn("Reason: parse error", format_twin_sync(result))
+
+
+class DraftRequestBuilderTests(unittest.TestCase):
+    def test_get_code_map_request_shape(self):
+        req = build_get_code_map_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_CODE_MAP)
+        self.assertNotIn("path", req)
+
+    def test_save_draft_request_copies_operations(self):
+        source = [
+            {
+                "op": "replace_description",
+                "target_block_id": "codemap:app.service:purpose:1",
+                "proposed_text": "A service module",
+            }
+        ]
+        req = build_save_draft_request("cid-1", source)
+        self.assertEqual(req["action"], contract.ACTION_SAVE_DRAFT)
+        self.assertEqual(
+            req["task"]["operations"],
+            [
+                {
+                    "op": "replace_description",
+                    "target_block_id": "codemap:app.service:purpose:1",
+                    "proposed_text": "A service module",
+                }
+            ],
+        )
+        source.append(
+            {
+                "op": "insert_block",
+                "owning_entity_id": "app.service",
+                "block_type": "note",
+                "proposed_text": "a note",
+            }
+        )
+        self.assertEqual(len(req["task"]["operations"]), 1)
+
+    def test_get_draft_request_shape(self):
+        req = build_get_draft_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_DRAFT)
+        self.assertNotIn("path", req)
+
+    def test_discard_draft_request_shape(self):
+        req = build_discard_draft_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_DISCARD_DRAFT)
+
+    def test_reset_draft_request_shape(self):
+        req = build_reset_draft_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_RESET_DRAFT)
+
+    def test_compare_draft_request_shape(self):
+        req = build_compare_draft_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_COMPARE_DRAFT)
+
+    def test_generate_intent_delta_request_shape(self):
+        req = build_generate_intent_delta_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GENERATE_INTENT_DELTA)
+
+
+class ProposalRequestBuilderTests(unittest.TestCase):
+    def test_plan_proposal_request_shape(self):
+        req = build_plan_proposal_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_PLAN_PROPOSAL)
+        self.assertNotIn("path", req)
+        self.assertNotIn("task", req)
+
+
+class CodeMapVocabularyTests(unittest.TestCase):
+    def test_block_type_label_falls_back_to_token(self):
+        self.assertEqual(block_type_label("entity"), "Entity")
+        self.assertEqual(block_type_label("limitation"), "Limitation")
+        self.assertEqual(block_type_label("unknown_type"), "unknown_type")
+
+    def test_operation_label_falls_back_to_token(self):
+        self.assertEqual(operation_label("replace_description"), "Replace description")
+        self.assertEqual(operation_label("insert_block"), "Insert block")
+        self.assertEqual(operation_label("not_an_op"), "not_an_op")
+
+    def test_intent_class_label_falls_back_to_token(self):
+        self.assertEqual(intent_class_label("documentation_intent"), "Documentation")
+        self.assertEqual(intent_class_label("behavior_change_intent"), "Behavior change")
+        self.assertEqual(intent_class_label("unknown"), "unknown")
+
+    def test_block_type_labels_cover_all_14_types(self):
+        self.assertEqual(
+            set(BLOCK_TYPE_LABELS),
+            {
+                "entity",
+                "purpose",
+                "input",
+                "step",
+                "decision",
+                "loop",
+                "call",
+                "exception",
+                "return",
+                "side_effect",
+                "dependency",
+                "invariant",
+                "limitation",
+                "note",
+            },
+        )
+
+    def test_operation_labels_cover_all_typed_ops(self):
+        self.assertEqual(
+            set(OPERATION_LABELS),
+            {
+                "replace_description",
+                "insert_block",
+                "delete_draft_block",
+                "move_draft_block",
+                "replace_condition_intent",
+                "mark_unresolved",
+                "restore_block",
+            },
+        )
+
+    def test_intent_class_labels_cover_both_intents(self):
+        self.assertEqual(
+            set(INTENT_CLASS_LABELS),
+            {"documentation_intent", "behavior_change_intent"},
+        )
+
+
+class DraftPresentationTests(unittest.TestCase):
+    def test_format_procedural_document_passes_through(self):
+        self.assertEqual(format_procedural_document("Module app.service"), "Module app.service")
+        self.assertEqual(format_procedural_document(None), "")
+        self.assertEqual(format_procedural_document(""), "")
+
+    def test_format_entity_list_empty(self):
+        self.assertEqual(format_entity_list([]), "No entities.")
+
+    def test_format_entity_list_lists_entities(self):
+        entities = [
+            {"kind": "module", "locator": "app.service", "subject": "Module app.service"},
+            {"kind": "function", "locator": "app.service.handle"},
+        ]
+        text = format_entity_list(entities)
+        self.assertIn("module: app.service — Module app.service", text)
+        self.assertIn("function: app.service.handle", text)
+
+    def test_format_draft_operations_empty(self):
+        self.assertEqual(format_draft_operations([]), "No operations.")
+
+    def test_format_draft_operations_typed(self):
+        operations = [
+            {
+                "op": "replace_description",
+                "target_block_id": "codemap:app.service:purpose:1",
+                "intent_class": "documentation_intent",
+                "proposed": {"display_text": "A service module"},
+            },
+            {
+                "op": "replace_condition_intent",
+                "target_block_id": "codemap:app.service:decision:4",
+                "intent_class": "behavior_change_intent",
+                "proposed": {"display_text": "If x > 0 is true, the following runs:"},
+            },
+        ]
+        text = format_draft_operations(operations)
+        self.assertIn("Replace description — codemap:app.service:purpose:1 (Documentation): A service module", text)
+        self.assertIn("Replace condition intent", text)
+        self.assertIn("(Behavior change)", text)
+
+    def test_format_intent_delta_marks_non_executable(self):
+        delta = {
+            "intent": "user_authored",
+            "entries": [
+                {
+                    "operation": "replace_description",
+                    "owning_entity_id": "app.service",
+                    "required_approval_level": "low",
+                }
+            ],
+        }
+        text = format_intent_delta(delta)
+        self.assertIn("Intent Delta (not executable)", text)
+        self.assertIn("Executable: false", text)
+        self.assertIn("Entries: 1", text)
+        self.assertIn("Replace description on app.service (approval: low)", text)
+
+
+class ProposalPresentationTests(unittest.TestCase):
+    def test_proposal_state_label_falls_back_to_token(self):
+        self.assertEqual(proposal_state_label("ready"), "Ready")
+        self.assertEqual(proposal_state_label("clarification_required"), "Clarification required")
+        self.assertEqual(proposal_state_label("unsupported"), "Unsupported")
+        self.assertEqual(proposal_state_label("no_change"), "No change")
+        self.assertEqual(proposal_state_label("blocked"), "Blocked")
+        self.assertEqual(proposal_state_label("not_a_state"), "not_a_state")
+
+    def test_proposal_state_labels_cover_all_states(self):
+        self.assertEqual(
+            set(PROPOSAL_STATE_LABELS),
+            {"ready", "clarification_required", "unsupported", "no_change", "blocked"},
+        )
+
+    def test_format_proposal_empty(self):
+        self.assertEqual(format_proposal({}), "")
+        self.assertEqual(format_proposal(None), "")
+
+    def test_format_proposal_marks_non_applied_and_structured(self):
+        package = {
+            "state": "ready",
+            "proposal_id": "proposal:abc123",
+            "target_scope": {"entities": ["app.service"], "artifacts": ["app/service.py"]},
+            "affected_artifacts": [
+                {"role": "target", "kind": "function", "path": "app/service.py"}
+            ],
+            "preserved_constraints": [{"entity_id": None, "invariant": "never rewritten"}],
+            "assumptions": ["the baseline is current"],
+            "clarifications": [],
+            "plan_steps": [
+                {"step": 1, "description": "Plan: replace the purpose description of x.", "requires_approval": False}
+            ],
+            "risks": [{"level": "low", "description": "documentation only"}],
+            "validation_plan": [{"check": "deterministic", "expected_outcome": "identical package"}],
+            "reason": None,
+        }
+        text = format_proposal(package)
+        self.assertIn("Proposal Package (not applied)", text)
+        self.assertIn("State: Ready", text)
+        self.assertIn("Executable: false", text)
+        self.assertIn("Applied: false", text)
+        self.assertIn("Proposal: proposal:abc123", text)
+        self.assertIn("app.service", text)
+        self.assertIn("Plan steps: 1", text)
+        self.assertIn("Preserved constraints: 1", text)
+        self.assertIn("Validation plan: 1", text)
+
+    def test_format_proposal_shows_clarification_and_reason(self):
+        package = {
+            "state": "clarification_required",
+            "proposal_id": "proposal:def",
+            "target_scope": {"entities": ["app.main"], "artifacts": []},
+            "affected_artifacts": [],
+            "preserved_constraints": [],
+            "assumptions": [],
+            "clarifications": [
+                {"entity_id": "app.main", "question": "confirm the behavior impact"}
+            ],
+            "plan_steps": [],
+            "risks": [],
+            "validation_plan": [],
+            "reason": "ambiguous behavior intent",
+        }
+        text = format_proposal(package)
+        self.assertIn("State: Clarification required", text)
+        self.assertIn("Reason: ambiguous behavior intent", text)
+        self.assertIn("confirm the behavior impact", text)
+
+
+class ProviderReadinessTests(unittest.TestCase):
+    def test_get_readiness_request_shape(self):
+        req = build_get_readiness_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_READINESS)
+        self.assertNotIn("path", req)
+        self.assertNotIn("task", req)
+
+    def test_readiness_state_label_falls_back_to_token(self):
+        self.assertEqual(provider_readiness_state_label("configured"), "Configured")
+        self.assertEqual(
+            provider_readiness_state_label("missing_credential"), "Credential missing"
+        )
+        self.assertEqual(provider_readiness_state_label("unavailable"), "Unavailable")
+        self.assertEqual(
+            provider_readiness_state_label("invalid_config"), "Invalid configuration"
+        )
+        self.assertEqual(
+            provider_readiness_state_label("not_a_state"), "not_a_state"
+        )
+
+    def test_readiness_state_labels_cover_all_states(self):
+        self.assertEqual(
+            set(PROVIDER_READINESS_STATE_LABELS),
+            {
+                "configured",
+                "missing_credential",
+                "no_profile",
+                "credential_unretrievable",
+                "unavailable",
+                "invalid_config",
+            },
+        )
+
+    def test_format_provider_readiness_is_redacted_and_bounded(self):
+        text = format_provider_readiness(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "credential_present": True,
+                "authenticated": False,
+                "online": False,
+                "executable": False,
+            }
+        )
+        self.assertIn("Provider: deepseek", text)
+        self.assertIn("State: Configured", text)
+        self.assertIn("Model: deepseek-flash", text)
+        self.assertIn("Authenticated: false", text)
+        self.assertIn("Online: false", text)
+        self.assertIn("Executable: false", text)
+
+    def test_format_provider_readiness_never_claims_network(self):
+        text = format_provider_readiness(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "credential_present": True,
+                "authenticated": True,
+                "online": True,
+                "executable": True,
+            }
+        )
+        # Whatever the (defensive) input claims, the presentation of a local
+        # readiness check never asserts the provider is reachable.
+        self.assertNotIn("Authenticated: true", text)
+        self.assertNotIn("Online: true", text)
+
+
+class ProviderStatusMessageTests(unittest.TestCase):
+    def test_provider_status_messages_are_exact(self):
+        self.assertEqual(
+            provider_status_message("pending"), "Checking local provider configuration…"
+        )
+        self.assertEqual(
+            provider_status_message("configured"), "DeepSeek is configured locally"
+        )
+        self.assertEqual(
+            provider_status_message("missing_credential"),
+            "DeepSeek API key not configured",
+        )
+        self.assertEqual(
+            provider_status_message("unavailable"),
+            "Provider setup is unavailable on this platform",
+        )
+        self.assertEqual(
+            provider_status_message("invalid_config"),
+            "Provider configuration needs repair",
+        )
+        self.assertEqual(
+            provider_status_message("failed"), "Provider check failed; try again."
+        )
+        self.assertEqual(provider_status_message("unknown"), "unknown")
+
+    def test_provider_status_messages_cover_all_states(self):
+        self.assertEqual(
+            set(PROVIDER_STATUS_MESSAGES),
+            {
+                "pending",
+                "configured",
+                "missing_credential",
+                "no_profile",
+                "credential_unretrievable",
+                "unavailable",
+                "invalid_config",
+                "failed",
+            },
+        )
+
+    def test_credential_action_messages_are_exact(self):
+        self.assertEqual(credential_action_message("stored"), "API key stored securely.")
+        self.assertEqual(
+            credential_action_message("cancelled"),
+            "No change — the secure prompt was cancelled.",
+        )
+        self.assertEqual(credential_action_message("removed"), "API key removed.")
+        self.assertEqual(
+            credential_action_message("unavailable"),
+            "Secure key management is unavailable on this platform.",
+        )
+        self.assertEqual(
+            credential_action_message("failed"),
+            "The operation could not be completed.",
+        )
+
+    def test_credential_failure_messages_are_distinct_and_safe(self):
+        # A failed action with a bounded reason gets a category-specific
+        # message; without one it keeps the generic sentence.
+        self.assertEqual(
+            credential_action_message("failed", "prompt_failed"),
+            "The secure credential prompt could not be shown.",
+        )
+        self.assertEqual(
+            credential_action_message("failed", "store_failed"),
+            "The API key could not be stored securely.",
+        )
+        self.assertEqual(
+            credential_action_message("failed", "prompt_invalid_argument"),
+            "The secure credential prompt could not be shown (invalid configuration).",
+        )
+        self.assertEqual(
+            credential_action_message("failed", "prompt_session_unavailable"),
+            "The secure credential prompt is not available in this Windows session.",
+        )
+        self.assertEqual(
+            credential_action_message("failed", None),
+            "The operation could not be completed.",
+        )
+        # An unknown reason can never surface raw text; it falls back safely.
+        self.assertEqual(
+            credential_action_message("failed", "unexpected_reason"),
+            "The operation could not be completed.",
+        )
+
+    def test_credential_failure_messages_cover_bounded_reasons(self):
+        self.assertEqual(
+            set(CREDENTIAL_FAILURE_MESSAGES),
+            {
+                "prompt_failed",
+                "prompt_invalid_argument",
+                "prompt_session_unavailable",
+                "store_failed",
+            },
+        )
+        # The messages are fixed sentences, never interpolated with a secret,
+        # an endpoint, or a raw OS error code.
+        for message in CREDENTIAL_FAILURE_MESSAGES.values():
+            self.assertIsInstance(message, str)
+            self.assertNotIn("secret-token", message)
+
+    def test_credential_action_messages_cover_all_states(self):
+        self.assertEqual(
+            set(CREDENTIAL_ACTION_MESSAGES),
+            {"stored", "cancelled", "removed", "unavailable", "failed"},
+        )
+
+    def test_credential_pending_message_is_bounded_and_platform_specific(self):
+        # The pending message is shown the instant a key action is submitted and
+        # must be one of exactly two safe strings, never mentioning a key.
+        self.assertIn(
+            CREDENTIAL_ACTION_PENDING,
+            {
+                "Opening secure Windows credential prompt…",
+                "Opening secure credential prompt…",
+            },
+        )
+        self.assertNotIn("secret", CREDENTIAL_ACTION_PENDING)
+        self.assertNotIn("key", CREDENTIAL_ACTION_PENDING.lower())
+
+    def test_manage_credential_request_shape(self):
+        req = build_manage_credential_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_MANAGE_CREDENTIAL)
+        self.assertNotIn("path", req)
+        self.assertNotIn("task", req)
+        self.assertNotIn("secret", req)
+        self.assertNotIn("credential", req)
+
+    def test_remove_credential_request_shape(self):
+        req = build_remove_credential_request("cid-1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["correlation_id"], "cid-1")
+        self.assertEqual(req["action"], contract.ACTION_REMOVE_CREDENTIAL)
+        self.assertNotIn("path", req)
+        self.assertNotIn("task", req)
+
+    def test_manage_credential_request_carries_parent_handle(self):
+        # The native parent handle is an integer window handle, never a secret.
+        req = build_manage_credential_request("cid-1", hwnd=12345)
+        self.assertEqual(req["hwnd"], 12345)
+        self.assertNotIn("secret", req)
+        self.assertNotIn("credential", req)
+        # Without a handle the field is absent (the headless boundary contract).
+        self.assertNotIn("hwnd", build_manage_credential_request("cid-1"))
+
+    def test_remove_credential_request_carries_parent_handle(self):
+        req = build_remove_credential_request("cid-1", hwnd=12345)
+        self.assertEqual(req["hwnd"], 12345)
+        self.assertNotIn("secret", req)
+        self.assertNotIn("hwnd", build_remove_credential_request("cid-1"))
+
+    def test_manage_credential_request_carries_profile_id(self):
+        req = build_manage_credential_request("cid-1", hwnd=12345, profile_id="a" * 32)
+        self.assertEqual(req["profile_id"], "a" * 32)
+        self.assertNotIn("secret", contract.dumps(req))
+        # Without a profile id the field is absent (legacy single-key path).
+        self.assertNotIn("profile_id", build_manage_credential_request("cid-1", hwnd=1))
+
+
+class ProfileRequestBuilderTests(unittest.TestCase):
+    def test_get_profiles_request_shape(self):
+        req = build_get_profiles_request("cid-1")
+        self.assertEqual(req["action"], contract.ACTION_GET_PROFILES)
+        self.assertNotIn("profile_id", req)
+        self.assertNotIn("secret", req)
+
+    def test_add_profile_request_shape(self):
+        req = build_add_profile_request("cid-1", "a" * 32, "Work")
+        self.assertEqual(req["action"], contract.ACTION_ADD_PROFILE)
+        self.assertEqual(req["profile_id"], "a" * 32)
+        self.assertEqual(req["display_name"], "Work")
+        self.assertNotIn("secret", contract.dumps(req))
+
+    def test_rename_profile_request_shape(self):
+        req = build_rename_profile_request("cid-1", "a" * 32, "New")
+        self.assertEqual(req["action"], contract.ACTION_RENAME_PROFILE)
+        self.assertEqual(req["profile_id"], "a" * 32)
+        self.assertEqual(req["display_name"], "New")
+
+    def test_delete_profile_request_shape(self):
+        req = build_delete_profile_request("cid-1", "a" * 32, "b" * 32)
+        self.assertEqual(req["action"], contract.ACTION_DELETE_PROFILE)
+        self.assertEqual(req["profile_id"], "a" * 32)
+        self.assertEqual(req["active_profile_id"], "b" * 32)
+
+    def test_delete_profile_request_without_fallback(self):
+        req = build_delete_profile_request("cid-1", "a" * 32)
+        self.assertNotIn("active_profile_id", req)
+
+    def test_set_active_profile_request_shape(self):
+        req = build_set_active_profile_request("cid-1", "a" * 32)
+        self.assertEqual(req["action"], contract.ACTION_SET_ACTIVE_PROFILE)
+        self.assertEqual(req["profile_id"], "a" * 32)
+
+    def test_set_active_profile_request_accepts_none(self):
+        req = build_set_active_profile_request("cid-1", None)
+        self.assertNotIn("profile_id", req)
+
+    def test_profile_requests_are_secret_free(self):
+        for req in (
+            build_add_profile_request("c", "a" * 32, "Work"),
+            build_rename_profile_request("c", "a" * 32, "New"),
+            build_delete_profile_request("c", "a" * 32, "b" * 32),
+            build_set_active_profile_request("c", "a" * 32),
+        ):
+            for token in ("secret", "api_key", "password", "authorization", "bearer"):
+                self.assertNotIn(token, contract.dumps(req))
+
+
+class ProfileMessageTests(unittest.TestCase):
+    def test_mask_is_a_constant_presence_symbol(self):
+        self.assertEqual(CREDENTIAL_MASK, "••••••••")
+        # It is not derived from, or a copy of, any secret or length.
+        self.assertNotIn("secret", CREDENTIAL_MASK)
+        self.assertNotIn("key", CREDENTIAL_MASK)
+
+    def test_profile_action_messages_are_exact(self):
+        self.assertEqual(PROFILE_ACTION_MESSAGES["added"], "Profile added.")
+        self.assertEqual(PROFILE_ACTION_MESSAGES["renamed"], "Profile renamed.")
+        self.assertEqual(PROFILE_ACTION_MESSAGES["deleted"], "Profile removed.")
+        self.assertEqual(
+            PROFILE_ACTION_MESSAGES["active_updated"], "Active credential updated."
+        )
+
+    def test_profile_failure_messages_are_bounded(self):
+        self.assertEqual(
+            profile_failure_message("profile_not_found"), "That profile no longer exists."
+        )
+        self.assertEqual(
+            profile_failure_message("profile_name_invalid"),
+            "That profile name is not valid or is already in use.",
+        )
+        self.assertEqual(
+            profile_failure_message("unknown_reason"),
+            "The operation could not be completed.",
+        )
+        for message in PROFILE_FAILURE_MESSAGES.values():
+            for token in ("secret", "api_key", "password", "authorization", "bearer"):
+                self.assertNotIn(token, message)
+
+
+class ClientStateConstantsTests(unittest.TestCase):
+    def test_twin_states_are_bounded(self):
+        self.assertEqual(
+            TWIN_STATES,
+            {
+                TWIN_EMPTY,
+                TWIN_LOADING,
+                TWIN_AVAILABLE,
+                TWIN_STALE,
+                TWIN_CONFLICT,
+                TWIN_UNSUPPORTED,
+            },
+        )
+        for state in TWIN_STATES:
+            self.assertIsInstance(state, str)
+
+    def test_validation_states(self):
+        self.assertIn(VALIDATION_IDLE, {VALIDATION_IDLE, VALIDATION_RUNNING, VALIDATION_OK, VALIDATION_FAILED})
+
+    def test_provider_and_repository_defaults(self):
+        self.assertEqual(PROVIDER_UNAVAILABLE, "unavailable")
+        self.assertEqual(REPOSITORY_UNVERIFIED, "Unverified")
+
+
+class DeltaInterpretClientVocabularyTests(unittest.TestCase):
+    """P4.8 client vocabulary: request builders, state labels and formatters."""
+
+    def test_state_labels_cover_all_states(self):
+        from hrca import rule_delta_interpret
+
+        for state in rule_delta_interpret.STATES:
+            label = delta_interpret_state_label(state)
+            self.assertIsInstance(label, str)
+            self.assertNotEqual(label, "")
+
+    def test_unknown_state_falls_back_to_token(self):
+        self.assertEqual(delta_interpret_state_label("bogus"), "bogus")
+
+    def test_credential_rejected_has_distinct_label(self):
+        # A provider-rejected key must render distinctly from a local missing
+        # credential, and never as "Credential missing".
+        self.assertEqual(
+            delta_interpret_state_label("credential_rejected"), "API key rejected"
+        )
+        self.assertEqual(
+            delta_interpret_state_label("credential_missing"), "Credential missing"
+        )
+
+    def test_prepare_request_shape(self):
+        req = build_prepare_rule_delta_request("cid", "doc:1")
+        self.assertEqual(req["contract_version"], contract.CONTRACT_VERSION)
+        self.assertEqual(req["action"], contract.ACTION_PREPARE_RULE_DELTA)
+        self.assertEqual(req["document_id"], "doc:1")
+
+    def test_interpret_request_shape(self):
+        req = build_interpret_rule_delta_request("cid", "doc:1", "delta:abc", True)
+        self.assertEqual(req["action"], contract.ACTION_INTERPRET_RULE_DELTA)
+        self.assertEqual(req["task"]["token"], "delta:abc")
+        self.assertIs(req["task"]["confirmed"], True)
+
+    def test_format_disclosure_shows_recipient_and_limits(self):
+        disclosure = {
+            "provider_id": "deepseek",
+            "model": {
+                "requested_id": "deepseek-flash",
+                "canonical_id": "deepseek-flash",
+                "effective_version": "DeepSeek-V4.1-Flash",
+                "compatibility_aliases": ["deepseek-v4-flash"],
+                "compatibility_alias_status": "retired_routes_to_v4_1_flash",
+                "verified_at": "2026-09-12",
+                "sources": ["https://api-docs.deepseek.com/quick_start/pricing"],
+                "retirement_warning": "deepseek-v4-flash is a retired compatibility alias",
+            },
+            "one_attempt": True,
+            "items": [{"kind": "requirement", "label": "text", "bytes": 5}],
+            "caps": {"request_bytes": 12288, "input_tokens": 4096,
+                     "output_tokens": 1024, "timeout_seconds": 45.0,
+                     "workflow_timeout_seconds": 120.0},
+            "reservation": {"amount_usd": "0.01", "worst_case_cost_usd": "0.00246",
+                            "input_rate_usd_per_1m": "0.30", "output_rate_usd_per_1m": "1.20"},
+            "egress_statement": "data leaves this machine",
+            "policy_warning": "no zero-retention promise",
+            "account_cap_statement": "US$8 is not an enforced account cap",
+        }
+        text = format_delta_disclosure(disclosure)
+        self.assertIn("deepseek", text)
+        self.assertIn("Requested model: deepseek-flash", text)
+        self.assertIn("Effective model: DeepSeek-V4.1-Flash", text)
+        self.assertIn("retired compatibility alias", text)
+        self.assertIn("no retry", text)
+        self.assertIn("0.01", text)
+        self.assertIn("US$8 is not an enforced account cap", text)
+
+    def test_format_delta_result_reviewable(self):
+        result = {
+            "state": "reviewable_candidate",
+            "provider_id": "deepseek",
+            "model": "deepseek-flash",
+            "sent": True,
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "candidate": {"provenance": "provider_delta",
+                          "binding": {"document_revision_id": "rev:1"}},
+            "limitations": [],
+        }
+        text = format_delta_interpret_result(result)
+        self.assertIn("Reviewable", text)
+        self.assertIn("not adopted", text)
+
+    def test_format_delta_result_usage_unknown(self):
+        result = {"state": "usage_unknown", "provider_id": "deepseek",
+                  "model": "deepseek-flash", "sent": True,
+                  "usage": None, "candidate": None, "limitations": []}
+        text = format_delta_interpret_result(result)
+        self.assertIn("Usage: unknown", text)
 
 
 if __name__ == "__main__":

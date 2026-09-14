@@ -1,0 +1,9 @@
+{
+  "corpus_version": "1",
+  "name": "codemap-fixtures",
+  "description": "Synthetic Python corpus for the Code Map Procedural Language Standard 0.1.",
+  "files": [
+    {"path": "calculator.py", "purpose": "ordered arithmetic plus a zero-check guard"},
+    {"path": "procedural.py", "purpose": "every block type, the supported mapping, and one unsupported construct"}
+  ]
+}

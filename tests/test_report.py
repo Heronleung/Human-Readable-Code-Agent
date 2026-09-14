@@ -100,8 +100,8 @@ class ReportBuilderTests(unittest.TestCase):
     def test_scanner_summary_matches_document(self):
         report = _report()
         summary = report["validation"]["scanner_summary"]
-        self.assertEqual(summary["files"], 5)
-        self.assertEqual(summary["symbols"], 29)
+        self.assertEqual(summary["files"], 6)
+        self.assertEqual(summary["symbols"], 35)
         self.assertEqual(summary["relations"], 20)
         self.assertEqual(summary["parse_errors"], 1)
         self.assertEqual(summary["confidence"], 1)

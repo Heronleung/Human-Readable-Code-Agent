@@ -17,6 +17,7 @@ EXPECTED_FILES = {
     "app/main.py",
     "app/service.py",
     "app/dynamic.py",
+    "app/stubs.pyi",
     "tests/test_service.py",
     "broken/syntax_error.py",
 }
@@ -44,6 +45,20 @@ class ScannerTests(unittest.TestCase):
         self.assertIn("tests.test_service", module_ids)
         # A file that fails to parse produces no module symbol.
         self.assertNotIn("broken.syntax_error", module_ids)
+
+    def test_pyi_stub_is_scanned_as_a_module(self):
+        doc = _scan()
+        module_ids = {s["id"] for s in doc["symbols"] if s["kind"] == "module"}
+        self.assertIn("app.stubs", module_ids)
+        # The stub file is recorded with ``ok`` syntax and its module name drops
+        # the ``.pyi`` suffix exactly like ``.py``.
+        stub_file = next(f for f in doc["files"] if f["path"] == "app/stubs.pyi")
+        self.assertEqual(stub_file["module"], "app.stubs")
+        self.assertEqual(stub_file["syntax_status"], "ok")
+        # Its function and class are extracted with stable qualified IDs.
+        func_ids = {s["id"] for s in doc["symbols"] if s["kind"] == "function"}
+        self.assertIn("app.stubs.parse", func_ids)
+        self.assertIn("app.stubs.Parser.run", func_ids)
 
     def test_dynamic_import_is_explicitly_unresolved(self):
         doc = _scan()
