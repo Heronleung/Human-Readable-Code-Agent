@@ -1,0 +1,32 @@
+{
+  "adapter": "fixture",
+  "session_id": "sess-out-of-order-001",
+  "run_key": "run-001",
+  "project": {
+    "source_id": "proj-demo",
+    "name": "Demo Repository"
+  },
+  "events": [
+    {
+      "event_type": "run_started",
+      "source_event_id": "ev-005",
+      "source_sequence": 5,
+      "source_timestamp": "2026-01-01T20:00:50Z",
+      "message": "arrives first, carries the latest source timestamp and sequence"
+    },
+    {
+      "event_type": "run_progress",
+      "source_event_id": "ev-002",
+      "source_sequence": 2,
+      "source_timestamp": "2026-01-01T20:00:20Z",
+      "message": "arrives second despite an earlier source sequence and timestamp"
+    },
+    {
+      "event_type": "run_terminated",
+      "source_event_id": "ev-009",
+      "source_sequence": 9,
+      "source_timestamp": "2026-01-01T20:01:30Z",
+      "outcome": "completed"
+    }
+  ]
+}

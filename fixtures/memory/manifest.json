@@ -1,0 +1,209 @@
+{
+  "schema_version": "1.0.0",
+  "generator": "hrca-memory",
+  "notes": [
+    "Every session fixture is an adapter-neutral bounded source session.",
+    "Expected values are the contract's acceptance conditions for that case.",
+    "Store fixtures are pre-existing stores exercised through migrate_memory."
+  ],
+  "sessions": [
+    {
+      "name": "completed",
+      "file": "sessions/completed.json",
+      "expect_state": "completed",
+      "expect_success": true,
+      "expect_events": 3,
+      "expect_evidence": 1,
+      "expect_decisions": 1,
+      "expect_change_sets": 1,
+      "expect_code_entity_links": 1,
+      "expect_reason_count": 0,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "failed",
+      "file": "sessions/failed.json",
+      "expect_state": "failed",
+      "expect_success": false,
+      "expect_events": 3,
+      "expect_evidence": 0,
+      "expect_decisions": 0,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 0,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "cancelled",
+      "file": "sessions/cancelled.json",
+      "expect_state": "cancelled",
+      "expect_success": false,
+      "expect_events": 3,
+      "expect_evidence": 1,
+      "expect_decisions": 1,
+      "expect_change_sets": 1,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 0,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "blocked",
+      "file": "sessions/blocked.json",
+      "expect_state": "blocked",
+      "expect_success": false,
+      "expect_events": 3,
+      "expect_evidence": 0,
+      "expect_decisions": 1,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 0,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "missing_terminal",
+      "file": "sessions/missing_terminal.json",
+      "expect_state": "missing_terminal",
+      "expect_success": false,
+      "expect_events": 2,
+      "expect_evidence": 0,
+      "expect_decisions": 0,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 0,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "empty",
+      "file": "sessions/empty.json",
+      "expect_state": "missing_terminal",
+      "expect_success": false,
+      "expect_events": 0,
+      "expect_evidence": 0,
+      "expect_decisions": 0,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 0,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "unknown_outcome",
+      "file": "sessions/unknown_outcome.json",
+      "expect_state": "unknown_outcome",
+      "expect_success": false,
+      "expect_events": 2,
+      "expect_evidence": 0,
+      "expect_decisions": 0,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 1,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "unsupported_event",
+      "file": "sessions/unsupported_event.json",
+      "expect_state": "unsupported",
+      "expect_success": false,
+      "expect_events": 1,
+      "expect_evidence": 0,
+      "expect_decisions": 0,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 2,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "invalid_transition",
+      "file": "sessions/invalid_transition.json",
+      "expect_state": "completed",
+      "expect_success": true,
+      "expect_events": 2,
+      "expect_evidence": 0,
+      "expect_decisions": 0,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 2,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "malformed",
+      "file": "sessions/malformed.json",
+      "expect_state": "completed",
+      "expect_success": true,
+      "expect_events": 2,
+      "expect_evidence": 0,
+      "expect_decisions": 0,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 3,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "duplicate",
+      "file": "sessions/duplicate.json",
+      "expect_state": "completed",
+      "expect_success": true,
+      "expect_events": 3,
+      "expect_evidence": 0,
+      "expect_decisions": 0,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 0,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "conflicting",
+      "file": "sessions/conflicting.json",
+      "expect_state": "completed",
+      "expect_success": true,
+      "expect_events": 3,
+      "expect_evidence": 0,
+      "expect_decisions": 0,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 0,
+      "expect_quarantines": 1
+    },
+    {
+      "name": "out_of_order",
+      "file": "sessions/out_of_order.json",
+      "expect_state": "completed",
+      "expect_success": true,
+      "expect_events": 3,
+      "expect_evidence": 0,
+      "expect_decisions": 0,
+      "expect_change_sets": 0,
+      "expect_code_entity_links": 0,
+      "expect_reason_count": 0,
+      "expect_quarantines": 0
+    },
+    {
+      "name": "privacy",
+      "file": "sessions/privacy.json",
+      "expect_state": "completed",
+      "expect_success": true,
+      "expect_events": 3,
+      "expect_evidence": 1,
+      "expect_decisions": 1,
+      "expect_change_sets": 1,
+      "expect_code_entity_links": 1,
+      "expect_reason_count": 0,
+      "expect_quarantines": 0
+    }
+  ],
+  "stores": [
+    {
+      "name": "legacy_0_9_0",
+      "file": "stores/legacy_0_9_0.json",
+      "expect": "migrates",
+      "expect_state": "cancelled",
+      "expect_schema_version": "1.0.0",
+      "equivalent_to_session": "sessions/cancelled.json"
+    },
+    {
+      "name": "unknown_version",
+      "file": "stores/unknown_version.json",
+      "expect": "blocked",
+      "expect_reason": "schema_version is newer than supported"
+    }
+  ]
+}

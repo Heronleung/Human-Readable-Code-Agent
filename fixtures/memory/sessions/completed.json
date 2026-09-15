@@ -1,0 +1,66 @@
+{
+  "adapter": "fixture",
+  "session_id": "sess-completed-001",
+  "run_key": "run-001",
+  "project": {
+    "source_id": "proj-demo",
+    "name": "Demo Repository"
+  },
+  "work_package": {
+    "source_id": "wp-1",
+    "title": "Add bounded replay"
+  },
+  "events": [
+    {
+      "event_type": "run_started",
+      "source_event_id": "ev-001",
+      "source_sequence": 1,
+      "source_timestamp": "2026-01-01T09:00:00Z",
+      "message": "run started"
+    },
+    {
+      "event_type": "run_progress",
+      "source_event_id": "ev-002",
+      "source_sequence": 2,
+      "source_timestamp": "2026-01-01T09:01:00Z",
+      "message": "edited the module",
+      "change_set": {
+        "source_id": "cs-1",
+        "summary": "touch the entry module",
+        "paths": ["src/app/main.py", "src/app/service.py"],
+        "entity_refs": ["app.main.run"]
+      },
+      "evidence": [
+        {
+          "source_id": "evd-1",
+          "kind": "transcript",
+          "artifact_ref": "logs/sess-completed-001.jsonl",
+          "bytes": 4096,
+          "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        }
+      ],
+      "decisions": [
+        {
+          "source_id": "dec-1",
+          "summary": "keep the scanner dependency-free",
+          "rationale": "the contract forbids runtime dependencies",
+          "decided_at": "2026-01-01T09:01:30Z"
+        }
+      ],
+      "code_entities": [
+        {
+          "path": "src/app/main.py",
+          "symbol": "app.main.run",
+          "entity_kind": "symbol"
+        }
+      ]
+    },
+    {
+      "event_type": "run_terminated",
+      "source_event_id": "ev-003",
+      "source_sequence": 3,
+      "source_timestamp": "2026-01-01T09:02:00Z",
+      "outcome": "completed"
+    }
+  ]
+}

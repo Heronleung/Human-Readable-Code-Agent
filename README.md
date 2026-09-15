@@ -504,6 +504,163 @@ runtime or verifier settings.
   Candidate is never auto-adopted — **Use this version** remains the separate,
   backend-revalidated adoption step.
 
+## Developer Memory — replayable offline contract (M4.1)
+
+The durable foundation for bounded coding-agent runs. It is deliberately
+**offline and read-side**: a bounded synthetic session in, a versioned,
+normalized, evidence-linked store out, and the same terminal `AgentRun` state
+on every replay. There is no hook installation, no real session capture, no
+transcript parsing, no provider request and no model egress. The core is
+**source-neutral**: Claude Code hook field mapping belongs to a later adapter
+(M4.2) and must never define the canonical domain.
+
+```bash
+uv run python -m hrca.memory_cli replay fixtures/memory/sessions/completed.json
+uv run python -m hrca.memory_cli summary fixtures/memory
+uv run python -m hrca.memory_cli verify fixtures/memory
+uv run python -m hrca.memory_cli migrate fixtures/memory/stores/legacy_0_9_0.json
+```
+
+### Schema and records
+
+`hrca.memory` emits `MEMORY_SCHEMA_VERSION = 1.0.0`. One bounded source session
+normalizes into one `AgentRun` aggregate:
+
+| Record                     | Contents                                                        |
+| -------------------------- | --------------------------------------------------------------- |
+| `project` / `work_package` | adapter-namespaced descriptors of the repository and unit of work |
+| `agent_run`                | identity, reported state, ingest ledger, source timestamps as evidence |
+| `agent_run_event`          | typed, validated events in monotonic ingest order                |
+| `change_set`               | the bounded paths/entities an event reports as touched           |
+| `evidence`                 | bounded artifact **metadata** (kind, reference, byte size, digest) |
+| `decision`                 | a recorded decision with a bounded, redacted rationale           |
+| `code_entity_link`         | a link to a file path or a `module.path.Class.method` locator    |
+| `rejection` / `quarantine` | fail-closed records; they never carry source content             |
+
+### Identity, ordering and deduplication
+
+- **Namespaced identity.** `run:<adapter>:<session>:<run-token>`; adapter and
+  session fold to bounded tokens so a raw source string can never inject an id
+  separator.
+- **Identity preference.** A stable `source_event_id` owns identity; otherwise a
+  stable `source_sequence`; otherwise a deterministic SHA-256 fingerprint over
+  canonical **non-secret** fields. Redaction runs *before* fingerprinting, so a
+  secret can never influence an identity.
+- **Ordering.** A **per-run single writer** assigns the monotonic
+  `ingest_ordinal`. Source timestamps are retained as evidence only and never
+  decide order or state.
+- **Idempotency.** An identical redelivery is a no-op: no new logical event, no
+  ingest advance, no state change.
+- **Quarantine.** The same identity with different canonical content is
+  quarantined — it never overwrites evidence and never advances run state. The
+  quarantine record stores only fingerprints, never the incoming content.
+
+### Terminal state
+
+Terminal state is owned **exclusively** by a typed, validated `run_terminated`
+transition carrying an outcome from `completed` / `failed` / `cancelled` /
+`blocked`. It is never inferred from the last message, command text, timestamp
+order, page order or agent narrative.
+
+| State              | Meaning                                                            |
+| ------------------ | ------------------------------------------------------------------ |
+| `completed`        | the only success state                                             |
+| `failed` / `cancelled` / `blocked` | distinct typed terminal outcomes                    |
+| `missing_terminal` | the bounded stream ended with no typed terminal transition         |
+| `unknown_outcome`  | `run_terminated` carried an unrecognized outcome                   |
+| `unsupported`      | an event type the contract does not model was encountered          |
+
+Every terminal state is **absorbing**: a later event may not move a run out of
+one, so a trailing "actually everything is fine" message cannot rescue a failed
+run. On `fixtures/memory/sessions/invalid_transition.json` the two refused
+events are recorded as `invalid_transition` rejections while the validated
+terminal transition still stands.
+
+### Unsupported cases and fail-closed behavior
+
+- **Unsupported event types** are recorded explicitly and resolve a
+  non-terminal run to `unsupported`, which is absorbing. The contract therefore
+  refuses to certify a stream it could not fully interpret. An adapter must map
+  every event type it emits onto one of the four contract types, or route it to
+  `run_progress`.
+- **Malformed events** (not a mapping, missing/non-string `event_type`) are
+  rejected before they can influence identity, ordering or state. Each gets its
+  own record via a dedicated rejection ledger.
+- **Oversized payloads** are rejected rather than truncated, because truncating
+  would silently alter evidence. Free-text fields are truncated to a bounded
+  length and the truncation is counted.
+- **A finalized store is a closed snapshot.** A genuinely new event is refused
+  with `run store is finalized`; an identical redelivery stays a no-op and a
+  conflicting one stays a quarantine.
+
+### Privacy before durable write
+
+Path policy, payload bounds and secret redaction are applied **before** any
+record is assembled, so no raw payload and no secret-like value can reach a
+durable write:
+
+- **Excluded paths** are never persisted — `.env*`, `secrets/`, `private/`,
+  `.git/`, `.ssh/`, `node_modules/`, `id_rsa`, `*.pem`, `*.key`, `*.p12` and
+  peers. An evidence record whose artifact reference is excluded is dropped
+  entirely, so an excluded artifact is not reachable even indirectly.
+- **Secret redaction** covers PEM private-key blocks, provider token shapes
+  (`sk-`, `sk-ant-`, `ghp_`/`gho_`/`ghs_`/`ghu_`, `github_pat_`, `xox[baprs]-`,
+  `AKIA…`, `AIza…`), JWTs, `Bearer` values, URL userinfo, and `key: value` /
+  `key = value` pairs for credential-bearing key names. It is deterministic and
+  **idempotent**.
+- **Artifact content is never stored.** Evidence carries a reference and bounded
+  metadata only; a content-bearing field (`content`, `transcript`, `output`,
+  `stdout`, …) is dropped and counted. A transcript path is a reference, not
+  permission to ingest transcript content.
+- Every record carries a bounded, content-free `privacy` accounting block
+  (`redactions`, `truncations`, `exclusions`) and the run carries the aggregate.
+
+### Persistence, migration and recovery
+
+`hrca.memory_store` is the **only** code allowed to read, write or enumerate
+memory storage. It lives outside the selected repository under a per-user
+app-data `memory/` namespace keyed by the run id, so two runs never collide and
+the selected repository is never written to. The rules mirror `hrca.twin_store`:
+
+- **Atomic write** — temp file, flush, `fsync`, `os.replace`. A failed or
+  interrupted write leaves the previous valid store intact and readable.
+- **Fail-closed load** — an unreadable, unparsable, future-versioned or
+  non-migratable store returns `(None, reason)` and never overwrites the
+  on-disk store.
+- **Verified additive migration** — `MIGRATIONS` maps an older
+  `schema_version` to an upgrade. A migration is *verified* after the fact: it
+  must preserve event identities, evidence identities and the terminal replay
+  result of the store it came from. A raising migration returns
+  `migration failed`; one that would change replay meaning returns
+  `migration changed identity, evidence or replay result`. Both are explicit
+  blockers, and both leave the prior readable state untouched.
+
+`fixtures/memory/stores/legacy_0_9_0.json` is the pre-freeze draft of this
+contract (it predates `code_entity_links` and run-level privacy accounting),
+retained so the additive-migration path is proven by fixture rather than
+asserted. It migrates to a store that is **byte-identical** to a fresh replay of
+its source session.
+
+### Fixture corpus
+
+`fixtures/memory/manifest.json` states each case's expected terminal state,
+counts, rejection reasons and quarantines; the corpus tests assert exactly those
+values. `sessions/` covers completed, failed, cancelled, blocked,
+missing-terminal, empty, unknown-outcome, unsupported-event, invalid-transition,
+malformed, duplicate, conflicting, out-of-order and privacy sessions;
+`stores/` covers a supported older schema and an unsupported one.
+
+### Future adapter port
+
+An adapter's entire surface is one bounded `SESSION_KEYS` mapping —
+`adapter`, `session_id`, `run_key`, `project`, `work_package`, `events` — whose
+events use the bounded `SOURCE_EVENT_KEYS` contract. Everything outside that
+shape is ignored and nothing outside it is reconstructed. M4.2 will map
+documented Claude Code hook JSON onto this shape in an adapter module that the
+core never imports; a hook's `transcript_path` becomes an `evidence`
+`artifact_ref` only, which is the whole of M4.1's permission to reference a
+transcript.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:
@@ -524,6 +681,12 @@ Determinism and no-fabrication are the core guarantees:
 - **Cross-version note.** Identifiers are stable across identical rescans in
   the same environment. Expression rendering uses `ast.unparse`, whose exact
   spelling can vary slightly between Python minor versions.
+
+- **Developer Memory is offline and read-side (M4.1).** It replays bounded
+  synthetic sessions only: no hook installation, no real session capture, no
+  transcript parsing, no provider request, no credential access and no model
+  egress. Raw payloads and artifact content are never durably stored. No
+  summary generation, search, Resume or Memory UI exists yet.
 
 Out of scope entirely: LLM providers, semantic editing, UI, remote code
 execution, multi-language support, and automated merges.

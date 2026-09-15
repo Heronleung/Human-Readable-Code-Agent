@@ -1,0 +1,31 @@
+{
+  "agent_run": {
+    "id": "run:fixture:sess-unknown-version-001:run-001",
+    "record_kind": "agent_run",
+    "adapter": "fixture",
+    "session_id": "sess-unknown-version-001",
+    "project_id": null,
+    "work_package_id": null,
+    "state": "completed",
+    "stream_closed": false,
+    "finalized": true,
+    "ingest_sequence": 2,
+    "event_ids": [],
+    "first_source_timestamp": "2026-01-01T22:00:00Z",
+    "last_source_timestamp": "2026-01-01T22:00:01Z",
+    "terminal_event_id": null,
+    "provenance": "derived",
+    "privacy": {"redactions": 0, "truncations": 0, "exclusions": 0}
+  },
+  "change_sets": [],
+  "code_entity_links": [],
+  "decisions": [],
+  "events": [],
+  "evidence": [],
+  "generator": "hrca-memory",
+  "projects": [],
+  "quarantines": [],
+  "rejections": [],
+  "schema_version": "9.9.9",
+  "work_packages": []
+}

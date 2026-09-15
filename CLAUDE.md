@@ -7,7 +7,10 @@ execution at scan time.
 ## Layout
 
 - `src/hrca/` — the scanner package (`scanner.py` is the core; `cli.py` the CLI).
-- `fixtures/` — synthetic Python corpus used by the tests.
+  The M4.1 Developer Memory contract is `memory.py` (pure domain),
+  `memory_store.py` (sole storage owner) and `memory_cli.py` (offline replay).
+- `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
+  holds the M4.1 session/store corpus with its `manifest.json`.
 - `tests/` — stdlib `unittest` tests (no third-party test deps).
 
 ## Commands
@@ -20,6 +23,7 @@ environment"); never pass `--break-system-packages`.
 uv sync                                        # create/refresh .venv, install the project
 uv run python -m unittest discover -s tests -v  # run the test suite
 uv run python -m hrca fixtures                  # scan the corpus, JSON to stdout
+uv run python -m hrca.memory_cli verify fixtures/memory  # replay the M4.1 corpus
 ```
 
 ## Contract (Phase 1)

@@ -1,0 +1,10 @@
+{
+  "adapter": "fixture",
+  "session_id": "sess-empty-001",
+  "run_key": "run-001",
+  "project": {
+    "source_id": "proj-demo",
+    "name": "Demo Repository"
+  },
+  "events": []
+}

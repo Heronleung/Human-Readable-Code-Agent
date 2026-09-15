@@ -66,6 +66,12 @@ _NETWORK_MODULES = frozenset({"http", "socket", "urllib", "ssl", "requests"})
 # desktop shell reaches only through the NDJSON boundary.
 _DOCUMENT_SEAM = frozenset({"document", "version_store"})
 
+# M4.1 Developer Memory seam modules. A client must never import these: the
+# offline Developer Memory contract is the read/replay authority for bounded
+# coding-agent runs, is not a capture path, and exposes no Memory UI. The
+# desktop reaches it only through a later, explicitly designed boundary.
+_MEMORY_SEAM = frozenset({"memory", "memory_store", "memory_cli"})
+
 
 def _imported_top_level_names(path: str) -> set:
     with open(path, "r", encoding="utf-8") as fh:
@@ -196,6 +202,30 @@ class ClientArchitectureTests(unittest.TestCase):
                     f"{module} imports the document/version seam: "
                     f"{sorted(imported & _DOCUMENT_SEAM)}",
                 )
+
+    def test_client_modules_do_not_import_memory_seam(self):
+        # The Developer Memory contract is offline and read-side; the desktop
+        # shell must not reach it directly, and no Memory UI exists yet.
+        for module, path in _CLIENT_MODULES.items():
+            with self.subTest(module=module):
+                imported = _imported_top_level_names(path)
+                self.assertTrue(
+                    imported.isdisjoint(_MEMORY_SEAM),
+                    f"{module} imports the Developer Memory seam: "
+                    f"{sorted(imported & _MEMORY_SEAM)}",
+                )
+
+    def test_memory_modules_do_not_import_network(self):
+        # The memory domain and its store are offline: they never open a
+        # socket, so an offline replay stays network-free.
+        for name in ("memory", "memory_store", "memory_cli"):
+            path = os.path.join(_SRC, name + ".py")
+            imported = _imported_top_level_names(path)
+            self.assertTrue(
+                imported.isdisjoint(_NETWORK_MODULES),
+                f"hrca.{name} imports network primitives: "
+                f"{sorted(imported & _NETWORK_MODULES)}",
+            )
 
     def test_document_modules_do_not_import_network(self):
         # The document domain and its store are offline: they never open a
