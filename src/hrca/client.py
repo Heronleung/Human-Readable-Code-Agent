@@ -932,7 +932,7 @@ class MainWindow(QMainWindow):
             self._on_credential_host_unavailable
         )
         self._build_ui()
-        self._set_status(STATE_IDLE, "ready")
+        self._set_neutral_status()
         self._set_twin_state(TWIN_EMPTY)
 
     # -- UI construction -------------------------------------------------
@@ -1954,6 +1954,12 @@ class MainWindow(QMainWindow):
         Versions and the three Advanced destinations are secondary. Entering
         Document refreshes the document list (cheap and selection-preserving);
         entering Preview loads the reference package on first visit.
+
+        Entering a destination is navigation, not an operation, so the global
+        strip is re-derived from the current truth afterwards: the exact typed
+        outcome of a completed Build-preview attempt bound to the open
+        document/revision, or the neutral baseline. Navigation therefore can
+        neither fabricate a completed provider operation nor erase evidence.
         """
         if key not in _NAV_DESTINATIONS:
             return
@@ -1967,6 +1973,7 @@ class MainWindow(QMainWindow):
             self._refresh_library()
         elif key == "preview":
             self._refresh_preview()
+        self._restore_operation_status()
 
     def _on_advanced_toggled(self, checked: bool) -> None:
         """Show or hide the collapsed Advanced group."""
@@ -1986,6 +1993,18 @@ class MainWindow(QMainWindow):
         if detail:
             text += f" — {detail}"
         self.status_label.setText(text)
+
+    def _set_neutral_status(self) -> None:
+        """Restore the global strip to its neutral, non-operation baseline.
+
+        The strip reports *operations* — work the user explicitly started. A
+        passive read (entering a destination, loading a document preview,
+        listing the library) is navigation, not an operation, so it must never
+        leave an operation outcome in the strip: least of all a success token,
+        which would make opening a view look like completed provider work. This
+        is the baseline the window starts on.
+        """
+        self._set_status(STATE_IDLE, "ready")
 
     def _set_twin_chip(self, state: str) -> None:
         """Update only the Twin state chip and the status field.
@@ -2090,15 +2109,17 @@ class MainWindow(QMainWindow):
         generation no longer matches — can never render an old, now-stale
         result (neither the Preview body nor the global status strip). Then a
         completed attempt bound to the current document/revision is re-rendered
-        (never erased or relabelled as success); a transient rendered failure
-        that was never a recorded attempt is cleared back to the neutral
-        "no preview yet" state. This never re-dispatches a prepare/interpret
-        request and never contacts the provider.
+        and its exact typed outcome re-asserted on the strip (never erased or
+        relabelled as success); a transient rendered failure that was never a
+        recorded attempt is cleared back to the neutral "no preview yet" state.
+        This never re-dispatches a prepare/interpret request and never contacts
+        the provider.
         """
         self._next_rule_delta_generation()
         attempt = self._current_rule_delta_attempt()
         if attempt is not None:
             self._render_rule_delta_result(attempt)
+            self._set_rule_delta_status(attempt)
             return
         if not self._rule_delta_result_shown:
             return
@@ -3558,41 +3579,39 @@ class MainWindow(QMainWindow):
         """Render a loaded preview, discarding a late response for an old document."""
         if generation != self._preview_generation:
             return
-        showed_attempt = self._render_preview(result)
-        if showed_attempt:
-            # A completed attempt is still on the surface; report its honest
-            # outcome rather than a generic "preview ready" success token.
-            self._set_rule_delta_status(self._current_rule_delta_attempt())
-        else:
-            self._set_status(STATE_SUCCESS, "preview ready")
+        # Rendering may re-paint a completed Build-preview attempt bound to this
+        # document/revision; the strip is then re-derived from that attempt. With
+        # no attempt this load is a passive read, so it must not claim a preview
+        # success — that is what made opening a view look like provider work.
+        self._render_preview(result)
+        self._restore_operation_status()
 
     def _on_preview_error(self, reason: str) -> None:
         """A failed preview request shows a bounded safe state, never a stale preview."""
         self._set_status(STATE_FAILED, document_failure_message(reason))
         self._clear_preview()
 
-    def _render_preview(self, preview: Dict[str, Any]) -> bool:
+    def _render_preview(self, preview: Dict[str, Any]) -> None:
         """Populate the read-only Preview from the boundary's preview record.
 
-        Returns True when a completed Build-preview attempt bound to the current
-        document/revision was rendered in place of the plain document preview
-        (so the caller can report the attempt's honest outcome). Navigation must
-        never erase a completed attempt or relabel a failed provider action as a
-        successful preview.
+        A plain document preview that reports only "no candidate"/"no document"
+        must not overwrite a completed Build-preview attempt bound to this same
+        document/revision: the attempt is the more informative surface, and
+        navigation must never erase it.
+
+        The global strip is not this method's concern — callers re-derive it via
+        :meth:`_restore_operation_status`.
         """
         doc = preview.get("document") or {}
         state = str(preview.get("state", "unknown"))
         binding = preview.get("binding")
         kind = binding.get("kind") if binding else None
 
-        # A plain document preview that only reports "no candidate"/"no
-        # document" must not overwrite a completed attempt for this same
-        # document/revision: the attempt is the more informative surface.
         if state in ("no_candidate", "no_document"):
             attempt = self._current_rule_delta_attempt()
             if attempt is not None:
                 self._render_rule_delta_result(attempt)
-                return True
+                return
 
         self._rule_delta_result_shown = False
         if self._preview_document_label is not None:
@@ -3609,7 +3628,6 @@ class MainWindow(QMainWindow):
                     "revision. Your unsaved edits are not represented here."
                 )
             self._preview_body.setPlainText(text)
-        return False
 
     def _set_preview_state_badge(self, state: str, kind: Optional[str]) -> None:
         """Set the Preview state badge word + semantic colour (never colour alone)."""
@@ -3774,7 +3792,11 @@ class MainWindow(QMainWindow):
 
     def _on_library_loaded(self, result: Dict[str, Any]) -> None:
         self._apply_library(result)
-        self._set_status(STATE_SUCCESS, f"{len(self._library_documents)} document(s)")
+        # Listing the library is a passive read: it reports no operation
+        # outcome, so the strip is left to the current truth (a bound attempt,
+        # else neutral) rather than a success token that would read as
+        # completed work.
+        self._restore_operation_status()
 
     def _apply_library(self, tree: Dict[str, Any]) -> None:
         """Adopt a joined tree and repopulate the explorer, preserving selection.
@@ -4545,6 +4567,23 @@ class MainWindow(QMainWindow):
             self._set_status(STATE_SUCCESS, f"preview {label}")
         else:
             self._set_status(STATE_FAILED, f"preview {label}")
+
+    def _restore_operation_status(self) -> None:
+        """Re-assert the honest strip state for the current document/revision.
+
+        A completed Build-preview attempt bound to the open document and saved
+        revision owns the strip with its exact typed outcome (state, reason,
+        Sent and Usage evidence); with no such attempt the strip falls back to
+        the neutral baseline. This is the single owner consulted by passive
+        navigation and passive reads, so opening a destination can neither
+        fabricate a completed provider operation nor erase real evidence, and a
+        terminal attempt still survives navigation and refresh unchanged.
+        """
+        attempt = self._current_rule_delta_attempt()
+        if attempt is None:
+            self._set_neutral_status()
+        else:
+            self._set_rule_delta_status(attempt)
 
     def _render_rule_delta_result(self, result: Dict[str, Any]) -> None:
         """Populate the Preview surface from a bounded interpretation result."""

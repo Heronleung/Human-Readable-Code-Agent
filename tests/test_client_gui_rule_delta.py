@@ -463,6 +463,10 @@ class RuleDeltaGuiTests(unittest.TestCase):
         self.assertEqual(
             self.window._preview_state_label.text(), "Credential missing"
         )
+        self.assertEqual(
+            self.window.status_label.text(),
+            "Status: failed — preview Credential missing",
+        )
         self.assertNotIn("preview ready", self.window.status_label.text())
         self.assertEqual(len(fake.requests), before)
         actions = [r["action"] for r in fake.requests]
@@ -754,6 +758,164 @@ class RuleDeltaGuiTests(unittest.TestCase):
         self.assertIsNone(self.window._document_candidate)
         self.assertIsNone(self.window._document_candidate_id)
         self.assertIsNone(self.window._rule_delta_reviewable_for)
+
+    # -- P4.8b/v12: passive navigation is operation-neutral ------------------
+
+    def _library_tree(self, document_id="doc:d1", name="requirements.md"):
+        """A joined library tree still listing the open document.
+
+        A listing that omitted it would legitimately clear the open document,
+        which is a different (and real) outcome than the one under test.
+        """
+        return {
+            "folders": [],
+            "documents": [
+                {
+                    "document_id": document_id,
+                    "name": name,
+                    "kind": "md",
+                    "head_revision_number": 1,
+                    "revision_count": 1,
+                }
+            ],
+        }
+
+    def _navigate_with_reads(self):
+        """Traverse Document/Preview/Versions, completing every passive read.
+
+        Each visit runs its destination's read to completion, which is what the
+        native app does when the destinations are opened. Versions performs no
+        read of its own, so it shows whatever the last honest state was.
+        """
+        for _ in range(2):
+            self.window._select_destination("document")
+            self.window._on_library_loaded(self._library_tree())
+            self.window._select_destination("preview")
+            self.window._on_preview_loaded(
+                self.window._preview_generation, _no_candidate_preview()
+            )
+            self.window._select_destination("versions")
+
+    def test_no_attempt_navigation_is_neutral(self):
+        self.window._apply_document_state(_state())
+        self.window._send = _FakeSend()
+
+        self._navigate_with_reads()
+
+        # Opening a destination is not a provider operation, so the strip never
+        # claims one — not on a fresh visit and not on a repeated one.
+        status = self.window.status_label.text()
+        self.assertEqual(status, "Status: idle — ready")
+        self.assertNotIn("success", status)
+        self.assertNotIn("preview ready", status)
+        # The destinations keep their own truthful bodies beside it.
+        self.assertEqual(self.window._preview_state_label.text(), "No preview yet")
+        self.assertIn(
+            "no app preview yet", self.window._preview_body.toPlainText()
+        )
+
+    def test_no_attempt_navigation_dispatches_no_provider_work(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+
+        self._navigate_with_reads()
+
+        # Passive navigation reads only; it never reaches the provider, never
+        # creates a Candidate and never adopts an Accepted Version.
+        actions = [r["action"] for r in fake.requests]
+        self.assertEqual(self._provider_actions(fake), [])
+        self.assertNotIn(contract.ACTION_DOCUMENT_CREATE_CANDIDATE, actions)
+        self.assertNotIn(contract.ACTION_DOCUMENT_ADOPT, actions)
+        self.assertIsNone(self.window._document_candidate)
+        self.assertIsNone(self.window._document_candidate_id)
+        self.assertIsNone(self.window._current_accepted_version_id)
+        self.assertEqual(self.window._document_versions, [])
+        # The only traffic is the two passive reads themselves.
+        self.assertTrue(
+            set(actions) <= {
+                contract.ACTION_LIBRARY_GET,
+                contract.ACTION_DOCUMENT_PREVIEW,
+            }
+        )
+
+    def test_library_listing_is_not_an_operation_outcome(self):
+        self.window._apply_document_state(_state())
+        self.window._select_destination("preview")
+        self.window._on_preview_loaded(
+            self.window._preview_generation, _no_candidate_preview()
+        )
+        # Give the strip a completed-operation token, as opening a document does.
+        self.window._set_status(client.STATE_SUCCESS, "document opened")
+
+        self.window._select_destination("document")
+        self.window._on_library_loaded(self._library_tree())
+
+        status = self.window.status_label.text()
+        self.assertEqual(status, "Status: idle — ready")
+        self.assertNotIn("success", status)
+        # The listing itself still reached the explorer.
+        self.assertEqual(len(self.window._library_documents), 1)
+
+    def test_cancel_requested_attempt_survives_navigation(self):
+        # A cancellation that reaches the client as a typed interpret envelope
+        # is a completed attempt, so it keeps its exact evidence like any other
+        # terminal state: "Cancelled", nothing sent, no usage.
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation,
+            _terminal_result("cancel_requested", sent=False),
+        )
+        self.assertEqual(
+            self.window.status_label.text(), "Status: failed — preview Cancelled"
+        )
+
+        self._navigate_with_reads()
+
+        body = self.window._preview_body.toPlainText()
+        self.assertIn("Cancelled", body)
+        self.assertIn("Sent: no", body)
+        self.assertIn("Usage: unknown", body)
+        self.assertEqual(self.window._preview_state_label.text(), "Cancelled")
+        self.assertEqual(
+            self.window.status_label.text(), "Status: failed — preview Cancelled"
+        )
+        self.assertEqual(
+            self._provider_actions(fake), [contract.ACTION_PREPARE_RULE_DELTA]
+        )
+
+    def test_attempt_status_survives_refresh_after_navigation(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation,
+            _terminal_result("credential_rejected", sent=True),
+        )
+        self._navigate_with_reads()
+
+        self.window._apply_provider_state(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "credential_present": True,
+            }
+        )
+
+        # The strip stays consistent with the re-rendered body: the attempt's
+        # exact typed outcome, never a success token and never neutral.
+        self.assertEqual(
+            self.window.status_label.text(), "Status: failed — preview API key rejected"
+        )
+        self.assertIn("Sent: yes", self.window._preview_body.toPlainText())
+        self.assertEqual(
+            self._provider_actions(fake), [contract.ACTION_PREPARE_RULE_DELTA]
+        )
 
 
 if __name__ == "__main__":

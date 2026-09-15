@@ -351,6 +351,41 @@ class PreviewSurfaceTests(unittest.TestCase):
         self.assertEqual(self.window._preview_document_label.text(), "")
         self.assertIn("No document", self.window._preview_state_label.text())
 
+    def test_preview_load_reports_no_operation_outcome(self):
+        # Loading a preview is a passive read, so it never leaves a success
+        # token in the global strip; the destination's own badge carries the
+        # truthful state.
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:d1"
+        self.window._refresh_preview()
+
+        self.window._on_preview_loaded(self.window._preview_generation, _preview())
+
+        status = self.window.status_label.text()
+        self.assertEqual(status, "Status: idle — ready")
+        self.assertNotIn("success", status)
+        self.assertNotIn("preview ready", status)
+        self.assertEqual(self.window._preview_state_label.text(), "Candidate — Current")
+
+    def test_late_preview_response_leaves_status_untouched(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:d1"
+        self.window._refresh_preview()  # generation 1
+        self.window._refresh_preview()  # generation 2
+        before = self.window.status_label.text()
+
+        # A late response for generation 1 is discarded: it neither paints the
+        # surface nor rewrites the strip.
+        self.window._on_preview_loaded(1, _preview(name="old.md"))
+        self.assertEqual(self.window.status_label.text(), before)
+
+        # The current generation's response resolves the read to neutral.
+        self.window._on_preview_loaded(2, _preview(name="new.md"))
+        self.assertIn("new.md", self.window._preview_document_label.text())
+        self.assertEqual(self.window.status_label.text(), "Status: idle — ready")
+
     def test_unsaved_text_notes_preview_is_saved_only(self):
         self.window._send = _FakeSend()
         self.window._apply_document_state(_sample_state())
