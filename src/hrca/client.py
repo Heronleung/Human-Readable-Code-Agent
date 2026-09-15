@@ -833,6 +833,16 @@ class MainWindow(QMainWindow):
         # interpretation result (e.g. "Credential missing"); cleared when the
         # regular document preview replaces it or the provider state refreshes.
         self._rule_delta_result_shown: bool = False
+        # P4.8b/v9: the latest completed Build-preview attempt — the typed
+        # interpret result envelope — bound to the document and saved revision it
+        # was produced from. This is a same-session review result, separate from
+        # whether an app Candidate exists, so it survives Document/Preview/
+        # Versions navigation and provider/profile refresh. It is cleared only by
+        # a newer attempt or by opening a different document/revision (which
+        # makes it non-current, never silently relabelled as success).
+        self._rule_delta_attempt: Optional[Dict[str, Any]] = None
+        self._rule_delta_attempt_document_id: Optional[str] = None
+        self._rule_delta_attempt_revision_id: Optional[str] = None
         # Document/version-authority surface state (P4.4): the list of documents,
         # the currently open document's identity and base revision, the dirty
         # flag, the accepted-version list, and the mounted widgets.
@@ -2072,20 +2082,24 @@ class MainWindow(QMainWindow):
             self._set_validation_state(VALIDATION_IDLE)
 
     def _invalidate_rule_delta_result(self) -> None:
-        """Invalidate an interpretation result on provider refresh.
+        """Advance the interpretation generation and refresh the surface safely.
 
         Called at startup and whenever the provider/config state changes (a
         credential/profile change). First the interpretation generation is
         advanced so a late ``interpret_rule_delta`` response — whose stale
         generation no longer matches — can never render an old, now-stale
         result (neither the Preview body nor the global status strip). Then a
-        rendered, non-reviewable failure (for example "Credential missing") is
-        cleared back to the neutral "no preview yet" state. A reviewable
-        candidate is left untouched because it stays bound to the revision it
-        was produced from. This never re-dispatches a prepare/interpret request
-        and never contacts the provider.
+        completed attempt bound to the current document/revision is re-rendered
+        (never erased or relabelled as success); a transient rendered failure
+        that was never a recorded attempt is cleared back to the neutral
+        "no preview yet" state. This never re-dispatches a prepare/interpret
+        request and never contacts the provider.
         """
         self._next_rule_delta_generation()
+        attempt = self._current_rule_delta_attempt()
+        if attempt is not None:
+            self._render_rule_delta_result(attempt)
+            return
         if not self._rule_delta_result_shown:
             return
         if self._rule_delta_reviewable_for is not None:
@@ -3544,22 +3558,43 @@ class MainWindow(QMainWindow):
         """Render a loaded preview, discarding a late response for an old document."""
         if generation != self._preview_generation:
             return
-        self._render_preview(result)
-        self._set_status(STATE_SUCCESS, "preview ready")
+        showed_attempt = self._render_preview(result)
+        if showed_attempt:
+            # A completed attempt is still on the surface; report its honest
+            # outcome rather than a generic "preview ready" success token.
+            self._set_rule_delta_status(self._current_rule_delta_attempt())
+        else:
+            self._set_status(STATE_SUCCESS, "preview ready")
 
     def _on_preview_error(self, reason: str) -> None:
         """A failed preview request shows a bounded safe state, never a stale preview."""
         self._set_status(STATE_FAILED, document_failure_message(reason))
         self._clear_preview()
 
-    def _render_preview(self, preview: Dict[str, Any]) -> None:
-        """Populate the read-only Preview from the boundary's preview record."""
-        self._rule_delta_result_shown = False
+    def _render_preview(self, preview: Dict[str, Any]) -> bool:
+        """Populate the read-only Preview from the boundary's preview record.
+
+        Returns True when a completed Build-preview attempt bound to the current
+        document/revision was rendered in place of the plain document preview
+        (so the caller can report the attempt's honest outcome). Navigation must
+        never erase a completed attempt or relabel a failed provider action as a
+        successful preview.
+        """
         doc = preview.get("document") or {}
         state = str(preview.get("state", "unknown"))
         binding = preview.get("binding")
         kind = binding.get("kind") if binding else None
 
+        # A plain document preview that only reports "no candidate"/"no
+        # document" must not overwrite a completed attempt for this same
+        # document/revision: the attempt is the more informative surface.
+        if state in ("no_candidate", "no_document"):
+            attempt = self._current_rule_delta_attempt()
+            if attempt is not None:
+                self._render_rule_delta_result(attempt)
+                return True
+
+        self._rule_delta_result_shown = False
         if self._preview_document_label is not None:
             name = doc.get("name") or "Untitled"
             revision = doc.get("revision_number", 0)
@@ -3574,6 +3609,7 @@ class MainWindow(QMainWindow):
                     "revision. Your unsaved edits are not represented here."
                 )
             self._preview_body.setPlainText(text)
+        return False
 
     def _set_preview_state_badge(self, state: str, kind: Optional[str]) -> None:
         """Set the Preview state badge word + semantic colour (never colour alone)."""
@@ -4465,21 +4501,50 @@ class MainWindow(QMainWindow):
         self._rule_delta_reviewable_for = (
             self._document_id if state == _RULE_DELTA_REVIEWABLE else None
         )
+        self._record_rule_delta_attempt(result)
         self._update_document_actions()
         self._render_rule_delta_result(result)
-        # Only a reviewable candidate is a successful preview outcome; a
-        # credential-missing (or any other bounded) failure must not render the
-        # protocol envelope as "success".
-        label = delta_interpret_state_label(state)
-        if state == _RULE_DELTA_REVIEWABLE:
-            self._set_status(STATE_SUCCESS, f"preview {label}")
-        else:
-            self._set_status(STATE_FAILED, f"preview {label}")
+        self._set_rule_delta_status(result)
 
     def _on_rule_delta_error(self, reason: str) -> None:
         self._rule_delta_pending = False
         self._update_document_actions()
         self._set_status(STATE_FAILED, document_failure_message(reason))
+
+    def _record_rule_delta_attempt(self, result: Dict[str, Any]) -> None:
+        """Store the latest completed attempt bound to the current doc/revision.
+
+        The typed result envelope is reused verbatim (never reconstructed from a
+        status label), so Sent/Usage/reason stay exact. The attempt is bound to
+        the document and saved revision the interpret was dispatched for.
+        """
+        self._rule_delta_attempt = dict(result)
+        self._rule_delta_attempt_document_id = self._document_id
+        self._rule_delta_attempt_revision_id = self._document_base_revision_id
+
+    def _current_rule_delta_attempt(self) -> Optional[Dict[str, Any]]:
+        """Return the recorded attempt only if it is bound to the current doc/rev."""
+        if self._rule_delta_attempt is None:
+            return None
+        if self._rule_delta_attempt_document_id != self._document_id:
+            return None
+        if self._rule_delta_attempt_revision_id != self._document_base_revision_id:
+            return None
+        return self._rule_delta_attempt
+
+    def _set_rule_delta_status(self, result: Dict[str, Any]) -> None:
+        """Set the global status strip from a rendered interpretation result.
+
+        Only a reviewable candidate is a successful preview outcome; a
+        credential-missing / credential-rejected (or any other bounded) failure
+        must never render the protocol envelope as "success".
+        """
+        state = str(result.get("state", "unknown"))
+        label = delta_interpret_state_label(state)
+        if state == _RULE_DELTA_REVIEWABLE:
+            self._set_status(STATE_SUCCESS, f"preview {label}")
+        else:
+            self._set_status(STATE_FAILED, f"preview {label}")
 
     def _render_rule_delta_result(self, result: Dict[str, Any]) -> None:
         """Populate the Preview surface from a bounded interpretation result."""
@@ -4501,6 +4566,8 @@ class MainWindow(QMainWindow):
                     "\n\nReviewable only. 'Use this version' is a separate, "
                     "explicit step and is never automatic."
                 )
+            else:
+                text += "\n\nNo Candidate was created from this attempt."
             self._preview_body.setPlainText(text)
 
     def _render_rule_delta_failure(self, label: str) -> None:
