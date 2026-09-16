@@ -704,6 +704,18 @@ dropped. Each event carries an explicit account of the documented fields present
 the documented fields missing, the fields dropped, and the field names this
 adapter does not recognize.
 
+**One field is retained, because it is a classification rather than text.**
+`StopFailure` is the surface's only typed run-failure signal, and its `error`
+field is the classification the client itself matches on. That class is kept as
+typed failure evidence when — and only when — it is one of the documented
+classes; any other value, including free text, is dropped rather than kept, so
+arbitrary content can never survive merely because it arrived in an enum-shaped
+field. `StopFailure.error_details` and `StopFailure.last_assistant_message` stay
+under the content policy, and the identically named `PostToolUseFailure.error`
+is documented as free text and stays redacted too. The rule is per event and per
+field, not a global exception, and it never affects terminal state: an
+unrecognized class is still reported as `failed`, never as success.
+
 Tool identity comes from the client's own `tool_use_id` and prompt identity from
 `prompt_id`, so identity is independent of observed content — which is what lets
 a redelivery whose content changed be recognized as a conflict instead of being

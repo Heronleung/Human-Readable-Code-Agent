@@ -20,7 +20,13 @@ Design rules
 * **Content is never persisted.** Prompt text, assistant text, tool responses
   and error text are dropped before anything is written. Only a SHA-256 digest
   and a character count survive, so a durable record can prove *that* content
-  existed without being able to reproduce it.
+  existed without being able to reproduce it. The single exception is
+  ``StopFailure.error``, which the client documents as a *classification* --
+  the value it matches on -- and which is therefore retained, but only when it
+  matches the documented class list. ``error_details`` and
+  ``last_assistant_message`` stay dropped, and ``PostToolUseFailure.error``,
+  which really is free text, stays under the content policy. Retention is
+  decided per event and field, never by one global rule.
 * **Paths are relativized or refused.** A path inside the session root is
   stored relative to it; a path outside is refused entirely. An absolute
   personal path therefore cannot reach the store.
@@ -156,14 +162,53 @@ EVENT_HOOK_FIELDS: Dict[str, Tuple[str, ...]] = {
         "duration_ms",
     ),
     HOOK_STOP: ("stop_hook_active", "last_assistant_message", "background_tasks"),
-    HOOK_STOP_FAILURE: ("error",),
+    HOOK_STOP_FAILURE: ("error", "error_details", "last_assistant_message"),
 }
 
-# Documented fields whose *value* is content. The value is never written; a
-# digest and a character count are recorded instead.
-CONTENT_HOOK_FIELDS = frozenset(
-    {"prompt", "last_assistant_message", "tool_response", "error", "session_title"}
+# The documented ``StopFailure`` error classification. This is the event's
+# matcher vocabulary, so the class itself is typed failure *evidence* rather
+# than free text, and it is the only field on this event whose value is
+# retained. A value outside this set is not interpreted: the class is dropped
+# instead of kept. The list governs evidence retention only -- it never
+# touches the terminal mapping, so a run is reported failed either way.
+#
+# ``account_on_hold`` is contributed conditionally by the client, so it is a
+# documented class even though its membership in the matcher list varies.
+STOP_FAILURE_ERROR_CLASSES = frozenset(
+    {
+        "rate_limit",
+        "overloaded",
+        "authentication_failed",
+        "oauth_org_not_allowed",
+        "account_on_hold",
+        "verification_required",
+        "billing_error",
+        "invalid_request",
+        "model_not_found",
+        "server_error",
+        "max_output_tokens",
+        "cloud_credential_error",
+        "unknown",
+    }
 )
+
+# Documented fields whose *value* is content on every event that carries them.
+# The value is never written; a digest and a character count are recorded
+# instead. ``error`` is deliberately absent: it is free text on
+# ``PostToolUseFailure`` and a classified enum on ``StopFailure``, so it is
+# handled per event rather than by one global rule.
+CONTENT_HOOK_FIELDS = frozenset(
+    {"prompt", "last_assistant_message", "tool_response", "session_title"}
+)
+
+# Content-bearing fields specific to one event. ``PostToolUseFailure`` carries
+# a free-text error message and ``StopFailure`` a free-text detail string; both
+# stay under the content policy. Only ``StopFailure.error``, the classification,
+# is retained, and it is handled in :func:`project_hook_payload`.
+EVENT_CONTENT_HOOK_FIELDS: Dict[str, Tuple[str, ...]] = {
+    HOOK_POST_TOOL_USE_FAILURE: ("error",),
+    HOOK_STOP_FAILURE: ("error_details",),
+}
 
 # Tool-input keys that name a path. The value is relativized, then policed.
 TOOL_INPUT_PATH_KEYS = ("file_path", "path", "notebook_path", "directory")
@@ -483,7 +528,9 @@ def project_hook_payload(
         omitted.append("cwd")
 
     # -- content-bearing fields: digest and length only -------------------
-    for key in sorted(CONTENT_HOOK_FIELDS):
+    content_fields = set(CONTENT_HOOK_FIELDS)
+    content_fields.update(EVENT_CONTENT_HOOK_FIELDS.get(name, ()))
+    for key in sorted(content_fields):
         if key not in payload:
             continue
         reference = content_reference(payload.get(key))
@@ -540,6 +587,22 @@ def project_hook_payload(
         projection["background_tasks"] = (
             len(background) if isinstance(background, list) else None
         )
+    elif name == HOOK_STOP_FAILURE:
+        # ``error`` is this event's documented classification -- the value the
+        # client itself matches on -- so the class is the typed failure
+        # evidence. Only a documented class is retained; any other value is
+        # dropped rather than kept, so arbitrary text can never survive just
+        # because it arrived in a field that is usually an enum. The terminal
+        # mapping never consults this value, so an unrecognized class is still
+        # reported as failed and can never become successful evidence.
+        raw_error = payload.get("error")
+        error_class = raw_error.strip() if isinstance(raw_error, str) else None
+        recognized = error_class in STOP_FAILURE_ERROR_CLASSES
+        projection["error"] = error_class if recognized else None
+        projection["error_class_documented"] = recognized
+        if "error" in payload and not recognized:
+            projection["error_content"] = content_reference(raw_error)
+            omitted.append("error")
 
     for key in ("prompt_id", "permission_mode", "agent_id", "agent_type"):
         if key in payload:

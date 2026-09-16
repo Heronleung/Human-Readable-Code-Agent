@@ -382,5 +382,149 @@ class ChangeSetTests(unittest.TestCase):
         self.assertEqual([], event["paths"])
 
 
+class StopFailureEvidenceTests(unittest.TestCase):
+    """``StopFailure`` evidence is a classification, not free text.
+
+    The event's ``error`` field is the value the client itself matches on, so
+    the class is typed failure evidence and is retained when it is documented.
+    ``error_details`` and ``last_assistant_message`` are text and stay dropped.
+    The rule is per event and per field: the identically named
+    ``PostToolUseFailure.error`` is free text and stays under the content
+    policy, so no global exception has been opened.
+    """
+
+    def test_every_documented_field_is_accounted_for(self):
+        event = only(
+            "StopFailure",
+            error="rate_limit",
+            error_details="429 Too Many Requests",
+            last_assistant_message="API Error: 429",
+        )
+        projection = event["payload"]
+        self.assertEqual([], projection["unknown_fields"])
+        for name in ("error", "error_details", "last_assistant_message"):
+            self.assertIn(name, projection["present_fields"])
+
+    def test_the_documented_field_set_is_complete(self):
+        self.assertEqual(
+            ("error", "error_details", "last_assistant_message"),
+            hooks.EVENT_HOOK_FIELDS[hooks.HOOK_STOP_FAILURE],
+        )
+
+    def test_the_classified_error_is_retained(self):
+        projection = only("StopFailure", error="invalid_request")["payload"]
+        self.assertEqual("invalid_request", projection["error"])
+        self.assertTrue(projection["error_class_documented"])
+        self.assertNotIn("error", projection["omitted_fields"])
+
+    def test_every_documented_class_is_recognised(self):
+        self.assertEqual(13, len(hooks.STOP_FAILURE_ERROR_CLASSES))
+        for error_class in sorted(hooks.STOP_FAILURE_ERROR_CLASSES):
+            with self.subTest(error_class=error_class):
+                projection = only("StopFailure", error=error_class)["payload"]
+                self.assertEqual(error_class, projection["error"])
+                self.assertTrue(projection["error_class_documented"])
+
+    def test_missing_optional_fields_are_valid_and_not_unknown(self):
+        projection = only("StopFailure", error="rate_limit")["payload"]
+        for name in ("error_details", "last_assistant_message"):
+            with self.subTest(field=name):
+                self.assertIn(name, projection["missing_fields"])
+                self.assertNotIn(name, projection["unknown_fields"])
+
+    def test_details_and_assistant_text_are_never_persisted(self):
+        event = only(
+            "StopFailure",
+            error="rate_limit",
+            error_details=_SECRET,
+            last_assistant_message=_SECRET,
+        )
+        self.assertNotIn(_SECRET, json.dumps(event))
+        for name in ("error_details", "last_assistant_message"):
+            with self.subTest(field=name):
+                self.assertIn(name, event["payload"]["omitted_fields"])
+                self.assertIn(name + "_content", event["payload"])
+
+    def test_an_undocumented_field_is_still_explicit(self):
+        projection = only("StopFailure", error="rate_limit", surprise="x")["payload"]
+        self.assertIn("surprise", projection["unknown_fields"])
+
+    def test_an_unrecognised_class_fails_closed(self):
+        projection = only("StopFailure", error="totally-made-up")["payload"]
+        self.assertIsNone(projection["error"])
+        self.assertFalse(projection["error_class_documented"])
+        self.assertIn("error", projection["omitted_fields"])
+
+    def test_free_text_in_the_error_field_is_not_retained(self):
+        event = only("StopFailure", error=_SECRET)
+        self.assertNotIn(_SECRET, json.dumps(event))
+        self.assertIsNone(event["payload"]["error"])
+        self.assertFalse(event["payload"]["error_class_documented"])
+
+    def test_a_non_string_error_fails_closed(self):
+        projection = only("StopFailure", error=["not", "a", "class"])["payload"]
+        self.assertIsNone(projection["error"])
+        self.assertFalse(projection["error_class_documented"])
+
+    def test_a_whitespace_variant_is_not_treated_as_documented(self):
+        # Only the documented spelling is accepted: normalising an
+        # undocumented spelling would assert a class the client never sent.
+        projection = only("StopFailure", error=" Rate_Limit ")["payload"]
+        self.assertIsNone(projection["error"])
+        self.assertFalse(projection["error_class_documented"])
+
+    def test_the_terminal_mapping_is_unchanged(self):
+        for value in ("rate_limit", "totally-made-up", None):
+            with self.subTest(error=value):
+                event = only("StopFailure", error=value)
+                self.assertEqual(memory.EVENT_RUN_TERMINATED, event["event_type"])
+                self.assertEqual(memory.OUTCOME_FAILED, event["outcome"])
+
+    def test_an_unrecognised_class_never_becomes_success(self):
+        events = [
+            e
+            for item in (
+                payload("SessionStart", source="startup"),
+                payload("StopFailure", error="totally-made-up"),
+                payload("SessionEnd", reason="prompt_input_exit"),
+            )
+            for e in hooks.translate_hook_event(item, _ROOT)
+        ]
+        session, _ = hooks.assemble_session(events)
+        store, error, _ = memory.ingest_session(session)
+        self.assertIsNone(error)
+        self.assertEqual(memory.RUN_FAILED, memory.run_state(store))
+        self.assertFalse(memory.is_success(store))
+
+    # -- the proof that the rule is event-specific, not a global exception --
+
+    def test_post_tool_use_failure_error_stays_content(self):
+        event = only(
+            "PostToolUseFailure",
+            tool_name="Bash",
+            tool_use_id="tu-1",
+            error=_SECRET,
+            error_type="command_failed",
+        )
+        self.assertNotIn(_SECRET, json.dumps(event))
+        self.assertNotIn("error", event["payload"])
+        self.assertIn("error", event["payload"]["omitted_fields"])
+        self.assertEqual(len(_SECRET), event["payload"]["error_content"]["chars"])
+
+    def test_the_same_value_is_content_on_post_tool_use_failure(self):
+        # A documented-looking class is still not retained where the field is
+        # documented as text.
+        event = only(
+            "PostToolUseFailure",
+            tool_name="Bash",
+            tool_use_id="tu-1",
+            error="rate_limit",
+        )
+        self.assertNotIn("rate_limit", json.dumps(event))
+        reference = event["payload"]["error_content"]
+        self.assertEqual(len("rate_limit"), reference["chars"])
+        self.assertTrue(reference["digest"].startswith("sha256:"))
+
+
 if __name__ == "__main__":
     unittest.main()
