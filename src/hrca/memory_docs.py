@@ -942,3 +942,167 @@ def render_sets(document_sets: Sequence[Dict[str, Any]]) -> str:
             "document_sets": list(document_sets),
         }
     )
+
+
+# -- exact typed record view --------------------------------------------
+#
+# The read boundary resolves exactly one supporting record and returns it
+# through this allowlist. The view is built by iterating the allowlist and
+# reading named fields, never by iterating the record, so a field that is not
+# named here cannot cross the boundary even if the contract later stores it.
+# Nothing content-bearing is reachable: an event's hook payload, a content
+# fingerprint, a quarantine fingerprint and an evidence digest are all absent.
+
+# The record kinds a support target may name. These are the projector's link
+# kinds, so a claim reference maps onto a record request without translation.
+RECORD_VIEW_KINDS = (
+    LINK_RUN,
+    LINK_PROJECT,
+    LINK_WORK_PACKAGE,
+    LINK_EVENT,
+    LINK_EVIDENCE,
+    LINK_DECISION,
+    LINK_CHANGE_SET,
+    LINK_CODE_ENTITY,
+    LINK_REJECTION,
+    LINK_QUARANTINE,
+)
+
+# Link kind -> store array. ``run`` names the single ``agent_run`` record.
+_KIND_TO_ARRAY = {
+    LINK_PROJECT: "projects",
+    LINK_WORK_PACKAGE: "work_packages",
+    LINK_EVENT: "events",
+    LINK_EVIDENCE: "evidence",
+    LINK_DECISION: "decisions",
+    LINK_CHANGE_SET: "change_sets",
+    LINK_CODE_ENTITY: "code_entity_links",
+    LINK_REJECTION: "rejections",
+    LINK_QUARANTINE: "quarantines",
+}
+
+# The exact normalized fields each kind may expose. Every field is canonical and
+# already redacted, bounded and path-policed by the contract.
+RECORD_VIEW_FIELDS = {
+    LINK_RUN: (
+        "id", "record_kind", "adapter", "session_id", "project_id",
+        "work_package_id", "state", "finalized", "stream_closed",
+        "ingest_sequence", "terminal_event_id",
+    ),
+    LINK_PROJECT: ("id", "record_kind", "source_id", "name"),
+    LINK_WORK_PACKAGE: ("id", "record_kind", "project_id", "source_id", "title"),
+    LINK_EVENT: (
+        "id", "record_kind", "run_id", "event_type", "outcome", "ingest_ordinal",
+        "source_sequence", "transition", "change_set_id", "evidence_ids",
+        "decision_ids", "code_entity_link_ids",
+    ),
+    LINK_EVIDENCE: (
+        "id", "record_kind", "run_id", "kind", "source_id", "artifact_ref", "bytes",
+    ),
+    LINK_DECISION: ("id", "record_kind", "run_id", "source_id", "summary", "decided_at"),
+    LINK_CHANGE_SET: (
+        "id", "record_kind", "run_id", "source_id", "paths", "entity_refs", "summary",
+    ),
+    LINK_CODE_ENTITY: ("id", "record_kind", "run_id", "path", "symbol", "entity_kind"),
+    LINK_REJECTION: (
+        "id", "record_kind", "run_id", "reason", "event_ref", "rejection_ordinal",
+        "ingest_sequence",
+    ),
+    LINK_QUARANTINE: (
+        "id", "record_kind", "run_id", "event_id", "reason", "quarantine_ordinal",
+        "ingest_sequence",
+    ),
+}
+
+# Fields whose value is the source's own reported text rather than a fact the
+# contract validated, so a reader is told which values are reported.
+REPORTED_VIEW_FIELDS = {
+    LINK_DECISION: ("summary",),
+    LINK_CHANGE_SET: ("summary",),
+    LINK_PROJECT: ("name",),
+    LINK_WORK_PACKAGE: ("title",),
+}
+
+# Kinds that carry a content digest in the store. Only *presence* is exposed:
+# a digest is a fingerprint of content this layer must not hand out.
+_DIGEST_BEARING_KINDS = (LINK_EVIDENCE,)
+
+# Bounded, content-free reasons for a record view that cannot be produced.
+REASON_KIND_NOT_SUPPORTED = "the record kind is not supported by the read boundary"
+REASON_RECORD_ID_INVALID = "the requested record identity is not usable"
+REASON_RECORD_NOT_FOUND = "the requested record is not present in this run"
+
+
+def _view_fields(record: Dict[str, Any], kind: str) -> Dict[str, Any]:
+    """Return the allowlisted projection of ``record`` for ``kind``."""
+    fields: Dict[str, Any] = {}
+    for name in RECORD_VIEW_FIELDS[kind]:
+        value = record.get(name)
+        if name in ("paths", "entity_refs", "evidence_ids", "decision_ids",
+                    "code_entity_link_ids"):
+            value = list(value) if isinstance(value, list) else []
+        elif isinstance(value, dict):
+            value = dict(value)
+        fields[name] = value
+    return fields
+
+
+def _owning_run_id(store: Dict[str, Any], record: Dict[str, Any]) -> Optional[str]:
+    """Return the run a record belongs to.
+
+    A record that carries its own ``run_id`` names its run. A run-scoped
+    descriptor -- a project or a work package -- carries none, so its owning run
+    is the store's own run rather than the descriptor's identity.
+    """
+    owned = record.get("run_id")
+    if isinstance(owned, str) and owned:
+        return owned
+    run = store.get("agent_run")
+    if isinstance(run, dict) and isinstance(run.get("id"), str):
+        return run["id"]
+    return None
+
+
+def record_view(
+    store: Any, kind: Any, record_id: Any
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Return ``(view, error)`` for one exact typed record inside one run.
+
+    Resolution is by the exact identity ``(kind, record_id)`` against *this*
+    store only, so a record id belonging to another run cannot resolve here and
+    no substitute record is ever returned. Exactly one of ``view`` and ``error``
+    is ``None``.
+    """
+    if not isinstance(store, dict):
+        return None, REASON_NOT_A_STORE
+    if not isinstance(kind, str) or kind not in RECORD_VIEW_KINDS:
+        return None, REASON_KIND_NOT_SUPPORTED
+    if not isinstance(record_id, str) or not record_id.strip():
+        return None, REASON_RECORD_ID_INVALID
+    record_id = record_id.strip()
+
+    if kind == LINK_RUN:
+        run = store.get("agent_run")
+        candidates = [run] if isinstance(run, dict) else []
+    else:
+        array = store.get(_KIND_TO_ARRAY[kind])
+        candidates = array if isinstance(array, list) else []
+
+    for record in candidates:
+        if not isinstance(record, dict) or record.get("id") != record_id:
+            continue
+        view = {
+            "kind": kind,
+            "record_id": record_id,
+            "run_id": _owning_run_id(store, record),
+            "fields": _view_fields(record, kind),
+            "reported_fields": list(REPORTED_VIEW_FIELDS.get(kind, ())),
+            "digest_present": (
+                isinstance(record.get("digest"), str) and bool(record.get("digest"))
+                if kind in _DIGEST_BEARING_KINDS
+                else None
+            ),
+        }
+        return view, None
+
+    return None, REASON_RECORD_NOT_FOUND

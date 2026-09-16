@@ -48,6 +48,8 @@ from . import (
     document,
     library,
     library_store,
+    memory_docs,
+    memory_store,
     proposal,
     provider,
     provider_config,
@@ -334,6 +336,10 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _prepare_rule_delta_result(request, session)
     elif action == contract.ACTION_INTERPRET_RULE_DELTA:
         result = _interpret_rule_delta_result(request, session)
+    elif action == contract.ACTION_MEMORY_DOCUMENTS:
+        result = _get_memory_documents_result(request, session)
+    elif action == contract.ACTION_MEMORY_RECORD:
+        result = _get_memory_record_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -2729,6 +2735,147 @@ def _interpret_rule_delta_result(
         usage=usage,
         candidate=candidate,
     )
+
+
+# -- Memory read handlers (M4.3/v2a) -------------------------------------
+#
+# Both handlers are read-only and offline. Stores are reached only through the
+# storage owner at ``session.store_base`` — the same boundary-owned app-data
+# root the Twin, version and library stores already use. No request field names
+# a path, a repository root or a transcript reference, so a caller cannot
+# influence which directory is read; a caller-supplied string is only ever
+# compared against a stored identity.
+
+
+def _bounded_memory_id(value: Any) -> Optional[str]:
+    """Return a usable bounded Memory identity, else ``None``."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > contract.MAX_MEMORY_ID_CHARS:
+        return None
+    return text
+
+
+def _memory_run_ids(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> "tuple":
+    """Return ``(run_ids, truncated)`` for a document request.
+
+    The caller may name runs explicitly, or omit ``runs`` to cover every stored
+    run. Either way the list is bounded *before* any store is loaded, so a
+    request can never make the boundary read an unbounded number of stores.
+    """
+    raw = request.get("runs")
+    if raw is None:
+        listed = memory_store.list_runs(session.store_base)
+        available = [r for r in (s.get("run_id") for s in listed) if isinstance(r, str)]
+        return available[: contract.MAX_MEMORY_RUNS], len(available) > contract.MAX_MEMORY_RUNS
+    if not isinstance(raw, list):
+        raise contract.ContractError("invalid_request")
+    run_ids = []
+    for item in raw[: contract.MAX_MEMORY_RUNS]:
+        run_id = _bounded_memory_id(item)
+        if run_id is None:
+            raise contract.ContractError("invalid_request")
+        if run_id not in run_ids:
+            run_ids.append(run_id)
+    return run_ids, len(raw) > contract.MAX_MEMORY_RUNS
+
+
+def _memory_document_types(request: Dict[str, Any]) -> Optional[List[str]]:
+    """Return the bounded document-type selection, or ``None`` for all."""
+    raw = request.get("documents")
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise contract.ContractError("invalid_request")
+    wanted: List[str] = []
+    for item in raw:
+        if item not in memory_docs.DOCUMENT_TYPES:
+            raise contract.ContractError("invalid_request")
+        if item not in wanted:
+            wanted.append(item)
+    return wanted
+
+
+def _memory_origin(request: Dict[str, Any]) -> Optional[str]:
+    """Return the caller-declared capture origin, or ``None``."""
+    origin = request.get("origin")
+    if origin is None:
+        return None
+    if origin not in ("live", "offline"):
+        raise contract.ContractError("invalid_request")
+    return origin
+
+
+def _load_memory_store(session: WorkspaceSession, run_id: str) -> Dict[str, Any]:
+    """Load one run's store at the boundary-owned base, or fail closed."""
+    store, err = memory_store.load(session.store_base, run_id)
+    if store is None:
+        # A store that exists but cannot be read is distinguished from a run
+        # that does not exist, so a caller is never told a run is absent when it
+        # is merely unreadable.
+        raise contract.ContractError(
+            "memory_not_readable" if err is not None else "memory_run_not_found"
+        )
+    return store
+
+
+def _get_memory_documents_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Return bounded projected documents for a bounded set of stored runs."""
+    run_ids, truncated = _memory_run_ids(request, session)
+    documents = _memory_document_types(request)
+    origin = _memory_origin(request)
+
+    document_sets: List[Dict[str, Any]] = []
+    for run_id in run_ids:
+        store = _load_memory_store(session, run_id)
+        document_set, project_err, _ = memory_docs.project_store(
+            store, evidence_origin=origin, document_types=documents
+        )
+        if document_set is None:
+            # The projector refuses a store it does not understand rather than
+            # half-projecting it; that refusal is reported, not worked around.
+            raise contract.ContractError("memory_not_readable")
+        document_sets.append(document_set)
+
+    return {
+        "run_count": len(document_sets),
+        "truncated": truncated,
+        "document_sets": document_sets,
+    }
+
+
+def _get_memory_record_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Resolve exactly one typed Memory record inside one named run."""
+    run_id = _bounded_memory_id(request.get("run_id"))
+    if run_id is None:
+        raise contract.ContractError("invalid_request")
+    kind = request.get("kind")
+    if not isinstance(kind, str) or kind not in memory_docs.RECORD_VIEW_KINDS:
+        raise contract.ContractError("memory_kind_not_supported")
+    record_id = _bounded_memory_id(request.get("record_id"))
+    if record_id is None:
+        raise contract.ContractError("invalid_request")
+
+    store = _load_memory_store(session, run_id)
+    run = store.get("agent_run")
+    if not isinstance(run, dict) or run.get("id") != run_id:
+        # A store whose own run identity disagrees with the requested one is
+        # refused, so a record can never be attributed to the wrong run.
+        raise contract.ContractError("memory_run_not_found")
+
+    view, view_err = memory_docs.record_view(store, kind, record_id)
+    if view is None:
+        if view_err == memory_docs.REASON_KIND_NOT_SUPPORTED:
+            raise contract.ContractError("memory_kind_not_supported")
+        raise contract.ContractError("memory_record_not_found")
+    return view
 
 
 if __name__ == "__main__":

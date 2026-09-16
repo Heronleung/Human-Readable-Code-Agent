@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional
 # The version of the desktop-to-core contract. A boundary rejects any request
 # whose ``contract_version`` differs from this constant with a bounded
 # ``unknown_contract_version`` error.
-CONTRACT_VERSION = "3.5.0"
+CONTRACT_VERSION = "3.6.0"
 
 # Correlation identifier: a client-generated opaque string that the boundary
 # echoes verbatim so a client can match each response to its in-flight request.
@@ -146,6 +146,16 @@ ACTION_RULE_DELTA_RUN = "run_rule_delta"
 # or carries/returns a credential.
 ACTION_PREPARE_RULE_DELTA = "prepare_rule_delta"
 ACTION_INTERPRET_RULE_DELTA = "interpret_rule_delta"
+# The M4.3 bounded Memory read protocol. ``get_memory_documents`` returns
+# bounded projected developer documents (M4.3/v1) for a bounded set of stored
+# runs; ``get_memory_record`` resolves exactly one typed supporting record
+# inside one named run and returns it through the projector's field allowlist.
+# Both actions are read-only and offline. Neither accepts a filesystem path, a
+# repository root or a transcript reference: every store is rooted at the
+# boundary-owned app-data base, so a caller cannot influence store rooting, and
+# a record id belonging to another run never resolves.
+ACTION_MEMORY_DOCUMENTS = "get_memory_documents"
+ACTION_MEMORY_RECORD = "get_memory_record"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -256,6 +266,13 @@ RULE_DELTA_ACTIONS = frozenset({ACTION_RULE_DELTA_STAGE, ACTION_RULE_DELTA_RUN})
 RULE_DELTA_INTERPRET_ACTIONS = frozenset(
     {ACTION_PREPARE_RULE_DELTA, ACTION_INTERPRET_RULE_DELTA}
 )
+# The M4.3 bounded Memory read protocol. Read-only and offline: it loads at most
+# ``MAX_MEMORY_RUNS`` normalized stores, projects documents through the accepted
+# projector, and resolves one typed record by exact identity. It never writes a
+# store, never reads a raw hook payload, a transcript or a log, never opens a
+# socket and never reaches a provider or a credential. No action here accepts a
+# path, so store rooting stays entirely boundary-owned.
+MEMORY_ACTIONS = frozenset({ACTION_MEMORY_DOCUMENTS, ACTION_MEMORY_RECORD})
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -272,6 +289,7 @@ ALLOWED_ACTIONS = (
     | CANDIDATE_PACKAGE_ACTIONS
     | RULE_DELTA_ACTIONS
     | RULE_DELTA_INTERPRET_ACTIONS
+    | MEMORY_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -309,6 +327,14 @@ MAX_DRAFT_BYTES = 64 * 1024  # 64 KiB
 # kept equal to ``MAX_DOCUMENT_BYTES`` so the editable document surface is
 # bounded the same way the read-only preview surface is.
 MAX_WORKING_DOCUMENT_BYTES = 64 * 1024  # 64 KiB
+
+# Maximum number of stored Memory runs one document request may cover, and the
+# maximum length of a caller-supplied Memory identity (a run id or a record id).
+# The run bound is enforced before any store is loaded, so a request can never
+# make the boundary read an unbounded number of stores, and the identity bound
+# keeps a caller-supplied string from being used as an unbounded key.
+MAX_MEMORY_RUNS = 16
+MAX_MEMORY_ID_CHARS = 256
 
 # Argument sentinel that turns the unified entry executable into the headless
 # boundary. A frozen build launches ``[sys.executable, "--serve"]``; a source
@@ -393,6 +419,13 @@ _ERROR_MESSAGES = {
     "item_not_trashed": "the item is not in the trash",
     "restore_collision": "an item with this name already exists where it would be restored",
     "library_persist_failed": "the document library could not be saved",
+    # Memory read errors (M4.3/v2a). Messages are fixed and never interpolate a
+    # run id, a record kind, a record id or any record content, so caller text
+    # and stored content can never leak into a protocol error.
+    "memory_run_not_found": "the requested Memory run does not exist",
+    "memory_record_not_found": "the requested Memory record is not present in that run",
+    "memory_kind_not_supported": "the requested Memory record kind is not supported",
+    "memory_not_readable": "the Memory store could not be read",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)

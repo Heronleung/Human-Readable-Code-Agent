@@ -2071,6 +2071,314 @@ def build_restore_item_request(correlation_id: str, item_id: str) -> Dict[str, A
     }
 
 
+# -- Memory documents and exact support records (M4.3/v2a) ----------------
+#
+# The Qt-free half of the Developer Memory read workflow. It builds the two
+# read-only requests and turns a bounded response into display rows with
+# stable identities and *textual* state, provenance and origin labels, so a
+# later surface never has to infer meaning from a raw token and never has to
+# carry meaning in colour alone.
+#
+# These constants mirror the projector's vocabulary: the desktop may not import
+# the Memory seam, so the shared vocabulary is restated here and a boundary test
+# asserts the two stay identical.
+
+MEMORY_DOCUMENT_TYPES = (
+    "session_summary",
+    "change_record",
+    "decision_record",
+    "issues_and_actions",
+)
+
+# The record kinds a support reference may name, in the projector's link
+# vocabulary so a claim link maps onto a record request without translation.
+MEMORY_RECORD_KINDS = (
+    "run",
+    "project",
+    "work_package",
+    "event",
+    "evidence",
+    "decision",
+    "change_set",
+    "code_entity_link",
+    "rejection",
+    "quarantine",
+)
+
+# Textual run-state labels. Every non-success state says so in words, so state
+# is never carried by colour or by an unlabelled token alone.
+MEMORY_STATE_LABELS = {
+    "unstarted": "Unstarted (not success)",
+    "open": "Open (not success)",
+    "completed": "Completed (success)",
+    "failed": "Failed (not success)",
+    "cancelled": "Cancelled (not success)",
+    "blocked": "Blocked (not success)",
+    "missing_terminal": "Missing terminal (not success)",
+    "unknown_outcome": "Unknown outcome (not success)",
+    "unsupported": "Unsupported (not success)",
+}
+
+MEMORY_SUCCESS_STATE = "completed"
+
+# Textual provenance labels. ``user-confirmed`` is declared because the taxonomy
+# is four-valued, and it is reported as unsupported rather than presented as
+# something a record can currently justify.
+MEMORY_PROVENANCE_LABELS = {
+    "observed": "Observed",
+    "reported": "Reported by the source",
+    "inferred": "Inferred",
+    "user-confirmed": "User-confirmed (unsupported)",
+}
+
+MEMORY_RECORD_KIND_LABELS = {
+    "run": "Run",
+    "project": "Project",
+    "work_package": "Work package",
+    "event": "Run event",
+    "evidence": "Evidence",
+    "decision": "Decision",
+    "change_set": "Change set",
+    "code_entity_link": "Code entity",
+    "rejection": "Refused record",
+    "quarantine": "Quarantined redelivery",
+}
+
+# The capture origin is never stored, so it is only ever a caller declaration.
+MEMORY_ORIGIN_DECLARED_LABELS = {
+    "live": "Live (declared by caller)",
+    "offline": "Offline deterministic (declared by caller)",
+}
+MEMORY_ORIGIN_UNDECLARED = "Origin not recorded (no claim is live observation)"
+
+
+def memory_state_label(state: Any) -> str:
+    """Return the textual label for a run state; unknown tokens pass through."""
+    if isinstance(state, str) and state in MEMORY_STATE_LABELS:
+        return MEMORY_STATE_LABELS[state]
+    return str(state)
+
+
+def memory_state_is_success(state: Any) -> bool:
+    """Return True only for the one state the contract reports as success."""
+    return state == MEMORY_SUCCESS_STATE
+
+
+def memory_provenance_label(provenance: Any) -> str:
+    """Return the textual label for a claim provenance."""
+    if isinstance(provenance, str) and provenance in MEMORY_PROVENANCE_LABELS:
+        return MEMORY_PROVENANCE_LABELS[provenance]
+    return str(provenance)
+
+
+def memory_record_kind_label(kind: Any) -> str:
+    """Return the textual label for a record kind."""
+    if isinstance(kind, str) and kind in MEMORY_RECORD_KIND_LABELS:
+        return MEMORY_RECORD_KIND_LABELS[kind]
+    return str(kind)
+
+
+def memory_origin_label(origin: Any) -> str:
+    """Return the textual label for a declared capture origin."""
+    if isinstance(origin, str) and origin in MEMORY_ORIGIN_DECLARED_LABELS:
+        return MEMORY_ORIGIN_DECLARED_LABELS[origin]
+    return MEMORY_ORIGIN_UNDECLARED
+
+
+def build_get_memory_documents_request(
+    correlation_id: str,
+    run_ids: Optional[List[str]] = None,
+    documents: Optional[List[str]] = None,
+    origin: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a bounded ``get_memory_documents`` request.
+
+    No path is ever sent: the boundary roots every store itself, so a client
+    cannot influence which directory is read.
+    """
+    request: Dict[str, Any] = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_MEMORY_DOCUMENTS,
+    }
+    if run_ids is not None:
+        request["runs"] = list(run_ids)
+    if documents is not None:
+        request["documents"] = list(documents)
+    if origin is not None:
+        request["origin"] = origin
+    return request
+
+
+def build_get_memory_record_request(
+    correlation_id: str, run_id: str, kind: str, record_id: str
+) -> Dict[str, Any]:
+    """Build an exact ``get_memory_record`` request for one typed identity."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_MEMORY_RECORD,
+        "run_id": run_id,
+        "kind": kind,
+        "record_id": record_id,
+    }
+
+
+def memory_run_rows(result: Any) -> List[Dict[str, Any]]:
+    """Return one bounded display row per projected run, in response order."""
+    rows: List[Dict[str, Any]] = []
+    if not isinstance(result, dict):
+        return rows
+    document_sets = result.get("document_sets")
+    if not isinstance(document_sets, list):
+        return rows
+    for index, document_set in enumerate(document_sets):
+        run = document_set.get("run") if isinstance(document_set, dict) else None
+        if not isinstance(run, dict):
+            continue
+        documents = document_set.get("documents")
+        rows.append(
+            {
+                "row_id": "memory-run:%d:%s" % (index, run.get("run_id")),
+                "run_id": run.get("run_id"),
+                "state": run.get("state"),
+                "state_label": memory_state_label(run.get("state")),
+                "success": bool(run.get("success")),
+                "stale": bool(run.get("stale")),
+                "stale_reasons": list(run.get("stale_reasons") or []),
+                "baseline_status": (run.get("baseline") or {}).get("status"),
+                "document_types": sorted(documents) if isinstance(documents, dict) else [],
+            }
+        )
+    return rows
+
+
+def claim_rows(document_set: Any, document_type: str) -> List[Dict[str, Any]]:
+    """Return the display rows of one document's claims, in document order.
+
+    Row identity and reference identity both come from the claim, so a surface
+    never has to derive a target from row position.
+    """
+    rows: List[Dict[str, Any]] = []
+    if not isinstance(document_set, dict):
+        return rows
+    documents = document_set.get("documents")
+    document = documents.get(document_type) if isinstance(documents, dict) else None
+    if not isinstance(document, dict):
+        return rows
+    run = document_set.get("run") if isinstance(document_set.get("run"), dict) else {}
+    for claim in document.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        rows.append(
+            {
+                "claim_id": claim.get("id"),
+                "text": claim.get("statement"),
+                "provenance": claim.get("provenance"),
+                "provenance_label": memory_provenance_label(claim.get("provenance")),
+                "run_id": run.get("run_id"),
+                "run_state": run.get("state"),
+                "run_state_label": memory_state_label(run.get("state")),
+                "limitations": list(claim.get("limitations") or []),
+                "targets": claim_targets(claim),
+            }
+        )
+    return rows
+
+
+def claim_targets(claim: Any) -> List[Dict[str, Any]]:
+    """Return the support targets a claim exposes, resolved and unresolved.
+
+    A resolved target is exactly the typed identity a record request names. An
+    unresolved target keeps the *requested* identity and its bounded reason and
+    is marked non-actionable, so missing support stays visible instead of being
+    dropped or silently substituted.
+    """
+    targets: List[Dict[str, Any]] = []
+    if not isinstance(claim, dict):
+        return targets
+    for link in claim.get("links") or []:
+        if not isinstance(link, dict):
+            continue
+        targets.append(
+            {
+                "target_id": "target:%s:%s" % (link.get("kind"), link.get("id")),
+                "kind": link.get("kind"),
+                "kind_label": memory_record_kind_label(link.get("kind")),
+                "record_id": link.get("id"),
+                "resolved": True,
+                "reason": None,
+            }
+        )
+    for missing in claim.get("unresolved") or []:
+        if not isinstance(missing, dict):
+            continue
+        targets.append(
+            {
+                "target_id": "target:%s:%s" % (missing.get("kind"), missing.get("id")),
+                "kind": missing.get("kind"),
+                "kind_label": memory_record_kind_label(missing.get("kind")),
+                "record_id": missing.get("id"),
+                "resolved": False,
+                "reason": missing.get("reason"),
+            }
+        )
+    return targets
+
+
+def record_detail_rows(view: Any) -> List[Dict[str, Any]]:
+    """Return the labelled field rows of one resolved support record.
+
+    A field the projector marks as source-reported is labelled as such, and a
+    content digest is presented only as presence: the digest value never left
+    the boundary, so a surface cannot display it even by accident.
+    """
+    rows: List[Dict[str, Any]] = []
+    if not isinstance(view, dict):
+        return rows
+    reported = view.get("reported_fields")
+    reported_names = set(reported) if isinstance(reported, list) else set()
+    fields = view.get("fields")
+    if not isinstance(fields, dict):
+        return rows
+    for name in sorted(fields):
+        value = fields[name]
+        rows.append(
+            {
+                "field": name,
+                "value": value,
+                "reported": name in reported_names,
+                "reported_label": "Reported by the source" if name in reported_names else None,
+            }
+        )
+    if view.get("digest_present") is not None:
+        rows.append(
+            {
+                "field": "digest",
+                "value": "present" if view.get("digest_present") else "absent",
+                "reported": False,
+                "reported_label": None,
+            }
+        )
+    return rows
+
+
+def format_memory_record(view: Any) -> str:
+    """Return a bounded plain-text rendering of one support record."""
+    if not isinstance(view, dict):
+        return ""
+    lines = [
+        "%s %s" % (memory_record_kind_label(view.get("kind")), view.get("record_id")),
+        "Owning run: %s" % view.get("run_id"),
+    ]
+    for row in record_detail_rows(view):
+        lines.append(
+            "%s: %s" % (row["field"], contract.dumps(row["value"]) if not isinstance(
+                row["value"], str) else row["value"])
+        )
+    return "\n".join(lines)
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -2210,4 +2518,24 @@ __all__ = [
     "default_fixture_root",
     "resolve_backend_command",
     "resolve_credential_host_command",
+    "MEMORY_DOCUMENT_TYPES",
+    "MEMORY_RECORD_KINDS",
+    "MEMORY_STATE_LABELS",
+    "MEMORY_SUCCESS_STATE",
+    "MEMORY_PROVENANCE_LABELS",
+    "MEMORY_RECORD_KIND_LABELS",
+    "MEMORY_ORIGIN_DECLARED_LABELS",
+    "MEMORY_ORIGIN_UNDECLARED",
+    "memory_state_label",
+    "memory_state_is_success",
+    "memory_provenance_label",
+    "memory_record_kind_label",
+    "memory_origin_label",
+    "build_get_memory_documents_request",
+    "build_get_memory_record_request",
+    "memory_run_rows",
+    "claim_rows",
+    "claim_targets",
+    "record_detail_rows",
+    "format_memory_record",
 ]

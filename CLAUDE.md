@@ -13,7 +13,9 @@ execution at scan time.
   allowed provider vocabulary) and `hook_capture.py` (collector and importer).
   The M4.3 evidence-linked document projector is `memory_docs.py`: a pure
   projection over normalized records that never reads raw hook JSON, a
-  transcript or a log.
+  transcript or a log. The desktop reaches Memory only through the two
+  read-only `boundary.py` actions `get_memory_documents` / `get_memory_record`
+  (contract 3.6.0); it must never import the Memory seam.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`.
 - `evidence/m4.2/` — the bounded record of the two authorized capture sessions

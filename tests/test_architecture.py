@@ -370,6 +370,91 @@ class ClientArchitectureTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(path), path)
 
 
+class MemoryReadBoundaryTests(unittest.TestCase):
+    """The Memory read path is boundary-owned, not desktop-owned (M4.3/v2a).
+
+    The desktop reaches Developer Memory only through the two read-only
+    protocol actions. These rules keep that true structurally: the shared
+    contract module pulls in nothing from the memory seam, so a client cannot
+    acquire memory access transitively, and the projector is reached only from
+    the boundary and the offline CLI.
+    """
+
+    # Modules allowed to import the projector.
+    _PROJECTOR_CALLERS = frozenset({"boundary", "memory_cli"})
+
+    def test_the_contract_module_does_not_reach_the_memory_seam(self):
+        imported = _imported_top_level_names(os.path.join(_SRC, "contract.py"))
+        self.assertTrue(
+            imported.isdisjoint(_MEMORY_SEAM),
+            f"hrca.contract reaches the memory seam: {sorted(imported & _MEMORY_SEAM)}",
+        )
+
+    def test_the_projector_is_reached_only_from_the_boundary_and_the_cli(self):
+        offenders = []
+        for name in sorted(os.listdir(_SRC)):
+            if not name.endswith(".py"):
+                continue
+            stem = name[:-3]
+            if stem in self._PROJECTOR_CALLERS or stem == _DOCS_MODULE:
+                continue
+            imported = _imported_top_level_names(os.path.join(_SRC, name))
+            if _DOCS_MODULE in imported:
+                offenders.append(stem)
+        self.assertEqual(
+            [], offenders, "these modules import the projector: %s" % offenders
+        )
+
+    def test_only_the_boundary_reads_memory_stores(self):
+        # ``memory_store`` is imported by the boundary (the read path) and by
+        # the offline capture importer. No other module may reach a store.
+        allowed = {"boundary", "hook_capture", "memory_store", "memory_cli"}
+        offenders = []
+        for name in sorted(os.listdir(_SRC)):
+            if not name.endswith(".py"):
+                continue
+            stem = name[:-3]
+            if stem in allowed:
+                continue
+            imported = _imported_top_level_names(os.path.join(_SRC, name))
+            if "memory_store" in imported:
+                offenders.append(stem)
+        self.assertEqual(
+            [], offenders, "these modules import the memory store: %s" % offenders
+        )
+
+    def test_the_boundary_roots_memory_at_the_session_store_base(self):
+        with open(os.path.join(_SRC, "boundary.py"), "r", encoding="utf-8") as fh:
+            source = fh.read()
+        self.assertIn("memory_store.load(session.store_base", source)
+        self.assertIn("memory_store.list_runs(session.store_base", source)
+
+    def test_the_memory_handlers_never_take_a_path_from_the_request(self):
+        # Scoped to the Memory handlers only: the workspace document handler
+        # legitimately reads a request path, and conflating the two would make
+        # this rule meaningless.
+        path = os.path.join(_SRC, "boundary.py")
+        with open(path, "r", encoding="utf-8") as fh:
+            source = fh.read()
+        tree = ast.parse(source)
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name.startswith(
+                ("_memory", "_get_memory", "_bounded_memory", "_load_memory")
+            )
+        ]
+        self.assertTrue(functions, "the Memory handlers must exist")
+        for node in functions:
+            segment = ast.get_source_segment(source, node) or ""
+            for field in ("root", "path", "base", "store_base", "cwd",
+                          "transcript_path"):
+                forbidden = 'request.get("%s"' % field
+                with self.subTest(function=node.name, field=field):
+                    self.assertNotIn(forbidden, segment)
+
+
 def _stylesheet_calls(path: str) -> list:
     """Return every ``setStyleSheet(...)`` call in ``path`` (ast.Call nodes)."""
     with open(path, "r", encoding="utf-8") as fh:

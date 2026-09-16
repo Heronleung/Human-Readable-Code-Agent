@@ -183,7 +183,7 @@ meet the WCAG 4.5:1 contrast threshold in both palettes (checked by
 
 The contract (`hrca/contract.py`) defines:
 
-- `CONTRACT_VERSION` (`3.2.0`) — any other version is rejected,
+- `CONTRACT_VERSION` (`3.6.0`) — any other version is rejected,
 - the request/result envelopes and the client-generated `correlation_id`
   echoed verbatim in every response,
 - the allowed read-only action names — the scan pipeline (`scan`, `read`,
@@ -197,7 +197,13 @@ The contract (`hrca/contract.py`) defines:
   never echo caller text, requested paths or file contents,
 - `MAX_MESSAGE_BYTES` (1 MiB) plus the workspace limits `MAX_TREE_ENTRIES`,
   `MAX_TREE_DEPTH` and `MAX_DOCUMENT_BYTES` (64 KiB) that bound tree and
-  document output.
+  document output,
+- the bounded Memory read actions (`get_memory_documents`, `get_memory_record`)
+  added in 3.6.0, with their own limits (`MAX_MEMORY_RUNS`,
+  `MAX_MEMORY_ID_CHARS`) and error codes (`memory_run_not_found`,
+  `memory_record_not_found`, `memory_kind_not_supported`, `memory_not_readable`).
+  The increment is additive: every earlier action keeps its name, meaning and
+  version rule.
 
 The workspace policy (`hrca/workspace.py`) lists every ordinary file and folder
 below the accepted root — not only Python files — while still excluding
@@ -819,6 +825,42 @@ fingerprint of content this layer must not expose.
 
 Reprojecting identical input is byte-stable, so a document can be diffed or
 hashed and its evidence references stay stable across runs.
+
+### The Memory read boundary (M4.3/v2a)
+
+The desktop is architecturally prohibited from importing the Memory seam, so it
+reaches Developer Memory only through two read-only protocol actions added in
+contract `3.6.0`:
+
+| Action | Request | Result |
+|---|---|---|
+| `get_memory_documents` | optional `runs`, `documents`, `origin` | the bounded document sets of at most `MAX_MEMORY_RUNS` runs |
+| `get_memory_record` | `run_id`, `kind`, `record_id` | exactly one typed supporting record, through the projector's allowlist |
+
+**No request carries a path.** Every store is rooted at the boundary-owned
+`session.store_base` — the same app-data root the Twin, version and library
+stores use — so a caller cannot influence which directory is read; a supplied
+`root`/`path`/`store_base` field is ignored, and an architecture test asserts the
+Memory handlers never read one.
+
+**Resolution is by exact typed identity** `(run_id, kind, record_id)` inside the
+named run, so a record id belonging to another run cannot resolve and no
+substitute record is ever returned. An unknown run, an unsupported kind and a
+missing id each fail closed with a bounded, catalogue-drawn error that never
+echoes caller text or stored content. A store the projector does not understand
+is refused rather than half-projected.
+
+**The returned view is an explicit allowlist.** It is built by iterating the
+allowlist and reading named fields — never by iterating the record — so a field
+not named there cannot cross even if the contract later stores it. An event's
+hook payload, a content fingerprint, a quarantine fingerprint and an evidence
+digest are all absent; evidence exposes a `digest_present` boolean only, so the
+digest value never leaves the boundary.
+
+`client_core` mirrors the vocabulary the desktop needs — document types, record
+kinds, and textual state, provenance and origin labels — because the desktop
+cannot import the seam. A boundary test asserts the mirror stays identical to the
+projector's own vocabulary, so the two cannot drift apart silently.
 
 ## Scope and limitations
 
