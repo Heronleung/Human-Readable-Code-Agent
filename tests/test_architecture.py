@@ -70,7 +70,11 @@ _DOCUMENT_SEAM = frozenset({"document", "version_store"})
 # offline Developer Memory contract is the read/replay authority for bounded
 # coding-agent runs, is not a capture path, and exposes no Memory UI. The
 # desktop reaches it only through a later, explicitly designed boundary.
-_MEMORY_SEAM = frozenset({"memory", "memory_store", "memory_cli"})
+_MEMORY_SEAM = frozenset({"memory", "memory_store", "memory_cli", "memory_docs"})
+
+# M4.3 evidence-linked document projection. It reads normalized records only, so
+# it may not reach the capture seam or the storage owner.
+_DOCS_MODULE = "memory_docs"
 
 # M4.2 Claude Code capture seam modules. These own the only provider-specific
 # mapping in the project and the only hook collector. A client must never
@@ -80,7 +84,7 @@ _CAPTURE_SEAM = frozenset({"claude_code_hooks", "hook_capture"})
 # Modules that make up the offline Developer Memory product surface. The
 # canonical domain must stay free of adapter vocabulary, so none of these may
 # import the capture seam.
-_MEMORY_PRODUCT_MODULES = ("memory", "memory_store", "memory_cli")
+_MEMORY_PRODUCT_MODULES = ("memory", "memory_store", "memory_cli", "memory_docs")
 
 
 def _imported_top_level_names(path: str) -> set:
@@ -266,7 +270,7 @@ class ClientArchitectureTests(unittest.TestCase):
     def test_memory_modules_do_not_import_network(self):
         # The memory domain and its store are offline: they never open a
         # socket, so an offline replay stays network-free.
-        for name in ("memory", "memory_store", "memory_cli"):
+        for name in ("memory", "memory_store", "memory_cli", "memory_docs"):
             path = os.path.join(_SRC, name + ".py")
             imported = _imported_top_level_names(path)
             self.assertTrue(
@@ -274,6 +278,28 @@ class ClientArchitectureTests(unittest.TestCase):
                 f"hrca.{name} imports network primitives: "
                 f"{sorted(imported & _NETWORK_MODULES)}",
             )
+
+    def test_the_projector_reads_only_normalized_records(self):
+        # M4.3 projects documents from stores. If it could reach the capture
+        # seam it could read raw hook JSON, and the document would stop being a
+        # view of the contract's records.
+        imported = _imported_top_level_names(os.path.join(_SRC, _DOCS_MODULE + ".py"))
+        self.assertTrue(
+            imported.isdisjoint(_CAPTURE_SEAM | {"memory_store", "os", "subprocess"}),
+            f"hrca.{_DOCS_MODULE} reaches beyond normalized records: {sorted(imported)}",
+        )
+
+    def test_the_projector_does_no_io(self):
+        # A projector that opened a file could read a transcript or a log, which
+        # is exactly the source this layer must not have.
+        with open(os.path.join(_SRC, _DOCS_MODULE + ".py"), "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        called = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertNotIn("open", called)
 
     def test_capture_modules_do_not_import_network_or_spawn(self):
         # Capture reads one payload from stdin and writes bounded records. It

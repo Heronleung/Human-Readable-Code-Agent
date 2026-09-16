@@ -11,6 +11,9 @@ execution at scan time.
   `memory_store.py` (sole storage owner) and `memory_cli.py` (offline replay).
   The M4.2 Claude Code port is `claude_code_hooks.py` (adapter: the only module
   allowed provider vocabulary) and `hook_capture.py` (collector and importer).
+  The M4.3 evidence-linked document projector is `memory_docs.py`: a pure
+  projection over normalized records that never reads raw hook JSON, a
+  transcript or a log.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`.
 - `evidence/m4.2/` — the bounded record of the two authorized capture sessions
@@ -29,6 +32,7 @@ uv run python -m unittest discover -s tests -v  # run the test suite
 uv run python -m hrca fixtures                  # scan the corpus, JSON to stdout
 uv run python -m hrca.memory_cli verify fixtures/memory  # replay the M4.1 corpus
 uv run python -m hrca.hook_capture report --spool evidence/m4.2/live/session-1  # M4.2 capture
+uv run python -m hrca.memory_cli project --base <store-dir>  # M4.3 documents
 ```
 
 ## Contract (Phase 1)

@@ -747,9 +747,78 @@ account.
 
 **M4.2 capture is not a product feature.** No hook installation, no background
 collector, no provider access and no Memory UI exist. Capture runs only when a
-caller explicitly configures hooks and points them at the collector. Summary
-generation, Search, Resume and evidence-linked human documents remain unbuilt
-(M4.3/M4.4).
+caller explicitly configures hooks and points them at the collector. Search,
+Resume and timeline remain unbuilt (M4.4); correction history, export and Code
+Twin linkage remain unbuilt (M4.5).
+
+## Evidence-linked documents (M4.3)
+
+`memory_docs.py` projects four developer documents from normalized records:
+**Session / Daily Summary**, **Change & Verification Record**, **Decision
+Record**, and **Known Issues & Next Actions**. It reads stores, never raw hook
+JSON, transcripts, logs or provider output.
+
+```bash
+uv run python -m hrca.memory_cli project --base <store-dir> [--origin live|offline]
+```
+
+### Document authority
+
+A document is a **view of records, never a source of truth**. Every material
+claim carries a provenance label and either resolves to a stored record identity
+or is reported as unresolved with a bounded reason. The projector assembles each
+statement from typed fields — there is no free-text generator — so a document
+cannot assert something no record supports.
+
+| Provenance | Meaning |
+|---|---|
+| `observed` | a value the contract validated and stored itself |
+| `reported` | source-supplied text the contract retained; not verified |
+| `inferred` | derived by the projector from stored records; not a stored fact |
+| `user-confirmed` | a correction a human confirmed |
+
+`user-confirmed` is **declared and unreachable**: no record type in schema
+`1.0.0` carries a human correction, so the projector reports the gap in
+`unsupported_provenance` rather than minting a label nothing justifies. A
+source's own report can never be upgraded to observed fact — a decision summary
+is always `reported`, and a terminal state is always `observed`.
+
+### Evidence links and fail-closed behaviour
+
+Every claim lists `links` (`run`, `event`, `evidence`, `decision`, `change_set`,
+`code_entity_link`, `rejection`, `quarantine`, `project`, `work_package`) and an
+`unresolved` list. A reference the store does not contain is never dropped and
+never guessed: it is reported with `claim references a record that is not present
+in the store`. A store whose schema version, generator or run record the
+projector does not recognise is refused outright rather than half-projected.
+
+### Retained limitations
+
+- **No baseline.** Schema `1.0.0` records no revision identity, so every document
+  reports `baseline.status: "unsupported"` instead of implying one.
+- **No capture origin.** The schema does not record whether a run came from a
+  live session or deterministic offline input. An operator may *declare* an
+  origin with `--origin`; that declaration is then `reported`, and the document
+  states that it is caller-declared. Without it, no claim may be read as
+  live-session observation — an offline typed `failed` run stays visibly offline.
+- **No verification result.** An artifact reference proves an artifact was named,
+  never that anything was verified.
+- **No adapter payload.** Documents stay source-neutral and render only canonical
+  record fields, so provider vocabulary cannot enter one.
+- **No clock.** No date is derived or rendered, so no "daily" bucket is invented
+  from timestamps; `project` takes an explicit, caller-ordered run set and M4.4
+  owns any timeline.
+
+### Redaction
+
+A document renders only fields the contract already redacted, bounded and
+path-policed. Content it dropped — prompt text, assistant text, tool responses,
+diagnostic text, transcript content — is not in a store and cannot reappear. An
+evidence digest is reported as *present*, never as a value, because a digest is a
+fingerprint of content this layer must not expose.
+
+Reprojecting identical input is byte-stable, so a document can be diffed or
+hashed and its evidence references stay stable across runs.
 
 ## Scope and limitations
 

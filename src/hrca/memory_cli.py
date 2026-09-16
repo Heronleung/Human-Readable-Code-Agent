@@ -22,6 +22,10 @@ Commands
 ``migrate <store.json>``
     Load and migrate one store fixture; report the migrated state or the
     explicit blocker.
+``project --base <dir>``
+    Project the evidence-linked documents of one or more stored runs (M4.3).
+    Reads normalized stores through the storage owner and writes canonical JSON
+    to stdout; it never reads a raw hook payload, a transcript or a log.
 """
 
 from __future__ import annotations
@@ -33,6 +37,8 @@ import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import memory
+from . import memory_docs
+from . import memory_store
 
 
 def _read_json(path: str) -> Any:
@@ -135,6 +141,36 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_project(args: argparse.Namespace) -> int:
+    """Project the evidence-linked documents of one or more stored runs."""
+    if args.run:
+        run_ids = list(args.run)
+    else:
+        run_ids = [s["run_id"] for s in memory_store.list_runs(args.base)]
+    if args.limit is not None:
+        run_ids = run_ids[: args.limit]
+
+    stores: List[Dict[str, Any]] = []
+    for run_id in run_ids:
+        store, err = memory_store.load(args.base, run_id)
+        if store is None:
+            sys.stdout.write(f"blocked\t{run_id}\t{err or 'no such run store'}\n")
+            return 1
+        stores.append(store)
+    if not stores:
+        sys.stdout.write(f"blocked\tno run stores under {args.base}\n")
+        return 1
+
+    document_sets, err, _ = memory_docs.project_stores(
+        stores, evidence_origin=args.origin, document_types=args.document
+    )
+    if document_sets is None:
+        sys.stdout.write(f"blocked\t{err}\n")
+        return 1
+    sys.stdout.write(memory_docs.render_sets(document_sets) + "\n")
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """Run one memory-contract command. Returns an exit code."""
     parser = argparse.ArgumentParser(
@@ -158,6 +194,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     migrate_parser = sub.add_parser("migrate", help="load and migrate one store fixture")
     migrate_parser.add_argument("store", help="path to a store fixture JSON file")
     migrate_parser.set_defaults(func=_cmd_migrate)
+
+    project_parser = sub.add_parser(
+        "project", help="project evidence-linked documents for stored runs"
+    )
+    project_parser.add_argument("--base", required=True, help="store base directory")
+    project_parser.add_argument(
+        "--run", action="append", default=None, help="run id to project; repeatable"
+    )
+    project_parser.add_argument("--limit", type=int, default=None)
+    project_parser.add_argument(
+        "--document", action="append", default=None,
+        choices=list(memory_docs.DOCUMENT_TYPES), help="document type; repeatable",
+    )
+    project_parser.add_argument(
+        "--origin", default=None, choices=["live", "offline"],
+        help="declare the capture origin; recorded as caller-declared, not stored",
+    )
+    project_parser.set_defaults(func=_cmd_project)
 
     args = parser.parse_args(argv)
     return args.func(args)
