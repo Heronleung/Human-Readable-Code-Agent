@@ -72,6 +72,16 @@ _DOCUMENT_SEAM = frozenset({"document", "version_store"})
 # desktop reaches it only through a later, explicitly designed boundary.
 _MEMORY_SEAM = frozenset({"memory", "memory_store", "memory_cli"})
 
+# M4.2 Claude Code capture seam modules. These own the only provider-specific
+# mapping in the project and the only hook collector. A client must never
+# import them: capture is configured and driven outside the desktop shell.
+_CAPTURE_SEAM = frozenset({"claude_code_hooks", "hook_capture"})
+
+# Modules that make up the offline Developer Memory product surface. The
+# canonical domain must stay free of adapter vocabulary, so none of these may
+# import the capture seam.
+_MEMORY_PRODUCT_MODULES = ("memory", "memory_store", "memory_cli")
+
 
 def _imported_top_level_names(path: str) -> set:
     with open(path, "r", encoding="utf-8") as fh:
@@ -215,6 +225,44 @@ class ClientArchitectureTests(unittest.TestCase):
                     f"{sorted(imported & _MEMORY_SEAM)}",
                 )
 
+    def test_client_modules_do_not_import_capture_seam(self):
+        # Capture is a local, explicitly configured operation. The desktop
+        # shell must not reach it, so no client can start a capture.
+        for module, path in _CLIENT_MODULES.items():
+            with self.subTest(module=module):
+                imported = _imported_top_level_names(path)
+                self.assertTrue(
+                    imported.isdisjoint(_CAPTURE_SEAM),
+                    f"{module} imports the capture seam: "
+                    f"{sorted(imported & _CAPTURE_SEAM)}",
+                )
+
+    def test_the_canonical_domain_does_not_import_the_adapter(self):
+        # The M4.1 contract must stay source-neutral: if the canonical domain
+        # could see the provider adapter, provider vocabulary would leak into
+        # canonical records.
+        for name in _MEMORY_PRODUCT_MODULES:
+            with self.subTest(module=name):
+                imported = _imported_top_level_names(os.path.join(_SRC, name + ".py"))
+                self.assertTrue(
+                    imported.isdisjoint(_CAPTURE_SEAM),
+                    f"hrca.{name} imports the provider adapter: "
+                    f"{sorted(imported & _CAPTURE_SEAM)}",
+                )
+
+    def test_the_adapter_does_not_import_the_storage_or_the_client(self):
+        # The adapter is a pure translation: it may read the domain, never the
+        # store, the shell or the boundary.
+        imported = _imported_top_level_names(
+            os.path.join(_SRC, "claude_code_hooks.py")
+        )
+        self.assertTrue(
+            imported.isdisjoint(
+                {"memory_store", "client", "client_core", "boundary", "style"}
+            ),
+            f"the adapter imports beyond the domain: {sorted(imported)}",
+        )
+
     def test_memory_modules_do_not_import_network(self):
         # The memory domain and its store are offline: they never open a
         # socket, so an offline replay stays network-free.
@@ -226,6 +274,23 @@ class ClientArchitectureTests(unittest.TestCase):
                 f"hrca.{name} imports network primitives: "
                 f"{sorted(imported & _NETWORK_MODULES)}",
             )
+
+    def test_capture_modules_do_not_import_network_or_spawn(self):
+        # Capture reads one payload from stdin and writes bounded records. It
+        # never opens a socket and never spawns a process, so no capture step
+        # can reach a provider or run a command.
+        for name in sorted(_CAPTURE_SEAM):
+            with self.subTest(module=name):
+                imported = _imported_top_level_names(os.path.join(_SRC, name + ".py"))
+                self.assertTrue(
+                    imported.isdisjoint(_NETWORK_MODULES),
+                    f"hrca.{name} imports network primitives: "
+                    f"{sorted(imported & _NETWORK_MODULES)}",
+                )
+                self.assertTrue(
+                    imported.isdisjoint({"subprocess", "multiprocessing"}),
+                    f"hrca.{name} can spawn a process: {sorted(imported)}",
+                )
 
     def test_document_modules_do_not_import_network(self):
         # The document domain and its store are offline: they never open a

@@ -1,0 +1,289 @@
+{
+  "capture_environment": {
+    "entrypoint": "claude -p --session-id <pinned> --settings <temp file>",
+    "hook_configuration": "flag tier (--settings); no user or project settings written",
+    "hook_events_installed": [
+      "PostToolUse",
+      "PostToolUseFailure",
+      "PreToolUse",
+      "SessionEnd",
+      "SessionStart",
+      "Stop",
+      "StopFailure",
+      "UserPromptSubmit"
+    ],
+    "retries": 0,
+    "session_starts": 2
+  },
+  "live": {
+    "session-1": {
+      "change_sets": 1,
+      "client": {
+        "cli_exit_code": 0,
+        "duration_ms": 4774,
+        "is_error": false,
+        "num_turns": 2,
+        "permission_denials": 0,
+        "session_id": "4d3f9a10-6b21-4c8e-9f01-2a7b5c8d9e10",
+        "stop_reason": "end_turn",
+        "subtype": "success",
+        "terminal_reason": "completed",
+        "type": "result"
+      },
+      "decisions": 0,
+      "events": 6,
+      "evidence": 7,
+      "observed_hook_sequence": [
+        {
+          "event_type": "run_started",
+          "hook_event": "SessionStart",
+          "outcome": null
+        },
+        {
+          "event_type": "run_started",
+          "hook_event": "SessionStart",
+          "outcome": null
+        },
+        {
+          "event_type": "run_progress",
+          "hook_event": "UserPromptSubmit",
+          "outcome": null
+        },
+        {
+          "event_type": "run_progress",
+          "hook_event": "PreToolUse",
+          "outcome": null
+        },
+        {
+          "event_type": "run_progress",
+          "hook_event": "PostToolUse",
+          "outcome": null
+        },
+        {
+          "event_type": "run_terminated",
+          "hook_event": "Stop",
+          "outcome": "completed"
+        },
+        {
+          "event_type": "stream_ended",
+          "hook_event": "SessionEnd",
+          "outcome": null
+        }
+      ],
+      "quarantines": 0,
+      "rejections": 0,
+      "report": {
+        "adapter": "claude-code",
+        "capture_rejections": 0,
+        "concluded_by_agent": true,
+        "events": 7,
+        "ingest_outcomes": {
+          "accepted": 6,
+          "duplicate": 1
+        },
+        "root_digest": "sha256:81047b26ea2c5af04894c91d70cd4133ee2ea3ceb1c4e52d41a3b3508367e2c9",
+        "session_end_reason": null,
+        "terminated_from_session_end": false,
+        "unmodelled_events": [],
+        "unsupported_events": []
+      },
+      "run_id": "run:claude-code:4d3f9a10-6b21-4c8e-9f01-2a7b5c8d9e10:run",
+      "state": "completed",
+      "status": "imported",
+      "success": true
+    },
+    "session-2": {
+      "change_sets": 1,
+      "client": {
+        "cli_exit_code": 0,
+        "duration_ms": 428,
+        "is_error": false,
+        "num_turns": 0,
+        "permission_denials": 0,
+        "session_id": "7c1e2b30-4a52-4d9f-8b31-6e2f8a0c4d21",
+        "stop_reason": null,
+        "subtype": "success",
+        "type": "result"
+      },
+      "decisions": 1,
+      "events": 4,
+      "evidence": 4,
+      "observed_hook_sequence": [
+        {
+          "event_type": "run_started",
+          "hook_event": "SessionStart",
+          "outcome": null
+        },
+        {
+          "event_type": "run_progress",
+          "hook_event": "UserPromptSubmit",
+          "outcome": null
+        },
+        {
+          "event_type": "stream_ended",
+          "hook_event": "SessionEnd",
+          "outcome": null
+        }
+      ],
+      "quarantines": 0,
+      "rejections": 1,
+      "report": {
+        "adapter": "claude-code",
+        "capture_rejections": 0,
+        "concluded_by_agent": false,
+        "events": 4,
+        "ingest_outcomes": {
+          "accepted": 4
+        },
+        "root_digest": "sha256:81047b26ea2c5af04894c91d70cd4133ee2ea3ceb1c4e52d41a3b3508367e2c9",
+        "session_end_reason": "other",
+        "terminated_from_session_end": true,
+        "unmodelled_events": [],
+        "unsupported_events": []
+      },
+      "run_id": "run:claude-code:7c1e2b30-4a52-4d9f-8b31-6e2f8a0c4d21:run",
+      "state": "unknown_outcome",
+      "status": "imported",
+      "success": false
+    }
+  },
+  "offline": {
+    "conflicting": {
+      "change_sets": 1,
+      "collector_exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "decisions": 0,
+      "events": 4,
+      "evidence": 5,
+      "quarantines": 1,
+      "rejections": 0,
+      "report": {
+        "adapter": "claude-code",
+        "capture_rejections": 0,
+        "concluded_by_agent": true,
+        "events": 5,
+        "ingest_outcomes": {
+          "accepted": 4,
+          "quarantined": 1
+        },
+        "root_digest": "sha256:d3f65ab62a7758c1ee5d0de9279ae9fbb49745e5435c7ed43b5ffdfcf1bd159d",
+        "session_end_reason": null,
+        "terminated_from_session_end": false,
+        "unmodelled_events": [],
+        "unsupported_events": []
+      },
+      "run_id": "run:claude-code:0f0f0f0f-1111-4222-8333-444444444444:run",
+      "state": "completed",
+      "status": "imported",
+      "success": true
+    },
+    "malformed": {
+      "change_sets": 1,
+      "collector_exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "decisions": 0,
+      "events": 3,
+      "evidence": 4,
+      "quarantines": 0,
+      "rejections": 0,
+      "report": {
+        "adapter": "claude-code",
+        "capture_rejections": 4,
+        "concluded_by_agent": true,
+        "events": 3,
+        "ingest_outcomes": {
+          "accepted": 3
+        },
+        "root_digest": "sha256:d3f65ab62a7758c1ee5d0de9279ae9fbb49745e5435c7ed43b5ffdfcf1bd159d",
+        "session_end_reason": null,
+        "terminated_from_session_end": false,
+        "unmodelled_events": [],
+        "unsupported_events": []
+      },
+      "run_id": "run:claude-code:0f0f0f0f-2222-4222-8333-444444444444:run",
+      "state": "completed",
+      "status": "imported",
+      "success": true
+    },
+    "unmodelled": {
+      "change_sets": 1,
+      "collector_exit_codes": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "decisions": 0,
+      "events": 4,
+      "evidence": 5,
+      "quarantines": 0,
+      "rejections": 0,
+      "report": {
+        "adapter": "claude-code",
+        "capture_rejections": 0,
+        "concluded_by_agent": true,
+        "events": 4,
+        "ingest_outcomes": {
+          "accepted": 4
+        },
+        "root_digest": "sha256:d3f65ab62a7758c1ee5d0de9279ae9fbb49745e5435c7ed43b5ffdfcf1bd159d",
+        "session_end_reason": null,
+        "terminated_from_session_end": false,
+        "unmodelled_events": [
+          "Notification"
+        ],
+        "unsupported_events": []
+      },
+      "run_id": "run:claude-code:0f0f0f0f-3333-4222-8333-444444444444:run",
+      "state": "completed",
+      "status": "imported",
+      "success": true
+    },
+    "unsupported": {
+      "change_sets": 1,
+      "collector_exit_codes": [
+        0,
+        0
+      ],
+      "decisions": 0,
+      "events": 1,
+      "evidence": 2,
+      "quarantines": 0,
+      "rejections": 1,
+      "report": {
+        "adapter": "claude-code",
+        "capture_rejections": 0,
+        "concluded_by_agent": false,
+        "events": 2,
+        "ingest_outcomes": {
+          "accepted": 1,
+          "rejected": 1
+        },
+        "root_digest": "sha256:d3f65ab62a7758c1ee5d0de9279ae9fbb49745e5435c7ed43b5ffdfcf1bd159d",
+        "session_end_reason": null,
+        "terminated_from_session_end": false,
+        "unmodelled_events": [],
+        "unsupported_events": [
+          "SomethingBrandNew"
+        ]
+      },
+      "run_id": "run:claude-code:0f0f0f0f-4444-4222-8333-444444444444:run",
+      "state": "unsupported",
+      "status": "imported",
+      "success": false
+    }
+  },
+  "schema_version": "1.0.0"
+}

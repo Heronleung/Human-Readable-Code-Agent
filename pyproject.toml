@@ -25,6 +25,7 @@ hrca-backend = "hrca.boundary:main"
 hrca-client = "hrca.client:main"
 hrca-provider = "hrca.provider_cli:main"
 hrca-memory = "hrca.memory_cli:main"
+hrca-hooks = "hrca.hook_capture:main"
 
 # Optional extras keep the deterministic core and its tests installable without
 # Qt. The desktop extra adds PySide6; the packaging extra adds PyInstaller for

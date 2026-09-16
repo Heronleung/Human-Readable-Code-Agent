@@ -650,16 +650,94 @@ missing-terminal, empty, unknown-outcome, unsupported-event, invalid-transition,
 malformed, duplicate, conflicting, out-of-order and privacy sessions;
 `stores/` covers a supported older schema and an unsupported one.
 
-### Future adapter port
+### Adapter port
 
 An adapter's entire surface is one bounded `SESSION_KEYS` mapping —
 `adapter`, `session_id`, `run_key`, `project`, `work_package`, `events` — whose
 events use the bounded `SOURCE_EVENT_KEYS` contract. Everything outside that
-shape is ignored and nothing outside it is reconstructed. M4.2 will map
-documented Claude Code hook JSON onto this shape in an adapter module that the
-core never imports; a hook's `transcript_path` becomes an `evidence`
-`artifact_ref` only, which is the whole of M4.1's permission to reference a
-transcript.
+shape is ignored and nothing outside it is reconstructed. M4.2 delivers the
+first port of that surface: documented Claude Code hook JSON, mapped in an
+adapter module the core never imports. A hook's `transcript_path` becomes an
+`evidence` `artifact_ref` only, which is the whole of M4.1's permission to
+reference a transcript.
+
+## Claude Code hook capture and import (M4.2)
+
+`claude_code_hooks.py` translates documented Claude Code hook payloads onto the
+M4.1 boundary; `hook_capture.py` is the smallest local collector that feeds it.
+The canonical domain stays source-neutral — no provider name reaches a canonical
+record, and the core never imports the adapter. The capture seam is a new
+architecture rule, enforced like the existing ones.
+
+### Hook-event map
+
+Eight events are installed and modelled: `SessionStart` → `run_started`;
+`UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `PostToolUseFailure` →
+`run_progress`; `Stop` (with `stop_hook_active` false) → `run_terminated` /
+`completed`; `StopFailure` → `run_terminated` / `failed`; `SessionEnd` →
+`stream_ended`. A continuation `Stop` is progress, never a conclusion.
+
+Terminal state is decided only by typed fields. A `SessionEnd` reached without a
+conclusion is terminated from the documented `reason`: `clear`, `resume`,
+`logout` and `prompt_input_exit` mean cancelled; anything else — including the
+documented catch-all `other` — is carried through as an explicit **unrecognized**
+outcome, which the contract reports as `unknown_outcome`. No message text,
+command text, timestamp order or agent narrative can decide a terminal state.
+Every other event the client documents is disclosed as an omission, and an event
+outside the documented surface is fail-closed.
+
+### Capture posture
+
+Capture is offline and explicitly configured. The collector reads one hook
+payload from stdin, validates it, translates and redacts it **in memory**, and
+appends only the resulting bounded records to a spool. Raw hook JSON is never
+written anywhere. Redaction and bounding happen before persistence, so a spool
+and a store hold nothing that has not already been through the M4.1 policy.
+
+Dropped before anything is written: prompt text, assistant message text, tool
+responses and error text (a SHA-256 digest and a character count survive
+instead); the transcript (a bounded reference only, and stored with no location
+at all when it sits outside the session root); the session root as an absolute
+path (the spool keeps a digest); every path outside the session root; and any
+unrecognized tool argument, whose **name** is disclosed while its value is
+dropped. Each event carries an explicit account of the documented fields present,
+the documented fields missing, the fields dropped, and the field names this
+adapter does not recognize.
+
+Tool identity comes from the client's own `tool_use_id` and prompt identity from
+`prompt_id`, so identity is independent of observed content — which is what lets
+a redelivery whose content changed be recognized as a conflict instead of being
+accepted as a new event.
+
+### Commands
+
+```bash
+uv run python -m hrca.hook_capture collect --spool <dir> --root <session-root>
+uv run python -m hrca.hook_capture report  --spool <dir>
+uv run python -m hrca.hook_capture import  --spool <dir> [--base <dir>]
+uv run python -m hrca.hook_capture cleanup --spool <dir>
+```
+
+Re-importing a spool is deterministic and byte-stable; a spool belongs to
+exactly one session and refuses a payload naming another. `cleanup` removes a
+spool, and refuses any directory that is not one.
+
+### Captured evidence and limits
+
+`evidence/m4.2/` holds the bounded record of the two authorized capture sessions
+and a set of offline controlled cases (conflicting, malformed, unmodelled,
+unsupported). One session reached `completed`; the other reached a genuine
+non-completion that the contract reports as `unknown_outcome`, so that work
+package returned **Partial** rather than the requested `failed`/`cancelled` —
+print mode emits only the catch-all `SessionEnd` reason, so the documented hook
+surface cannot type a cancellation. See `evidence/m4.2/README.md` for the full
+account.
+
+**M4.2 capture is not a product feature.** No hook installation, no background
+collector, no provider access and no Memory UI exist. Capture runs only when a
+caller explicitly configures hooks and points them at the collector. Summary
+generation, Search, Resume and evidence-linked human documents remain unbuilt
+(M4.3/M4.4).
 
 ## Scope and limitations
 
@@ -682,10 +760,12 @@ Determinism and no-fabrication are the core guarantees:
   the same environment. Expression rendering uses `ast.unparse`, whose exact
   spelling can vary slightly between Python minor versions.
 
-- **Developer Memory is offline and read-side (M4.1).** It replays bounded
-  synthetic sessions only: no hook installation, no real session capture, no
-  transcript parsing, no provider request, no credential access and no model
-  egress. Raw payloads and artifact content are never durably stored. No
+- **Developer Memory is offline (M4.1) with one explicit capture path (M4.2).**
+  M4.1 replays bounded sessions from the fixture corpus; M4.2 additionally maps
+  documented Claude Code hook JSON through a collector that a caller must
+  configure explicitly. Neither performs a provider request, credential access
+  or model egress, and neither parses a transcript. Raw hook payloads, prompt
+  text, assistant text and artifact content are never durably stored. No
   summary generation, search, Resume or Memory UI exists yet.
 
 Out of scope entirely: LLM providers, semantic editing, UI, remote code
