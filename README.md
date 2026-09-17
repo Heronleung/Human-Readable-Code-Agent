@@ -951,6 +951,42 @@ as acceptance. The **current baseline is not verified** for the same reason. An
 unverified claim is one whose reference did not resolve, or whose value is
 source-reported text no record verifies.
 
+### The Search, Timeline and Resume workflow (M4.4/v2)
+
+The desktop **Memory** destination carries three read-only pages — **Documents**
+(one run's claims and their exact records), **Search** and **Resume** — that
+consume the 3.7.0 boundary and nothing else.
+
+**Search** builds a query from an explicit filter list. Each filter names a facet
+and a term, is listed with a `Remove` action, and the count is stated against the
+bound. A facet schema `1.0.0` cannot satisfy is offered but **disabled and
+labelled** `(unsupported)`, so the gap is visible and the surface can never build
+a query it knows the model must refuse. An empty term, an over-full filter list
+and a refused query each produce words, never silence.
+
+**Timeline** is the recorded-time order, and its two buckets stay apart: *In
+recorded-time order* and *Not in time order*, the latter stating that those
+results carry no comparable instant and are therefore listed unordered rather
+than placed in the sequence. Both buckets say the order claims nothing about
+causality. Each result row shows its identity, the facets and fields that
+matched, its provenance, its run state and its time status — all as words.
+
+**Resume** renders every returned section: last accepted change, completed runs,
+current goal, current baseline, blockers, unverified claims and next actions,
+each with the returned labels. Acceptance reads `Unsupported` with its reason,
+the baseline reads `Not verified`, and completion is stated as a separate fact
+that is *not* acceptance.
+
+**Navigation is typed.** A result or resume entry opens its exact
+`(run_id, kind, record_id)` through the read boundary; Search and Resume each
+have their own Evidence pane, so a record opened from one never renders into the
+other. A result with no typed target renders a **disabled** `Unavailable` button.
+
+**Stale actions are invalidated.** A query generation advances whenever a filter,
+the order, the result set or the Resume context changes, and every action
+captures the generation it was built under. A superseded action opens nothing and
+a late response is discarded rather than shown against the current selection.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:

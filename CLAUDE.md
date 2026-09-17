@@ -19,7 +19,8 @@ execution at scan time.
   Evidence surface is the `memory` nav destination in `client.py`. The M4.4
   bounded Search/Timeline/Resume read model is `memory_query.py`, reached
   through the `search_memory` / `memory_resume` actions (contract 3.7.0); it is
-  a pure model over records with no index and no storage.
+  a pure model over records with no index and no storage. The M4.4 workflow is
+  the Documents / Search / Resume tabs of that same `memory` destination.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`.
 - `evidence/m4.2/` — the bounded record of the two authorized capture sessions

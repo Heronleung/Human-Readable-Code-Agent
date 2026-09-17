@@ -212,6 +212,19 @@ from .client_core import (
     memory_record_kind_label,
     memory_state_label,
     memory_origin_label,
+    MEMORY_QUERY_FACETS,
+    MEMORY_QUERY_ORDERS,
+    MEMORY_ORDER_RELEVANCE,
+    MEMORY_ORDER_RECORDED_TIME,
+    MEMORY_MAX_FILTERS,
+    MEMORY_UNSUPPORTED_FACETS,
+    MEMORY_FACET_LABELS,
+    MEMORY_ORDER_LABELS,
+    memory_facet_label,
+    build_search_memory_request,
+    build_memory_resume_request,
+    memory_hit_rows,
+    memory_resume_view,
 )
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -869,6 +882,15 @@ class MainWindow(QMainWindow):
         self._memory_result_truncated: bool = False
         self._memory_declared_origin: Optional[str] = None
         self._memory_target_buttons: List[QPushButton] = []
+
+        # Memory query state (M4.4/v2): the active filters, the generation that
+        # invalidates outstanding search and Resume actions, the last adopted
+        # result and resume, and the target buttons each built.
+        self._memory_query_filters: List[tuple] = []
+        self._memory_query_generation: int = 0
+        self._memory_query_hit_buttons: List[QPushButton] = []
+        self._memory_search_result: Optional[Dict[str, Any]] = None
+        self._memory_resume: Optional[Dict[str, Any]] = None
 
         self._document_id: Optional[str] = None
         self._document_name: Optional[str] = None
@@ -1828,16 +1850,46 @@ class MainWindow(QMainWindow):
     def _build_memory_page(self) -> QWidget:
         """Build the read-only Memory destination.
 
-        A run selector, a document selector, the bounded claim list of the
-        selected projected document, and a read-only Evidence detail pane.
+        Three read-only pages over the same bounded protocol: Documents (the
+        projected claims of one run and their exact supporting records), Search
+        (a faceted cross-run query with relevance or recorded-time ordering) and
+        Resume (the evidence-linked resume).
 
         Every state is carried by words, so colour assists but never decides: a
-        claim's provenance and a run's terminal state are textual labels, an
-        unresolved support target says so in its own text, and nothing here
-        claims repository freshness or verification the schema cannot support.
+        claim's provenance, a hit's match and time status, and a resume's
+        unsupported or not-verified facts are all textual labels, and nothing
+        here claims freshness or verification the schema cannot support.
         """
         body = QWidget()
         body.setObjectName("memoryPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        title = QLabel("Memory")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(title)
+
+        self._memory_tabs = QTabWidget()
+        self._memory_tabs.setObjectName("memoryTabs")
+        self._memory_tabs.setAccessibleName("Memory pages")
+        self._memory_tabs.addTab(self._build_memory_documents_page(), "Documents")
+        self._memory_tabs.addTab(self._build_memory_search_page(), "Search")
+        self._memory_tabs.addTab(self._build_memory_resume_page(), "Resume")
+        layout.addWidget(self._memory_tabs, stretch=1)
+        return body
+
+    def _build_memory_documents_page(self) -> QWidget:
+        """Build the Documents page: one run's claims and their exact records.
+
+        A run selector, a document selector, the bounded claim list of the
+        selected projected document, and a read-only Evidence detail pane.
+        """
+        body = QWidget()
+        body.setObjectName("memoryDocumentsPanel")
         layout = QVBoxLayout(body)
         layout.setContentsMargins(
             style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
@@ -1850,11 +1902,6 @@ class MainWindow(QMainWindow):
             style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
         )
         header_layout.setSpacing(style.GAP_TIGHT)
-
-        title = QLabel("Memory")
-        title.setFont(style.panel_header_font())
-        title.setStyleSheet(style.secondary_text_style(self._palette))
-        header_layout.addWidget(title)
 
         self._memory_run_selector = QComboBox()
         self._memory_run_selector.setObjectName("memoryRunSelector")
@@ -2318,12 +2365,24 @@ class MainWindow(QMainWindow):
 
     def _set_memory_detail_body(self, rows: List[tuple]) -> None:
         """Replace the Evidence detail body with labelled field rows."""
-        while self._memory_detail_layout.count():
-            item = self._memory_detail_layout.takeAt(0)
+        self._render_detail_rows(self._memory_detail_layout, rows)
+
+    def _clear_layout(self, layout) -> None:
+        """Remove and delete every widget in ``layout``."""
+        while layout.count():
+            item = layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
+
+    def _render_detail_rows(self, layout, rows: List[tuple]) -> None:
+        """Replace ``layout`` with the labelled field rows of one record.
+
+        The allowlist is applied upstream, so a row can only ever carry a field
+        and value the read boundary already returned.
+        """
+        self._clear_layout(layout)
 
         grid_host = QWidget()
         grid_host.setObjectName("memoryDetailGrid")
@@ -2349,8 +2408,874 @@ class MainWindow(QMainWindow):
             grid.addWidget(field, index, 0)
             grid.addWidget(value_label, index, 1)
         grid.setColumnStretch(1, style.MEMORY_PANE_STRETCH)
-        self._memory_detail_layout.addWidget(grid_host)
-        self._memory_detail_layout.addStretch(1)
+        layout.addWidget(grid_host)
+        layout.addStretch(1)
+
+    # -- Memory: Search, Timeline and Resume (M4.4/v2) --------------------
+
+    def _build_memory_search_page(self) -> QWidget:
+        """Build the Search page: bounded filters, an order choice, results.
+
+        A facet that schema 1.0.0 cannot satisfy is offered but disabled and
+        labelled, so the gap is visible instead of hidden, and the surface never
+        builds a query it knows the model must refuse.
+        """
+        body = QWidget()
+        body.setObjectName("memorySearchPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        controls = QWidget()
+        controls.setObjectName("memorySearchControls")
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        controls_layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_facet_selector = QComboBox()
+        self._memory_facet_selector.setObjectName("memoryFacetSelector")
+        self._memory_facet_selector.setAccessibleName("Search facet")
+        self._memory_facet_selector.setToolTip("The field to filter on")
+        for facet in MEMORY_QUERY_FACETS:
+            label = memory_facet_label(facet)
+            if facet in MEMORY_UNSUPPORTED_FACETS:
+                self._memory_facet_selector.addItem("%s (unsupported)" % label, None)
+                item = self._memory_facet_selector.model().item(
+                    self._memory_facet_selector.count() - 1
+                )
+                if item is not None:
+                    item.setEnabled(False)
+                continue
+            self._memory_facet_selector.addItem(label, facet)
+        controls_layout.addWidget(self._memory_facet_selector)
+
+        self._memory_term_field = QLineEdit()
+        self._memory_term_field.setObjectName("memoryTermField")
+        self._memory_term_field.setAccessibleName("Filter term")
+        self._memory_term_field.setToolTip("Term to match in the chosen field")
+        self._memory_term_field.setPlaceholderText("Term")
+        self._memory_term_field.returnPressed.connect(self._add_memory_filter)
+        controls_layout.addWidget(self._memory_term_field)
+
+        self._memory_add_filter_button = QPushButton("Add filter")
+        self._memory_add_filter_button.setObjectName("memoryAddFilterButton")
+        self._memory_add_filter_button.setAccessibleName("Add search filter")
+        self._memory_add_filter_button.setToolTip("Add the facet and term to the query")
+        self._memory_add_filter_button.clicked.connect(self._add_memory_filter)
+        controls_layout.addWidget(self._memory_add_filter_button)
+
+        self._memory_order_selector = QComboBox()
+        self._memory_order_selector.setObjectName("memoryOrderSelector")
+        self._memory_order_selector.setAccessibleName("Result order")
+        self._memory_order_selector.setToolTip("How results are ordered")
+        for order in MEMORY_QUERY_ORDERS:
+            self._memory_order_selector.addItem(MEMORY_ORDER_LABELS[order], order)
+        self._memory_order_selector.currentIndexChanged.connect(
+            self._on_memory_order_changed
+        )
+        controls_layout.addWidget(self._memory_order_selector)
+
+        self._memory_search_button = QPushButton("Search")
+        self._memory_search_button.setObjectName("memorySearchButton")
+        self._memory_search_button.setAccessibleName("Run the Memory search")
+        self._memory_search_button.setToolTip("Run the bounded cross-run query")
+        self._memory_search_button.clicked.connect(self._run_memory_search)
+        controls_layout.addWidget(self._memory_search_button)
+
+        self._memory_clear_filters_button = QPushButton("Clear filters")
+        self._memory_clear_filters_button.setObjectName("memoryClearFiltersButton")
+        self._memory_clear_filters_button.setAccessibleName("Clear search filters")
+        self._memory_clear_filters_button.setToolTip("Remove every active filter")
+        self._memory_clear_filters_button.clicked.connect(self._clear_memory_filters)
+        controls_layout.addWidget(self._memory_clear_filters_button)
+
+        controls_layout.addStretch(1)
+        layout.addWidget(controls)
+
+        self._memory_filters_heading = QLabel("Filters: none")
+        self._memory_filters_heading.setObjectName("memoryFiltersHeading")
+        self._memory_filters_heading.setWordWrap(True)
+        self._memory_filters_heading.setStyleSheet(
+            style.memory_claim_meta_style(self._palette)
+        )
+        layout.addWidget(self._memory_filters_heading)
+
+        self._memory_filter_list = QWidget()
+        self._memory_filter_list.setObjectName("memoryFilterList")
+        self._memory_filter_layout = QVBoxLayout(self._memory_filter_list)
+        self._memory_filter_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_filter_layout.setSpacing(style.SPACE_4)
+        layout.addWidget(self._memory_filter_list)
+
+        self._memory_search_status = QLabel("")
+        self._memory_search_status.setObjectName("memorySearchStatus")
+        self._memory_search_status.setWordWrap(True)
+        self._memory_search_status.setStyleSheet(
+            style.memory_placeholder_style(self._palette)
+        )
+        layout.addWidget(self._memory_search_status)
+
+        splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        splitter.setObjectName("memorySearchSplitter")
+        splitter.addWidget(self._build_memory_results_panel())
+        splitter.addWidget(self._build_memory_detail_pane("_memory_query_detail"))
+        splitter.setStretchFactor(0, style.MEMORY_PANE_STRETCH)
+        splitter.setStretchFactor(1, style.MEMORY_PANE_STRETCH)
+        layout.addWidget(splitter, stretch=1)
+
+        self._clear_memory_detail_pane(
+            "_memory_query_detail",
+            "Open a result's evidence to read its exact typed record.",
+        )
+        return body
+
+    def _build_memory_results_panel(self) -> QWidget:
+        """Build the bounded results panel used by Search and Timeline."""
+        panel = QWidget()
+        panel.setObjectName("memoryResultsPanel")
+        panel.setMinimumWidth(style.MEMORY_CLAIM_LIST_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.GAP_TIGHT, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_results_container = QWidget()
+        self._memory_results_container.setObjectName("memoryResults")
+        self._memory_results_layout = QVBoxLayout(self._memory_results_container)
+        self._memory_results_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_results_layout.setSpacing(style.GAP_GROUP)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryResultsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_results_container)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    def _build_memory_detail_pane(self, prefix: str) -> QWidget:
+        """Build a read-only Evidence detail pane registered under ``prefix``.
+
+        Search and Resume each get their own pane, so a record opened from one
+        page never renders into the other page's surface.
+        """
+        panel = QWidget()
+        panel.setObjectName("memoryDetailPane")
+        panel.setMinimumWidth(style.MEMORY_DETAIL_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.GAP_TIGHT, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        title = QLabel("Evidence")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(title)
+
+        body = QWidget()
+        body.setObjectName("memoryDetailBody")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        body_layout.setSpacing(style.GAP_TIGHT)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryDetailScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(body)
+        layout.addWidget(scroll, stretch=1)
+
+        setattr(self, prefix + "_title", title)
+        setattr(self, prefix + "_body", body)
+        setattr(self, prefix + "_layout", body_layout)
+        # The resolved view currently shown in this pane, or ``None``.
+        setattr(self, prefix, None)
+        return panel
+
+    def _build_memory_resume_page(self) -> QWidget:
+        """Build the Resume page: the evidence-linked resume, composed."""
+        body = QWidget()
+        body.setObjectName("memoryResumePanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        controls = QWidget()
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        controls_layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_resume_button = QPushButton("Load resume")
+        self._memory_resume_button.setObjectName("memoryResumeButton")
+        self._memory_resume_button.setAccessibleName("Load the Memory resume")
+        self._memory_resume_button.setToolTip(
+            "Compose the resume from the recorded runs"
+        )
+        self._memory_resume_button.clicked.connect(self._refresh_memory_resume)
+        controls_layout.addWidget(self._memory_resume_button)
+        controls_layout.addStretch(1)
+        layout.addWidget(controls)
+
+        self._memory_resume_status = QLabel("")
+        self._memory_resume_status.setObjectName("memoryResumeStatus")
+        self._memory_resume_status.setWordWrap(True)
+        self._memory_resume_status.setStyleSheet(
+            style.memory_placeholder_style(self._palette)
+        )
+        layout.addWidget(self._memory_resume_status)
+
+        splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        splitter.setObjectName("memoryResumeSplitter")
+        splitter.addWidget(self._build_memory_resume_body_panel())
+        splitter.addWidget(self._build_memory_detail_pane("_memory_resume_detail"))
+        splitter.setStretchFactor(0, style.MEMORY_PANE_STRETCH)
+        splitter.setStretchFactor(1, style.MEMORY_PANE_STRETCH)
+        layout.addWidget(splitter, stretch=1)
+
+        self._clear_memory_resume(
+            "Load the resume to see completed work, blockers and next actions."
+        )
+        self._clear_memory_detail_pane(
+            "_memory_resume_detail",
+            "Open a resume entry to read its exact typed record.",
+        )
+        return body
+
+    def _build_memory_resume_body_panel(self) -> QWidget:
+        """Build the scrolling Resume body."""
+        panel = QWidget()
+        panel.setObjectName("memoryResumeBodyPanel")
+        panel.setMinimumWidth(style.MEMORY_CLAIM_LIST_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.GAP_TIGHT, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_resume_body = QWidget()
+        self._memory_resume_body.setObjectName("memoryResumeBody")
+        self._memory_resume_layout = QVBoxLayout(self._memory_resume_body)
+        self._memory_resume_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_resume_layout.setSpacing(style.GAP_GROUP)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryResumeScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_resume_body)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    # -- Memory query: filters ---------------------------------------------
+
+    def _memory_filters_as_request(self) -> Optional[Dict[str, List[str]]]:
+        filters: Dict[str, List[str]] = {}
+        for facet, term in self._memory_query_filters:
+            filters.setdefault(facet, []).append(term)
+        return filters or None
+
+    def _add_memory_filter(self) -> None:
+        """Add the chosen facet and term to the query, or say why it cannot."""
+        facet = self._memory_facet_selector.currentData()
+        term = self._memory_term_field.text().strip()
+        if not isinstance(facet, str):
+            self._memory_search_status.setText(
+                "That facet has no typed data in this schema, so it cannot be searched."
+            )
+            return
+        if not term:
+            self._memory_search_status.setText("Enter a term to filter on.")
+            return
+        if len(self._memory_query_filters) >= MEMORY_MAX_FILTERS:
+            self._memory_search_status.setText(
+                "This query already holds the maximum %d filters."
+                % MEMORY_MAX_FILTERS
+            )
+            return
+        self._memory_query_filters.append((facet, term))
+        self._memory_term_field.clear()
+        # A changed query invalidates every outstanding action.
+        self._memory_query_generation += 1
+        self._populate_memory_filters()
+        self._memory_search_status.setText("")
+
+    def _remove_memory_filter(self, index: int) -> None:
+        if 0 <= index < len(self._memory_query_filters):
+            self._memory_query_filters.pop(index)
+            self._memory_query_generation += 1
+            self._populate_memory_filters()
+
+    def _clear_memory_filters(self) -> None:
+        self._memory_query_filters = []
+        self._memory_query_generation += 1
+        self._populate_memory_filters()
+        self._memory_search_status.setText("")
+
+    def _populate_memory_filters(self) -> None:
+        """Render the active filters, each removable, and state the count."""
+        self._clear_layout(self._memory_filter_layout)
+        if not self._memory_query_filters:
+            self._memory_filters_heading.setText("Filters: none")
+            return
+        self._memory_filters_heading.setText(
+            "Filters: %d of %d"
+            % (len(self._memory_query_filters), MEMORY_MAX_FILTERS)
+        )
+        for index, (facet, term) in enumerate(self._memory_query_filters):
+            row = QWidget()
+            row.setObjectName("memoryFilterRow")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(
+                style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+            )
+            row_layout.setSpacing(style.GAP_TIGHT)
+            label = QLabel("%s: %s" % (memory_facet_label(facet), term))
+            label.setObjectName("memoryFilterLabel")
+            label.setWordWrap(True)
+            label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            label.setAccessibleName(
+                "Filter %s in %s" % (term, memory_facet_label(facet))
+            )
+            row_layout.addWidget(label)
+            remove = QPushButton("Remove")
+            remove.setObjectName("memoryRemoveFilterButton")
+            remove.setAccessibleName(
+                "Remove filter %s in %s" % (term, memory_facet_label(facet))
+            )
+            remove.setToolTip("Remove this filter from the query")
+            remove.clicked.connect(partial(self._remove_memory_filter, index))
+            row_layout.addWidget(remove)
+            row_layout.addStretch(1)
+            self._memory_filter_layout.addWidget(row)
+
+    def _on_memory_order_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        # Changing the order changes what an ordered action means.
+        self._memory_query_generation += 1
+        self._clear_memory_detail_pane(
+            "_memory_query_detail",
+            "The order changed: run the search again to read its evidence.",
+        )
+
+    # -- Memory query: search ----------------------------------------------
+
+    def _memory_selected_order(self) -> str:
+        order = self._memory_order_selector.currentData()
+        return order if isinstance(order, str) else MEMORY_ORDER_RELEVANCE
+
+    def _run_memory_search(self) -> None:
+        """Run the bounded query and adopt whatever it returns."""
+        cid = contract.new_correlation_id()
+        request = build_search_memory_request(
+            cid, filters=self._memory_filters_as_request(),
+            order=self._memory_selected_order(),
+        )
+        # The generation advances before the request, so anything that changes
+        # while it is in flight makes the response obsolete.
+        self._memory_query_generation += 1
+        generation = self._memory_query_generation
+        self._set_status(STATE_RUNNING, "searching Memory")
+        if not self._send(
+            request,
+            partial(self._on_memory_search_loaded, generation),
+            partial(self._on_memory_query_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_search_loaded(self, generation: int, result: Dict[str, Any]) -> None:
+        if generation != self._memory_query_generation:
+            return
+        self._apply_search_result(result)
+        self._restore_operation_status()
+
+    def _apply_search_result(self, result: Dict[str, Any]) -> None:
+        """Adopt one bounded search result and render it."""
+        self._memory_search_result = result
+        self._populate_memory_results(result)
+
+    def _on_memory_query_failed(self, generation: int, code: str) -> None:
+        if generation != self._memory_query_generation:
+            return
+        self._memory_search_result = None
+        self._clear_layout(self._memory_results_layout)
+        self._clear_memory_detail_pane(
+            "_memory_query_detail", "The query returned no readable evidence."
+        )
+        message = "The Memory query was refused: %s" % code
+        self._memory_search_status.setText(message)
+        self._set_status(STATE_FAILED, message)
+
+    def _clear_memory_results(self) -> None:
+        self._clear_layout(self._memory_results_layout)
+        self._memory_query_hit_buttons = []
+
+    def _memory_result_section(
+        self, heading: str, note: str, rows: List[Dict[str, Any]], generation: int
+    ) -> None:
+        """Append one result section: a heading, a note, then the rows."""
+        title = QLabel(heading)
+        title.setObjectName("memoryResultHeading")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        title.setAccessibleName(heading)
+        self._memory_results_layout.addWidget(title)
+
+        note_label = QLabel(note)
+        note_label.setObjectName("memoryResultNote")
+        note_label.setWordWrap(True)
+        note_label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        self._memory_results_layout.addWidget(note_label)
+
+        if not rows:
+            empty = QLabel("None.")
+            empty.setObjectName("memoryResultEmpty")
+            empty.setStyleSheet(style.memory_placeholder_style(self._palette))
+            self._memory_results_layout.addWidget(empty)
+            return
+        for row in rows:
+            self._memory_results_layout.addWidget(
+                self._build_memory_hit_row(row, generation)
+            )
+
+    def _populate_memory_results(self, result: Dict[str, Any]) -> None:
+        """Render a search result, keeping the two timeline buckets apart."""
+        self._clear_memory_results()
+        rows = memory_hit_rows(result)
+        ordered = rows.get("ordered") or []
+        unordered = rows.get("unordered") or []
+        generation = self._memory_query_generation
+
+        unsupported = rows.get("unsupported_facets") or []
+        truncated = bool(result.get("truncated"))
+        limit = result.get("limit")
+        summary = "%d result(s) for %d run(s); limit %s%s" % (
+            result.get("hit_count", 0),
+            result.get("run_count", 0),
+            limit,
+            "; results were truncated to the limit" if truncated else "",
+        )
+        if unsupported:
+            summary += "; unsupported facet(s): " + ", ".join(unsupported)
+        if result.get("runs_truncated"):
+            summary += "; only the first runs in the corpus were searched"
+        self._memory_search_status.setText(summary)
+
+        if result.get("order") == MEMORY_ORDER_RECORDED_TIME:
+            self._memory_result_section(
+                "In recorded-time order",
+                "Ordered only by a comparable recorded instant; this order says "
+                "nothing about causality.",
+                ordered,
+                generation,
+            )
+            self._memory_result_section(
+                "Not in time order",
+                "These results carry no comparable recorded time, so they are "
+                "listed here unordered rather than placed in the sequence above.",
+                unordered,
+                generation,
+            )
+        else:
+            self._memory_result_section(
+                "Ranked by matched facets",
+                "Most matched facets first, then facet priority, then identity.",
+                ordered,
+                generation,
+            )
+        self._memory_result_limitations(result)
+
+    def _memory_result_limitations(self, result: Dict[str, Any]) -> None:
+        for limitation in result.get("limitations") or []:
+            label = QLabel("Limit: %s" % limitation)
+            label.setObjectName("memoryResultLimitation")
+            label.setWordWrap(True)
+            label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            self._memory_results_layout.addWidget(label)
+
+    def _build_memory_hit_row(
+        self, row: Dict[str, Any], generation: int
+    ) -> QWidget:
+        """Build one result row: identity, match reason, provenance, target."""
+        container = QWidget()
+        container.setObjectName("memoryHit")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_4)
+
+        heading = QLabel(
+            "%s %s" % (row.get("kind_label"), row.get("record_id"))
+        )
+        heading.setObjectName("memoryHitHeading")
+        heading.setWordWrap(True)
+        heading.setStyleSheet(style.memory_claim_style(self._palette))
+        heading.setAccessibleName(
+            "Result %s %s" % (row.get("kind_label"), row.get("record_id"))
+        )
+        layout.addWidget(heading)
+
+        matched = ", ".join(row.get("matched_facets") or []) or "none"
+        meta = "Matched: %s | Run state: %s | Provenance: %s | %s" % (
+            matched,
+            row.get("run_state_label"),
+            row.get("provenance_label"),
+            row.get("time_status_label"),
+        )
+        if row.get("recorded_time"):
+            meta += ": %s" % row["recorded_time"]
+        meta_label = QLabel(meta)
+        meta_label.setObjectName("memoryHitMeta")
+        meta_label.setWordWrap(True)
+        meta_label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        meta_label.setAccessibleName(meta)
+        layout.addWidget(meta_label)
+
+        fields = ", ".join(row.get("matched_fields") or [])
+        if fields:
+            field_label = QLabel("Matched fields: %s" % fields)
+            field_label.setObjectName("memoryHitFields")
+            field_label.setWordWrap(True)
+            field_label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(field_label)
+
+        for limitation in row.get("limitations") or []:
+            limit = QLabel("Limit: %s" % limitation)
+            limit.setObjectName("memoryHitLimitation")
+            limit.setWordWrap(True)
+            limit.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(limit)
+
+        layout.addWidget(self._build_memory_query_target_button(
+            row.get("target") or {}, row.get("kind_label"), generation
+        ))
+        return container
+
+    def _build_memory_query_target_button(
+        self,
+        target: Dict[str, Any],
+        kind_label: Any,
+        generation: int,
+        pane: str = "_memory_query_detail",
+    ) -> QPushButton:
+        """Build one explicit target action, or a disabled honest alternative."""
+        record_id = target.get("record_id")
+        run_id = target.get("run_id")
+        kind = target.get("kind")
+        button = QPushButton()
+        button.setObjectName("memoryQueryTargetButton")
+        button.setFocusPolicy(Qt.StrongFocus)
+        if isinstance(record_id, str) and record_id and isinstance(kind, str):
+            button.setText("Open %s" % kind_label)
+            button.setAccessibleName("Open %s %s" % (kind_label, record_id))
+            button.setToolTip("%s %s" % (kind_label, record_id))
+            button.clicked.connect(
+                partial(
+                    self._open_memory_query_target,
+                    generation,
+                    pane,
+                    str(run_id or ""),
+                    kind,
+                    record_id,
+                )
+            )
+        else:
+            button.setText("Unavailable: %s" % kind_label)
+            button.setAccessibleName(
+                "Unavailable %s: this result carries no typed target" % kind_label
+            )
+            button.setToolTip("This result carries no typed target to open")
+            button.setEnabled(False)
+        self._memory_query_hit_buttons.append(button)
+        return button
+
+    # -- Memory query: exact record navigation -----------------------------
+
+    def _open_memory_query_target(
+        self, generation: int, pane: str, run_id: str, kind: str, record_id: str
+    ) -> None:
+        """Open the exact typed record a result named, if it is still current."""
+        if generation != self._memory_query_generation:
+            return
+        if not run_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_get_memory_record_request(cid, run_id, kind, record_id)
+        if not self._send(
+            request,
+            partial(self._on_memory_query_record_loaded, generation, pane),
+            partial(self._on_memory_query_record_failed, generation, pane),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_query_record_loaded(
+        self, generation: int, pane: str, result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_query_generation:
+            return
+        self._show_memory_detail_pane(pane, result)
+
+    def _on_memory_query_record_failed(
+        self, generation: int, pane: str, code: str
+    ) -> None:
+        if generation != self._memory_query_generation:
+            return
+        self._clear_memory_detail_pane(
+            pane, "That evidence could not be read from the store."
+        )
+
+    def _clear_memory_detail_pane(self, pane: str, message: str) -> None:
+        setattr(self, pane, None)
+        getattr(self, pane + "_title").setText("Evidence")
+        self._render_detail_rows(
+            getattr(self, pane + "_layout"), [("", message, False)]
+        )
+
+    def _show_memory_detail_pane(self, pane: str, view: Dict[str, Any]) -> None:
+        setattr(self, pane, view)
+        kind_label = memory_record_kind_label(view.get("kind"))
+        getattr(self, pane + "_title").setText("%s detail" % kind_label)
+        rows: List[tuple] = [
+            ("Record", str(view.get("record_id")), False),
+            ("Owning run", str(view.get("run_id")), False),
+            ("Kind", kind_label, False),
+        ]
+        for row in record_detail_rows(view):
+            rows.append(
+                (str(row.get("field")), str(row.get("value")), bool(row.get("reported")))
+            )
+        self._render_detail_rows(getattr(self, pane + "_layout"), rows)
+
+    # -- Memory query: resume ----------------------------------------------
+
+    def _refresh_memory_resume(self) -> None:
+        """Compose the resume from the recorded runs."""
+        cid = contract.new_correlation_id()
+        request = build_memory_resume_request(cid)
+        self._memory_query_generation += 1
+        generation = self._memory_query_generation
+        self._set_status(STATE_RUNNING, "composing Memory resume")
+        if not self._send(
+            request,
+            partial(self._on_memory_resume_loaded, generation),
+            partial(self._on_memory_query_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_resume_loaded(self, generation: int, result: Dict[str, Any]) -> None:
+        if generation != self._memory_query_generation:
+            return
+        self._memory_resume = result
+        self._populate_memory_resume(result)
+        self._restore_operation_status()
+
+    def _clear_memory_resume(self, message: str) -> None:
+        self._memory_resume = None
+        self._clear_layout(self._memory_resume_layout)
+        placeholder = QLabel(message)
+        placeholder.setObjectName("memoryResumePlaceholder")
+        placeholder.setWordWrap(True)
+        placeholder.setStyleSheet(style.memory_placeholder_style(self._palette))
+        self._memory_resume_layout.addWidget(placeholder)
+
+    def _populate_memory_resume(self, result: Dict[str, Any]) -> None:
+        """Render every Resume section from the returned labels and limitations."""
+        view = memory_resume_view(result)
+        self._clear_layout(self._memory_resume_layout)
+        generation = self._memory_query_generation
+        limits = view.get("limitations") or []
+        self._memory_resume_status.setText(
+            "%d run(s); %d limitation(s) apply." % (view.get("run_count") or 0, len(limits))
+        )
+
+        admission = view.get("last_accepted_change") or {}
+        self._memory_resume_section(
+            "Last accepted change",
+            "%s — %s" % (admission.get("label"), admission.get("reason")),
+            [],
+            generation,
+        )
+
+        self._memory_resume_section(
+            "Completed runs",
+            "Completion is a separate fact and is not acceptance.",
+            [
+                (
+                    "%s %s" % (row.get("state_label"), row.get("run_id")),
+                    row.get("target"),
+                )
+                for row in view.get("completed_runs") or []
+            ],
+            generation,
+        )
+
+        goal = view.get("current_goal") or {}
+        goal_note = goal.get("status") or "unsupported"
+        if goal.get("title"):
+            goal_note = "%s — %s (%s)" % (
+                goal.get("status"), goal.get("title"), goal.get("provenance_label")
+            )
+        for limitation in goal.get("limitations") or []:
+            goal_note += " | %s" % limitation
+        self._memory_resume_section(
+            "Current goal",
+            goal_note,
+            [("Open the goal", goal.get("target"))] if goal.get("target") else [],
+            generation,
+        )
+
+        baseline = view.get("current_baseline") or {}
+        self._memory_resume_section(
+            "Current baseline",
+            "%s — %s" % (baseline.get("label"), baseline.get("reason")),
+            [],
+            generation,
+        )
+
+        self._memory_resume_section(
+            "Blockers",
+            "Recorded reasons the work did not conclude.",
+            [
+                (
+                    "%s%s"
+                    % (
+                        blocker.get("kind_label"),
+                        " — %s" % blocker.get("state_label")
+                        if blocker.get("state_label")
+                        else "",
+                    ),
+                    blocker.get("target"),
+                )
+                for blocker in view.get("blockers") or []
+            ],
+            generation,
+            detail=lambda blocker: (
+                (["Reason: %s" % blocker["reason"]] if blocker.get("reason") else [])
+                + ["Limit: %s" % text for text in blocker.get("limitations") or []]
+            ),
+            source=view.get("blockers") or [],
+        )
+
+        self._memory_resume_section(
+            "Unverified claims",
+            "Reported, never repaired: each claim is listed with why it is unverified.",
+            [
+                (claim.get("statement") or claim.get("claim_id"), claim.get("target"))
+                for claim in view.get("unverified_claims") or []
+            ],
+            generation,
+            detail=lambda claim: (
+                ["Reason: %s" % claim["reason"]] if claim.get("reason") else []
+            ),
+            source=view.get("unverified_claims") or [],
+        )
+
+        self._memory_resume_section(
+            "Next actions",
+            "Derived from each run's recorded state.",
+            [
+                (action.get("text"), action.get("target"))
+                for action in view.get("next_actions") or []
+            ],
+            generation,
+        )
+
+        self._memory_resume_section("Limitations", "", [], generation, lines=limits)
+
+    def _memory_resume_section(
+        self,
+        heading: str,
+        note: str,
+        entries: List[Any],
+        generation: int,
+        detail=None,
+        source: Optional[List[Any]] = None,
+        lines: Optional[List[str]] = None,
+    ) -> None:
+        """Append one Resume section: a heading, a note, then its entries."""
+        title = QLabel(heading)
+        title.setObjectName("memoryResumeHeading")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        title.setAccessibleName(heading)
+        self._memory_resume_layout.addWidget(title)
+
+        if note:
+            note_label = QLabel(note)
+            note_label.setObjectName("memoryResumeNote")
+            note_label.setWordWrap(True)
+            note_label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            self._memory_resume_layout.addWidget(note_label)
+
+        for index, text in enumerate(lines or []):
+            label = QLabel("Limit: %s" % text)
+            label.setObjectName("memoryResumeLimitation")
+            label.setWordWrap(True)
+            label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            self._memory_resume_layout.addWidget(label)
+
+        if not entries and not lines:
+            empty = QLabel("None.")
+            empty.setObjectName("memoryResumeEmpty")
+            empty.setStyleSheet(style.memory_placeholder_style(self._palette))
+            self._memory_resume_layout.addWidget(empty)
+            return
+
+        for index, entry in enumerate(entries):
+            text, target = entry
+            row = QWidget()
+            row.setObjectName("memoryResumeRow")
+            row_layout = QVBoxLayout(row)
+            row_layout.setContentsMargins(
+                style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+            )
+            row_layout.setSpacing(style.SPACE_4)
+            if text:
+                label = QLabel(str(text))
+                label.setObjectName("memoryResumeEntry")
+                label.setWordWrap(True)
+                label.setStyleSheet(style.memory_claim_style(self._palette))
+                row_layout.addWidget(label)
+            if detail is not None and source is not None and index < len(source):
+                for line in detail(source[index]) or []:
+                    if not line:
+                        continue
+                    detail_label = QLabel(str(line))
+                    detail_label.setObjectName("memoryResumeDetail")
+                    detail_label.setWordWrap(True)
+                    detail_label.setStyleSheet(
+                        style.memory_claim_meta_style(self._palette)
+                    )
+                    row_layout.addWidget(detail_label)
+            if isinstance(target, dict) and target.get("record_id"):
+                row_layout.addWidget(
+                    self._build_memory_query_target_button(
+                        target,
+                        memory_record_kind_label(target.get("kind")),
+                        generation,
+                        pane="_memory_resume_detail",
+                    )
+                )
+            self._memory_resume_layout.addWidget(row)
 
     def _build_document_workspace(self) -> QWidget:
         """Build the document-first Working Document workspace (P4.4a).

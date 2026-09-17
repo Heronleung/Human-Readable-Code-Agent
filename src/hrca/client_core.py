@@ -2397,7 +2397,15 @@ MEMORY_QUERY_FACETS = (
     "test_result",
 )
 
-MEMORY_QUERY_ORDERS = ("relevance", "recorded_time")
+MEMORY_ORDER_RELEVANCE = "relevance"
+MEMORY_ORDER_RECORDED_TIME = "recorded_time"
+
+MEMORY_QUERY_ORDERS = (MEMORY_ORDER_RELEVANCE, MEMORY_ORDER_RECORDED_TIME)
+
+# The most filters the surface will build into one query. It is held at or below
+# the query model's per-facet term bound and its facet bound, so a query the
+# surface can construct can never be one the model must reject on size.
+MEMORY_MAX_FILTERS = 8
 
 MEMORY_FACET_LABELS = {
     "project": "Project",
@@ -2789,6 +2797,9 @@ __all__ = [
     "format_memory_record",
     "MEMORY_QUERY_FACETS",
     "MEMORY_QUERY_ORDERS",
+    "MEMORY_ORDER_RELEVANCE",
+    "MEMORY_ORDER_RECORDED_TIME",
+    "MEMORY_MAX_FILTERS",
     "MEMORY_FACET_LABELS",
     "MEMORY_ORDER_LABELS",
     "MEMORY_UNSUPPORTED_FACETS",
