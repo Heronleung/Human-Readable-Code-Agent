@@ -225,6 +225,15 @@ from .client_core import (
     build_memory_resume_request,
     memory_hit_rows,
     memory_resume_view,
+    MEMORY_REVIEW_OPERATIONS,
+    MEMORY_OPERATION_LABELS,
+    memory_operation_label,
+    memory_correction_state_label,
+    memory_correction_source_id,
+    memory_review_view,
+    build_memory_history_request,
+    build_memory_effective_request,
+    build_memory_correction_request,
 )
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -891,6 +900,22 @@ class MainWindow(QMainWindow):
         self._memory_query_hit_buttons: List[QPushButton] = []
         self._memory_search_result: Optional[Dict[str, Any]] = None
         self._memory_resume: Optional[Dict[str, Any]] = None
+
+        # Memory review state (M4.5/v1b): the loaded effective document and
+        # history, the generation that invalidates outstanding review actions,
+        # the armed claim, the draft awaiting confirmation, and the per-attempt
+        # token that gives every append a stable source identity.
+        self._memory_review_generation: int = 0
+        self._memory_review_effective: Optional[Dict[str, Any]] = None
+        self._memory_review_history: Optional[Dict[str, Any]] = None
+        self._memory_review_view: Optional[Dict[str, Any]] = None
+        self._memory_review_document_sets: List[Dict[str, Any]] = []
+        self._memory_review_claims: Dict[Any, Any] = {}
+        self._memory_review_buttons: List[QPushButton] = []
+        self._memory_review_selected: Optional[str] = None
+        self._memory_review_draft: Optional[Dict[str, Any]] = None
+        self._memory_review_version_id: Optional[str] = None
+        self._memory_review_attempt_token: str = contract.new_correlation_id()
 
         self._document_id: Optional[str] = None
         self._document_name: Optional[str] = None
@@ -1879,6 +1904,7 @@ class MainWindow(QMainWindow):
         self._memory_tabs.addTab(self._build_memory_documents_page(), "Documents")
         self._memory_tabs.addTab(self._build_memory_search_page(), "Search")
         self._memory_tabs.addTab(self._build_memory_resume_page(), "Resume")
+        self._memory_tabs.addTab(self._build_memory_review_page(), "Corrections")
         layout.addWidget(self._memory_tabs, stretch=1)
         return body
 
@@ -2683,6 +2709,846 @@ class MainWindow(QMainWindow):
         scroll.setWidget(self._memory_resume_body)
         layout.addWidget(scroll, stretch=1)
         return panel
+
+    # -- Memory review: corrections, confirmation and history (M4.5/v1b) ---
+
+    def _build_memory_review_page(self) -> QWidget:
+        """Build the Corrections page: comparison, editor, conflicts and history.
+
+        Generated and effective statements are shown together, with the generated
+        one always present, so a human correction never hides what the projection
+        said. The editor is what arms a choice: a conflict's choices populate the
+        editor rather than appending immediately, and every append is an explicit
+        Draft or Confirm.
+        """
+        body = QWidget()
+        body.setObjectName("memoryReviewPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        controls = QWidget()
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        controls_layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_review_run_selector = QComboBox()
+        self._memory_review_run_selector.setObjectName("memoryReviewRunSelector")
+        self._memory_review_run_selector.setAccessibleName("Correction run")
+        self._memory_review_run_selector.setToolTip(
+            "The recorded run whose corrections are reviewed"
+        )
+        self._memory_review_run_selector.currentIndexChanged.connect(
+            self._on_memory_review_context_changed
+        )
+        controls_layout.addWidget(self._memory_review_run_selector)
+
+        self._memory_review_document_selector = QComboBox()
+        self._memory_review_document_selector.setObjectName("memoryReviewDocumentSelector")
+        self._memory_review_document_selector.setAccessibleName("Correction document")
+        self._memory_review_document_selector.setToolTip(
+            "The document whose claims are corrected"
+        )
+        self._memory_review_document_selector.currentIndexChanged.connect(
+            self._on_memory_review_context_changed
+        )
+        controls_layout.addWidget(self._memory_review_document_selector)
+
+        self._memory_review_load_button = QPushButton("Load review")
+        self._memory_review_load_button.setObjectName("memoryReviewLoadButton")
+        self._memory_review_load_button.setAccessibleName(
+            "Load the correction review"
+        )
+        self._memory_review_load_button.setToolTip(
+            "Read the effective document and its history"
+        )
+        self._memory_review_load_button.clicked.connect(self._refresh_memory_review)
+        controls_layout.addWidget(self._memory_review_load_button)
+
+        self._memory_review_reload_button = QPushButton("Reload")
+        self._memory_review_reload_button.setObjectName("memoryReviewReloadButton")
+        self._memory_review_reload_button.setAccessibleName("Reload the review")
+        self._memory_review_reload_button.setToolTip(
+            "Re-read the effective document and its history"
+        )
+        self._memory_review_reload_button.clicked.connect(self._refresh_memory_review)
+        controls_layout.addWidget(self._memory_review_reload_button)
+
+        controls_layout.addStretch(1)
+        layout.addWidget(controls)
+
+        self._memory_review_status = QLabel("")
+        self._memory_review_status.setObjectName("memoryReviewStatus")
+        self._memory_review_status.setWordWrap(True)
+        self._memory_review_status.setStyleSheet(
+            style.memory_placeholder_style(self._palette)
+        )
+        layout.addWidget(self._memory_review_status)
+
+        splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        splitter.setObjectName("memoryReviewSplitter")
+        splitter.addWidget(self._build_memory_review_list_panel())
+        splitter.addWidget(self._build_memory_review_side_panel())
+        splitter.setStretchFactor(0, style.MEMORY_PANE_STRETCH)
+        splitter.setStretchFactor(1, style.MEMORY_PANE_STRETCH)
+        layout.addWidget(splitter, stretch=1)
+
+        self._clear_memory_review("Load a review to compare generated and effective claims.")
+        return body
+
+    def _build_memory_review_list_panel(self) -> QWidget:
+        """Build the comparison panel, conflicts included."""
+        panel = QWidget()
+        panel.setObjectName("memoryReviewListPanel")
+        panel.setMinimumWidth(style.MEMORY_CLAIM_LIST_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.GAP_TIGHT, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        heading = QLabel("Generated and effective")
+        heading.setObjectName("memoryReviewHeading")
+        heading.setFont(style.panel_header_font())
+        heading.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(heading)
+
+        self._memory_review_list = QWidget()
+        self._memory_review_list.setObjectName("memoryReviewList")
+        self._memory_review_layout = QVBoxLayout(self._memory_review_list)
+        self._memory_review_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_review_layout.setSpacing(style.GAP_GROUP)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryReviewScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_review_list)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    def _build_memory_review_side_panel(self) -> QWidget:
+        """Build the editor and history panel."""
+        panel = QWidget()
+        panel.setObjectName("memoryReviewSidePanel")
+        panel.setMinimumWidth(style.MEMORY_DETAIL_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.GAP_TIGHT, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        editor_heading = QLabel("Correction")
+        editor_heading.setObjectName("memoryReviewHeading")
+        editor_heading.setFont(style.panel_header_font())
+        editor_heading.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(editor_heading)
+
+        self._memory_review_selection = QLabel("No claim selected.")
+        self._memory_review_selection.setObjectName("memoryReviewSelection")
+        self._memory_review_selection.setWordWrap(True)
+        self._memory_review_selection.setStyleSheet(
+            style.memory_claim_meta_style(self._palette)
+        )
+        layout.addWidget(self._memory_review_selection)
+
+        self._memory_review_operation = QComboBox()
+        self._memory_review_operation.setObjectName("memoryReviewOperation")
+        self._memory_review_operation.setAccessibleName("Correction operation")
+        self._memory_review_operation.setToolTip("What this correction does")
+        for operation in MEMORY_REVIEW_OPERATIONS:
+            self._memory_review_operation.addItem(
+                MEMORY_OPERATION_LABELS[operation], operation
+            )
+        self._memory_review_operation.currentIndexChanged.connect(
+            self._on_memory_review_operation_changed
+        )
+        layout.addWidget(self._memory_review_operation)
+
+        self._memory_review_text = QPlainTextEdit()
+        self._memory_review_text.setObjectName("memoryReviewText")
+        self._memory_review_text.setAccessibleName("Correction text")
+        self._memory_review_text.setToolTip(
+            "The human text a merge or supersede revision carries"
+        )
+        self._memory_review_text.setPlaceholderText("Correction text")
+        layout.addWidget(self._memory_review_text)
+
+        self._memory_review_actor = QLineEdit()
+        self._memory_review_actor.setObjectName("memoryReviewActor")
+        self._memory_review_actor.setAccessibleName("Correction author")
+        self._memory_review_actor.setToolTip("Who is making this correction")
+        self._memory_review_actor.setPlaceholderText("Author")
+        layout.addWidget(self._memory_review_actor)
+
+        buttons = QWidget()
+        buttons_layout = QHBoxLayout(buttons)
+        buttons_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        buttons_layout.setSpacing(style.GAP_TIGHT)
+        self._memory_review_draft_button = QPushButton("Save draft")
+        self._memory_review_draft_button.setObjectName("memoryReviewDraftButton")
+        self._memory_review_draft_button.setAccessibleName("Save the correction as a draft")
+        self._memory_review_draft_button.setToolTip(
+            "Append a draft revision; a draft is retained and changes nothing"
+        )
+        self._memory_review_draft_button.clicked.connect(self._save_memory_draft)
+        buttons_layout.addWidget(self._memory_review_draft_button)
+
+        self._memory_review_confirm_button = QPushButton("Confirm")
+        self._memory_review_confirm_button.setObjectName("memoryReviewConfirmButton")
+        self._memory_review_confirm_button.setAccessibleName("Confirm the correction")
+        self._memory_review_confirm_button.setToolTip(
+            "Append a confirmed revision; confirming a draft appends a linked successor"
+        )
+        self._memory_review_confirm_button.clicked.connect(
+            self._confirm_memory_correction
+        )
+        buttons_layout.addWidget(self._memory_review_confirm_button)
+
+        self._memory_review_clear_button = QPushButton("Clear")
+        self._memory_review_clear_button.setObjectName("memoryReviewClearButton")
+        self._memory_review_clear_button.setAccessibleName("Clear the correction editor")
+        self._memory_review_clear_button.setToolTip("Discard the composition, not history")
+        self._memory_review_clear_button.clicked.connect(self._clear_memory_editor)
+        buttons_layout.addWidget(self._memory_review_clear_button)
+        layout.addWidget(buttons)
+
+        self._memory_review_editor_status = QLabel("")
+        self._memory_review_editor_status.setObjectName("memoryReviewEditorStatus")
+        self._memory_review_editor_status.setWordWrap(True)
+        self._memory_review_editor_status.setStyleSheet(
+            style.memory_claim_meta_style(self._palette)
+        )
+        layout.addWidget(self._memory_review_editor_status)
+
+        history_heading = QLabel("History")
+        history_heading.setObjectName("memoryReviewHeading")
+        history_heading.setFont(style.panel_header_font())
+        history_heading.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(history_heading)
+
+        self._memory_review_history_body = QWidget()
+        self._memory_review_history_body.setObjectName("memoryReviewHistoryBody")
+        self._memory_review_history_layout = QVBoxLayout(
+            self._memory_review_history_body
+        )
+        self._memory_review_history_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_review_history_layout.setSpacing(style.SPACE_4)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryReviewHistoryScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_review_history_body)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    # -- Memory review: loading --------------------------------------------
+
+    def _refresh_memory_review(self) -> None:
+        """Load the review: documents if needed, then effective, then history."""
+        self._memory_review_generation += 1
+        generation = self._memory_review_generation
+        run_id = self._memory_review_run_selector.currentData()
+        document_type = self._memory_review_document_selector.currentData()
+        if isinstance(run_id, str) and isinstance(document_type, str):
+            self._request_memory_effective(generation, run_id, document_type)
+            return
+        cid = contract.new_correlation_id()
+        request = build_get_memory_documents_request(cid)
+        self._set_status(STATE_RUNNING, "reading Memory documents")
+        if not self._send(
+            request,
+            partial(self._on_memory_review_documents, generation),
+            partial(self._on_memory_review_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_review_documents(
+        self, generation: int, result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_review_generation:
+            return
+        document_sets = [
+            s for s in (result.get("document_sets") or []) if isinstance(s, dict)
+        ]
+        self._memory_review_document_sets = document_sets
+        selector = self._memory_review_run_selector
+        previous = selector.currentIndex()
+        selector.blockSignals(True)
+        selector.clear()
+        for document_set in document_sets:
+            run = document_set.get("run") if isinstance(document_set.get("run"), dict) else {}
+            selector.addItem(
+                "%s — %s" % (memory_state_label(run.get("state")), run.get("run_id")),
+                run.get("run_id"),
+            )
+        selector.blockSignals(False)
+        if not document_sets:
+            self._clear_memory_review("No stored Memory run was found.")
+            return
+        selector.setCurrentIndex(previous if 0 <= previous < len(document_sets) else 0)
+        self._populate_memory_review_documents(generation)
+
+    def _populate_memory_review_documents(self, generation: int) -> None:
+        index = self._memory_review_run_selector.currentIndex()
+        document_set = (
+            self._memory_review_document_sets[index]
+            if 0 <= index < len(self._memory_review_document_sets)
+            else None
+        )
+        selector = self._memory_review_document_selector
+        selector.blockSignals(True)
+        selector.clear()
+        if isinstance(document_set, dict):
+            documents = document_set.get("documents")
+            if isinstance(documents, dict):
+                for document_type in sorted(documents):
+                    document = documents[document_type]
+                    title = (
+                        document.get("title")
+                        if isinstance(document, dict) and document.get("title")
+                        else document_type
+                    )
+                    selector.addItem(str(title), document_type)
+        selector.blockSignals(False)
+
+        run_id = self._memory_review_run_selector.currentData()
+        document_type = selector.currentData()
+        if isinstance(run_id, str) and isinstance(document_type, str):
+            self._request_memory_effective(generation, run_id, document_type)
+        else:
+            self._clear_memory_review("No document is available in this run.")
+
+    def _request_memory_effective(
+        self, generation: int, run_id: str, document_type: str
+    ) -> None:
+        cid = contract.new_correlation_id()
+        request = build_memory_effective_request(cid, run_id, document_type)
+        self._set_status(STATE_RUNNING, "resolving the effective document")
+        if not self._send(
+            request,
+            partial(self._on_memory_review_effective, generation, run_id, document_type),
+            partial(self._on_memory_review_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_review_effective(
+        self,
+        generation: int,
+        run_id: str,
+        document_type: str,
+        result: Dict[str, Any],
+    ) -> None:
+        if generation != self._memory_review_generation:
+            return
+        self._memory_review_effective = result
+        cid = contract.new_correlation_id()
+        request = build_memory_history_request(cid, run_id, document_type)
+        if not self._send(
+            request,
+            partial(self._on_memory_review_history, generation, result),
+            partial(self._on_memory_review_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_review_history(
+        self, generation: int, effective: Dict[str, Any], result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_review_generation:
+            return
+        self._memory_review_history = result
+        self._populate_memory_review()
+        self._restore_operation_status()
+
+    def _on_memory_review_failed(self, generation: int, code: str) -> None:
+        if generation != self._memory_review_generation:
+            return
+        message = "The correction review is unavailable: %s" % code
+        self._memory_review_status.setText(message)
+        self._set_status(STATE_FAILED, message)
+
+    def _on_memory_review_context_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        # The run or document changed: every outstanding action is obsolete.
+        self._memory_review_generation += 1
+        self._clear_memory_editor()
+        self._clear_layout(self._memory_review_layout)
+        self._clear_layout(self._memory_review_history_layout)
+        self._clear_memory_review("The context changed: load the review again.")
+
+    def _clear_memory_review(self, message: str) -> None:
+        self._memory_review_view = None
+        self._memory_review_effective = None
+        self._memory_review_history = None
+        self._memory_review_version_id = None
+        self._memory_review_claims = {}
+        self._memory_review_buttons = []
+        self._clear_layout(self._memory_review_layout)
+        self._clear_layout(self._memory_review_history_layout)
+        placeholder = QLabel(message)
+        placeholder.setObjectName("memoryReviewPlaceholder")
+        placeholder.setWordWrap(True)
+        placeholder.setStyleSheet(style.memory_placeholder_style(self._palette))
+        self._memory_review_layout.addWidget(placeholder)
+        self._memory_review_status.setText(message)
+
+    # -- Memory review: rendering ------------------------------------------
+
+    def _populate_memory_review(self) -> None:
+        """Render the comparison, conflicts and history of one loaded review."""
+        view = memory_review_view(
+            self._memory_review_effective, self._memory_review_history
+        )
+        self._memory_review_view = view
+        generation = self._memory_review_generation
+        claims = [c for c in view.get("claims") or [] if isinstance(c, dict)]
+        conflicts = [c for c in view.get("conflicts") or [] if isinstance(c, dict)]
+        versions = view.get("generated_versions") or []
+        self._memory_review_claims = {
+            claim.get("claim_id"): claim for claim in claims if claim.get("claim_id")
+        }
+        self._memory_review_version_id = (view.get("generated") or {}).get("version_id")
+
+        self._clear_layout(self._memory_review_layout)
+        self._memory_review_buttons = []
+        for conflict in conflicts:
+            self._memory_review_layout.addWidget(
+                self._build_memory_review_conflict_row(conflict, generation)
+            )
+        for claim in claims:
+            self._memory_review_layout.addWidget(
+                self._build_memory_review_claim_row(claim, generation)
+            )
+        if not claims and not conflicts:
+            self._clear_memory_review("This document records no claim to review.")
+            return
+        self._memory_review_status.setText(
+            "%d claim(s), %d unresolved conflict(s), %d generated version(s)."
+            % (len(claims), len(conflicts), len(versions))
+        )
+        self._populate_memory_review_history(view, generation)
+        self._update_memory_review_selection()
+
+    def _build_memory_review_claim_row(
+        self, claim: Dict[str, Any], generation: int
+    ) -> QWidget:
+        """Build one claim's comparison row, generated statement always shown."""
+        container = QWidget()
+        container.setObjectName("memoryReviewClaim")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_4)
+
+        identity = QLabel(str(claim.get("claim_id")))
+        identity.setObjectName("memoryReviewClaimId")
+        identity.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        identity.setAccessibleName("Claim %s" % claim.get("claim_id"))
+        layout.addWidget(identity)
+
+        generated = QLabel("Generated: %s" % claim.get("generated_statement"))
+        generated.setObjectName("memoryReviewGenerated")
+        generated.setWordWrap(True)
+        generated.setStyleSheet(style.memory_claim_style(self._palette))
+        layout.addWidget(generated)
+
+        if claim.get("changed"):
+            effective = QLabel("Effective: %s" % claim.get("effective_statement"))
+            effective.setObjectName("memoryReviewEffective")
+            effective.setWordWrap(True)
+            effective.setStyleSheet(style.memory_claim_style(self._palette))
+            layout.addWidget(effective)
+            state = QLabel(
+                "Human correction applied — provenance %s, generated provenance %s"
+                % (claim.get("effective_provenance_label"),
+                   claim.get("generated_provenance_label"))
+            )
+            state.setObjectName("memoryReviewOverlay")
+            state.setWordWrap(True)
+            state.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(state)
+
+        if claim.get("rejected"):
+            rejected = QLabel("Rejected by a human revision — the generated claim above is retained.")
+            rejected.setObjectName("memoryReviewRejected")
+            rejected.setWordWrap(True)
+            rejected.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(rejected)
+
+        overlay = claim.get("overlay")
+        if isinstance(overlay, dict):
+            meta = QLabel(
+                "Last revision: %s (%s)%s"
+                % (
+                    memory_operation_label(overlay.get("operation")),
+                    memory_correction_state_label(overlay.get("state")),
+                    " by %s" % overlay.get("actor") if overlay.get("actor") else "",
+                )
+            )
+            meta.setObjectName("memoryReviewOverlayMeta")
+            meta.setWordWrap(True)
+            meta.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(meta)
+
+        layout.addWidget(
+            self._build_memory_review_button(
+                "Correct this claim",
+                "correct:%s" % claim.get("claim_id"),
+                partial(self._select_memory_review_claim, claim.get("claim_id"), None),
+                "Arm the editor for claim %s" % claim.get("claim_id"),
+                generation,
+            )
+        )
+        return container
+
+    def _build_memory_review_conflict_row(
+        self, conflict: Dict[str, Any], generation: int
+    ) -> QWidget:
+        """Build one conflict row with only protocol-representable choices."""
+        container = QWidget()
+        container.setObjectName("memoryReviewConflict")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_4)
+
+        heading = QLabel(conflict.get("label") or "Unresolved conflict")
+        heading.setObjectName("memoryReviewConflictHeading")
+        heading.setStyleSheet(style.memory_claim_style(self._palette))
+        heading.setAccessibleName("Unresolved conflict")
+        layout.addWidget(heading)
+
+        target = conflict.get("target") if isinstance(conflict.get("target"), dict) else {}
+        detail = QLabel(
+            "Target %s — %s" % (target.get("claim_id"), conflict.get("reason"))
+        )
+        detail.setObjectName("memoryReviewConflictDetail")
+        detail.setWordWrap(True)
+        detail.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        layout.addWidget(detail)
+
+        prior = QLabel(
+            "Revision %s (%s) could not bind."
+            % (
+                conflict.get("correction_id"),
+                memory_correction_state_label(conflict.get("state")),
+            )
+        )
+        prior.setObjectName("memoryReviewConflictPrior")
+        prior.setWordWrap(True)
+        prior.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        layout.addWidget(prior)
+
+        for choice in conflict.get("choices") or []:
+            operation = choice.get("operation")
+            button = self._build_memory_review_button(
+                choice.get("label"),
+                "choice:%s:%s" % (target.get("claim_id"), operation),
+                partial(
+                    self._select_memory_review_claim, target.get("claim_id"), operation
+                ),
+                "Resolve with %s for claim %s" % (operation, target.get("claim_id")),
+                generation,
+            )
+            if not choice.get("enabled", True):
+                button.setEnabled(False)
+                button.setToolTip(
+                    "Requested %s %s — %s"
+                    % (operation, target.get("claim_id"), choice.get("reason"))
+                )
+                button.setAccessibleName(
+                    "Unavailable %s for %s: %s"
+                    % (operation, target.get("claim_id"), choice.get("reason"))
+                )
+            layout.addWidget(button)
+        return container
+
+    def _build_memory_review_button(
+        self,
+        label: Any,
+        key: str,
+        callback,
+        accessible: str,
+        generation: int,
+    ) -> QPushButton:
+        """Build one review action bound to the generation it was built under."""
+        button = QPushButton(str(label))
+        button.setObjectName("memoryReviewButton")
+        button.setFocusPolicy(Qt.StrongFocus)
+        button.setAccessibleName(accessible)
+        button.setToolTip(accessible)
+        button.clicked.connect(partial(self._guard_memory_review_action, generation, callback))
+        self._memory_review_buttons.append(button)
+        return button
+
+    def _guard_memory_review_action(self, generation: int, callback) -> None:
+        """Run a review action only while the screen it belongs to is current."""
+        if generation != self._memory_review_generation:
+            return
+        callback()
+
+    def _populate_memory_review_history(
+        self, view: Dict[str, Any], generation: int
+    ) -> None:
+        """Render the immutable generated versions and every correction state."""
+        self._clear_layout(self._memory_review_history_layout)
+        versions = view.get("generated_versions") or []
+        corrections = view.get("corrections") or []
+        if not versions and not corrections:
+            placeholder = QLabel("No history is recorded for this document yet.")
+            placeholder.setObjectName("memoryReviewHistoryEmpty")
+            placeholder.setWordWrap(True)
+            placeholder.setStyleSheet(style.memory_placeholder_style(self._palette))
+            self._memory_review_history_layout.addWidget(placeholder)
+            return
+        for version in versions:
+            row = QLabel(
+                "Generated revision %s (immutable) — %s"
+                % (version.get("revision"), version.get("version_id"))
+            )
+            row.setObjectName("memoryReviewVersion")
+            row.setWordWrap(True)
+            row.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            row.setAccessibleName(
+                "Generated revision %s, immutable" % version.get("revision")
+            )
+            self._memory_review_history_layout.addWidget(row)
+        for correction in corrections:
+            authority = correction.get("authority_label")
+            text = "%s — %s (%s)" % (
+                memory_operation_label(correction.get("operation")),
+                correction.get("state_label"),
+                authority,
+            )
+            row = QLabel(text)
+            row.setObjectName("memoryReviewCorrection")
+            row.setWordWrap(True)
+            row.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            row.setAccessibleName(text)
+            self._memory_review_history_layout.addWidget(row)
+            if correction.get("text"):
+                body = QLabel("Text: %s" % correction.get("text"))
+                body.setObjectName("memoryReviewCorrectionText")
+                body.setWordWrap(True)
+                body.setStyleSheet(style.memory_claim_style(self._palette))
+                self._memory_review_history_layout.addWidget(body)
+            if correction.get("supersedes"):
+                links = QLabel(
+                    "Supersedes: %s" % ", ".join(correction.get("supersedes") or [])
+                )
+                links.setObjectName("memoryReviewSupersedes")
+                links.setWordWrap(True)
+                links.setStyleSheet(style.memory_claim_meta_style(self._palette))
+                self._memory_review_history_layout.addWidget(links)
+        for limitation in view.get("limitations") or []:
+            limit = QLabel("Limit: %s" % limitation)
+            limit.setObjectName("memoryReviewLimitation")
+            limit.setWordWrap(True)
+            limit.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            self._memory_review_history_layout.addWidget(limit)
+
+    # -- Memory review: composing and appending ----------------------------
+
+    def _select_memory_review_claim(
+        self, claim_id: Any, operation: Optional[str] = None
+    ) -> None:
+        """Arm the editor for one exact claim, optionally with an operation."""
+        if not isinstance(claim_id, str) or not claim_id:
+            return
+        self._memory_review_selected = claim_id
+        if operation is not None:
+            for index in range(self._memory_review_operation.count()):
+                if self._memory_review_operation.itemData(index) == operation:
+                    self._memory_review_operation.blockSignals(True)
+                    self._memory_review_operation.setCurrentIndex(index)
+                    self._memory_review_operation.blockSignals(False)
+                    break
+        self._memory_review_text.setFocus()
+        self._on_memory_review_operation_changed(
+            self._memory_review_operation.currentIndex()
+        )
+        self._update_memory_review_selection()
+
+    def _on_memory_review_operation_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        operation = self._memory_review_operation.currentData()
+        # Only a merge or a supersede carries replacement text, so the editor
+        # says so rather than accepting words it would refuse to send.
+        self._memory_review_text.setEnabled(operation in ("merge", "supersede"))
+        self._update_memory_review_selection()
+
+    def _update_memory_review_selection(self) -> None:
+        claim_id = getattr(self, "_memory_review_selected", None)
+        if not claim_id:
+            self._memory_review_selection.setText(
+                "No claim selected. Choose a claim to correct."
+            )
+            return
+        self._memory_review_selection.setText(
+            "Correcting %s against generated version %s"
+            % (claim_id, self._memory_review_version_id)
+        )
+        self._memory_review_selection.setAccessibleName(
+            "Correcting claim %s against generated version %s"
+            % (claim_id, self._memory_review_version_id)
+        )
+
+    def _clear_memory_editor(self) -> None:
+        self._memory_review_selected = None
+        self._memory_review_draft = None
+        self._memory_review_text.clear()
+        self._memory_review_editor_status.setText("")
+        self._update_memory_review_selection()
+
+    def _memory_review_payload(self, fallback_text: Any = None) -> Optional[Dict[str, Any]]:
+        """Return the bounded append payload, or explain why it cannot be built."""
+        claim_id = getattr(self, "_memory_review_selected", None)
+        run_id = self._memory_review_run_selector.currentData()
+        document_type = self._memory_review_document_selector.currentData()
+        if not isinstance(claim_id, str) or claim_id not in self._memory_review_claims:
+            self._memory_review_editor_status.setText(
+                "Choose a claim that is present in the current document."
+            )
+            return None
+        if not isinstance(run_id, str) or not isinstance(document_type, str):
+            self._memory_review_editor_status.setText(
+                "Load a review before composing a correction."
+            )
+            return None
+        operation = self._memory_review_operation.currentData()
+        text = self._memory_review_text.toPlainText().strip()
+        if not text and isinstance(fallback_text, str):
+            # Confirming a draft reuses the text the draft already carries: the
+            # editor was emptied when that draft was accepted, and a successor
+            # must say the same thing.
+            text = fallback_text
+        if operation in ("merge", "supersede") and not text:
+            self._memory_review_editor_status.setText(
+                "A %s revision needs replacement text." % operation
+            )
+            return None
+        return {
+            "run_id": run_id,
+            "document_type": document_type,
+            "operation": operation,
+            "claim_id": claim_id,
+            "text": text or None,
+            "actor": self._memory_review_actor.text().strip() or None,
+        }
+
+    def _save_memory_draft(self) -> None:
+        self._append_memory_correction("draft")
+
+    def _confirm_memory_correction(self) -> None:
+        self._append_memory_correction("confirmed")
+
+    def _append_memory_correction(self, state: str) -> None:
+        """Append one bounded revision: a draft, or an explicit confirmation.
+
+        Confirming a draft appends a *new* confirmed revision that names the
+        draft as its parent, so the draft is superseded rather than mutated and
+        history keeps both.
+        """
+        generation = self._memory_review_generation
+        draft = getattr(self, "_memory_review_draft", None)
+        confirming = (
+            state == "confirmed"
+            and isinstance(draft, dict)
+            and draft.get("id")
+            and draft.get("claim_id") == getattr(self, "_memory_review_selected", None)
+            and draft.get("operation") == self._memory_review_operation.currentData()
+        )
+        payload = self._memory_review_payload(
+            fallback_text=draft.get("text") if confirming else None
+        )
+        if payload is None:
+            return
+        supersedes = [draft["id"]] if confirming else None
+
+        token = self._memory_review_attempt_token
+        cid = contract.new_correlation_id()
+        request = build_memory_correction_request(
+            cid,
+            payload["run_id"],
+            payload["document_type"],
+            payload["operation"],
+            payload["claim_id"],
+            text=payload["text"],
+            actor=payload["actor"],
+            supersedes=supersedes,
+            source_id=memory_correction_source_id(
+                payload["document_type"], payload["claim_id"], payload["operation"],
+                "%s:%s" % (token, state),
+            ),
+            expected_version_id=self._memory_review_version_id,
+            state=state,
+        )
+        self._set_status(STATE_RUNNING, "appending a Memory revision")
+        if not self._send(
+            request,
+            partial(self._on_memory_append_loaded, generation, state),
+            partial(self._on_memory_append_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_append_loaded(
+        self, generation: int, state: str, result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_review_generation:
+            return
+        correction = result.get("correction") or {}
+        self._memory_review_editor_status.setText(
+            "%s revision %s (%s)%s"
+            % (
+                "Draft" if state == "draft" else "Confirmed",
+                correction.get("id"),
+                memory_correction_state_label(correction.get("state")),
+                "" if result.get("created") else " — already recorded, no new revision",
+            )
+        )
+        # The composed text has been accepted, so the editor no longer holds it:
+        # what a reader sees from here on is the redacted durable revision, not
+        # the raw words that were typed.
+        self._memory_review_text.clear()
+        # A draft is remembered so an explicit confirmation can link to it.
+        self._memory_review_draft = (
+            {
+                "id": correction.get("id"),
+                "claim_id": (correction.get("target") or {}).get("claim_id"),
+                "operation": correction.get("operation"),
+                "text": correction.get("text"),
+            }
+            if state == "draft"
+            else None
+        )
+        # The effective document is only shown after a successful fresh read.
+        self._refresh_memory_review()
+
+    def _on_memory_append_failed(self, generation: int, code: str) -> None:
+        if generation != self._memory_review_generation:
+            return
+        # Nothing was optimistically applied: the prior screen is still readable
+        # and a bounded reload re-reads the durable truth.
+        self._memory_review_editor_status.setText(
+            "The correction was refused: %s" % code
+        )
+        self._set_status(STATE_FAILED, "the correction was refused: %s" % code)
+        self._refresh_memory_review()
 
     # -- Memory query: filters ---------------------------------------------
 

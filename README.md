@@ -1041,6 +1041,37 @@ or imply acceptance.
 The stored baseline fingerprint is the resolver's internal binding key and never
 crosses the boundary — a reader is told only that a baseline was recorded.
 
+### The correction and history workflow (M4.5/v1b)
+
+The Memory destination carries a fourth read/write page, **Corrections**, that
+consumes protocol 3.8.0 and nothing else. It loads a review — documents, then the
+effective document, then its history — and presents:
+
+**Generated and effective, together.** Every claim row shows `Generated: …` and,
+when a correction binds, `Effective: …` beside it. The generated statement is
+never hidden, a rejected claim says so while keeping the generated text, and
+conflicts are listed first.
+
+**An editor that a choice arms.** Selecting a claim, or choosing one of a
+conflict's four options, arms the editor with that claim's exact identity and the
+current generated version. `Save draft` appends an inert draft; `Confirm` appends
+a confirmed revision that **names the draft as its parent**, so the draft is
+superseded rather than mutated. The replacement text is carried forward to the
+confirmation, and the editor is cleared once an append is accepted — what a
+reader sees from then on is the redacted durable revision, not the raw words.
+
+**History, honestly.** Generated revisions are labelled *immutable*, and every
+correction carries its state and an **Authority** or **History only** label, so
+confirmed and rejected revisions are visibly distinct from draft, archived and
+superseded ones. Superseding shows its links. Nothing in the workflow deletes or
+mutates an earlier revision, and a generation guard invalidates every outstanding
+action when the run, document or context changes.
+
+**Errors never become success.** A refusal — a stale expected version, an unknown
+target, a conflicting identity, a save failure — leaves the prior screen readable,
+reports the bounded code, and triggers a fresh bounded reload rather than an
+optimistic update. The effective text only changes after a successful fresh read.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:

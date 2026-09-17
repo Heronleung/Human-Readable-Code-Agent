@@ -22,6 +22,7 @@ It provides:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from typing import Any, Dict, List, Optional
@@ -2845,6 +2846,122 @@ def memory_effective_view(result: Any) -> Dict[str, Any]:
     }
 
 
+# -- Memory review: corrections, confirmation and history (M4.5/v1b) ------
+#
+# The framework-free half of the correction workflow: what a claim currently
+# reads as, what a human made of it, which choices a conflict can honestly
+# offer, and a stable per-attempt identity for an append.
+
+# The four operations a conflict can be resolved with.
+MEMORY_REVIEW_OPERATIONS = ("keep", "merge", "supersede", "reject")
+
+# What each choice means to a reader, stated as an outcome rather than a verb.
+MEMORY_CONFLICT_CHOICE_LABELS = {
+    "keep": "Keep the generated claim",
+    "merge": "Merge into a new revision",
+    "supersede": "Supersede with a new revision",
+    "reject": "Reject the claim",
+}
+
+# Why a choice can be impossible: without a claim in the current document there
+# is nothing for a revision to bind to, and the boundary would refuse it.
+MEMORY_CONFLICT_UNAVAILABLE = (
+    "the corrected claim is not in the current document, so no revision can bind to it"
+)
+
+MEMORY_AUTHORITY_LABEL_AUTHORITY = "Authority"
+MEMORY_AUTHORITY_LABEL_HISTORY = "History only"
+
+
+def memory_authority_label(state: Any) -> str:
+    """Return whether a revision state is authority or history only."""
+    return (
+        MEMORY_AUTHORITY_LABEL_AUTHORITY
+        if state in ("confirmed", "rejected")
+        else MEMORY_AUTHORITY_LABEL_HISTORY
+    )
+
+
+def memory_correction_source_id(
+    document_type: Any, claim_id: Any, operation: Any, attempt_token: Any
+) -> str:
+    """Return a stable, bounded source id for one append attempt.
+
+    Stability is per *attempt*, not per click: retrying the same attempt after a
+    timeout keeps its identity and is idempotent, while starting a new attempt
+    produces a new revision. Nothing here is derived from human text, so the
+    identity never carries content.
+    """
+    basis = "%s|%s|%s|%s" % (document_type, claim_id, operation, attempt_token)
+    return "corr:" + hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
+
+
+def memory_conflict_choices(
+    conflict: Any, known_claim_ids: Any = ()
+) -> List[Dict[str, Any]]:
+    """Return the choices one conflict can honestly offer.
+
+    A choice is offered only when it can be represented: every operation needs
+    the corrected claim to exist in the current document, because that is what a
+    new revision binds to. When it does not, every choice is disabled with the
+    same bounded reason rather than hidden or silently attempted.
+    """
+    target = conflict.get("target") if isinstance(conflict, dict) else None
+    claim_id = target.get("claim_id") if isinstance(target, dict) else None
+    known = set(known_claim_ids) if known_claim_ids else set()
+    available = isinstance(claim_id, str) and claim_id in known
+    choices = []
+    for operation in MEMORY_REVIEW_OPERATIONS:
+        choices.append(
+            {
+                "operation": operation,
+                "label": MEMORY_CONFLICT_CHOICE_LABELS[operation],
+                "enabled": available,
+                "reason": None if available else MEMORY_CONFLICT_UNAVAILABLE,
+            }
+        )
+    return choices
+
+
+def memory_review_view(effective: Any, history: Any) -> Dict[str, Any]:
+    """Compose the comparison, conflict choices and history of one review.
+
+    The generated statement is always present alongside the effective one, so a
+    reader can never lose sight of what the projection said. Conflicts carry
+    their choices, and history carries an authority label per revision.
+    """
+    effective_view = memory_effective_view(effective)
+    history_view = memory_history_view(history)
+    claims = effective_view.get("claims") or []
+    claim_ids = [claim.get("claim_id") for claim in claims if claim.get("claim_id")]
+    conflicts = []
+    for conflict in effective_view.get("conflicts") or []:
+        entry = dict(conflict)
+        entry["choices"] = memory_conflict_choices(conflict, claim_ids)
+        conflicts.append(entry)
+
+    versions = history_view.get("generated_versions") or []
+    corrections = []
+    for correction in history_view.get("corrections") or []:
+        entry = dict(correction)
+        entry["authority_label"] = memory_authority_label(correction.get("state"))
+        corrections.append(entry)
+
+    return {
+        "run_id": effective_view.get("run_id") or history_view.get("run_id"),
+        "document_type": effective_view.get("document_type")
+        or history_view.get("document_type"),
+        "generated": effective_view.get("generated") or {},
+        "claims": claims,
+        "conflicts": conflicts,
+        "generated_versions": versions,
+        "corrections": corrections,
+        "superseded_ids": history_view.get("superseded_ids") or [],
+        "limitations": list(effective_view.get("limitations") or [])
+        + list(history_view.get("limitations") or []),
+    }
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -3035,4 +3152,13 @@ __all__ = [
     "build_memory_correction_request",
     "memory_history_view",
     "memory_effective_view",
+    "MEMORY_REVIEW_OPERATIONS",
+    "MEMORY_CONFLICT_CHOICE_LABELS",
+    "MEMORY_CONFLICT_UNAVAILABLE",
+    "MEMORY_AUTHORITY_LABEL_AUTHORITY",
+    "MEMORY_AUTHORITY_LABEL_HISTORY",
+    "memory_authority_label",
+    "memory_correction_source_id",
+    "memory_conflict_choices",
+    "memory_review_view",
 ]
