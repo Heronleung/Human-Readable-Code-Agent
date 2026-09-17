@@ -93,7 +93,7 @@ import json
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-MEMORY_SCHEMA_VERSION = "1.0.0"
+MEMORY_SCHEMA_VERSION = "1.1.0"
 MEMORY_GENERATOR = "hrca-memory"
 
 # -- record kinds --------------------------------------------------------
@@ -108,6 +108,13 @@ RECORD_DECISION = "decision"
 RECORD_CODE_ENTITY_LINK = "code_entity_link"
 RECORD_REJECTION = "rejection"
 RECORD_QUARANTINE = "quarantine"
+# 1.1.0 adds two human-facing record kinds. A generated document is an immutable
+# snapshot of one projected document; a correction is an append-only,
+# human-owned revision over one exact typed target. Neither may alter a
+# normalized record: a correction changes what a reader is shown, never what the
+# contract recorded.
+RECORD_GENERATED_DOCUMENT = "generated_document"
+RECORD_CORRECTION = "correction"
 RECORD_KINDS = frozenset(
     {
         RECORD_PROJECT,
@@ -120,6 +127,8 @@ RECORD_KINDS = frozenset(
         RECORD_CODE_ENTITY_LINK,
         RECORD_REJECTION,
         RECORD_QUARANTINE,
+        RECORD_GENERATED_DOCUMENT,
+        RECORD_CORRECTION,
     }
 )
 
@@ -134,6 +143,8 @@ STORE_ARRAYS = (
     "code_entity_links",
     "rejections",
     "quarantines",
+    "generated_documents",
+    "corrections",
 )
 
 # -- provenance ----------------------------------------------------------
@@ -561,6 +572,17 @@ def _counts(redactions: int = 0, truncations: int = 0, exclusions: int = 0) -> D
         "truncations": truncations,
         "exclusions": exclusions,
     }
+
+
+def privacy_counts(
+    redactions: int = 0, truncations: int = 0, exclusions: int = 0
+) -> Dict[str, int]:
+    """Return a fresh bounded, content-free privacy accounting record.
+
+    Public so a sibling module in this seam can account for its own records
+    without reaching for the private helper or hand-rolling the shape.
+    """
+    return _counts(redactions, truncations, exclusions)
 
 
 def _merge_counts(*records: Dict[str, int]) -> Dict[str, int]:
@@ -1665,12 +1687,29 @@ def _migrate_0_9_0(raw: Dict[str, Any]) -> Dict[str, Any]:
         run = dict(run)
         run.setdefault("privacy", _counts())
         store["agent_run"] = run
-    store["schema_version"] = MEMORY_SCHEMA_VERSION
+    # Each step names the version it produces, so the chain — not this function
+    # — decides where a store finally lands.
+    store["schema_version"] = "1.0.0"
+    return store
+
+
+# ``1.1.0`` adds the human-owned revision surface: immutable generated-document
+# snapshots and append-only corrections. The migration is purely additive — it
+# introduces two empty arrays and stamps the version, and touches no existing
+# record, identity, replay meaning or privacy field.
+def _migrate_1_0_0(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Upgrade a ``1.0.0`` store to ``1.1.0`` additively."""
+    store = dict(raw)
+    for array in ("generated_documents", "corrections"):
+        if not isinstance(store.get(array), list):
+            store[array] = []
+    store["schema_version"] = "1.1.0"
     return store
 
 
 MIGRATIONS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "0.9.0": _migrate_0_9_0,
+    "1.0.0": _migrate_1_0_0,
 }
 
 
@@ -1708,9 +1747,27 @@ def migrate_memory(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         return None, REASON_NOT_MIGRATABLE
 
     before = _migration_snapshot(raw)
-    try:
-        migrated = MIGRATIONS[version](dict(raw))
-    except Exception:
+    # Steps are chained, so a store several versions behind lands on the
+    # current one without any step needing to know about the others.
+    migrated: Any = dict(raw)
+    for _step in range(len(MIGRATIONS) + 1):
+        step_version = migrated.get("schema_version")
+        try:
+            step_found = _version_tuple(step_version)
+        except (ValueError, AttributeError):
+            return None, REASON_INVALID_VERSION
+        if step_found == current:
+            break
+        if step_found > current:
+            return None, REASON_FUTURE_VERSION
+        migration = MIGRATIONS.get(step_version)
+        if migration is None:
+            return None, REASON_NOT_MIGRATABLE
+        try:
+            migrated = migration(dict(migrated))
+        except Exception:
+            return None, REASON_MIGRATION_FAILED
+    else:  # pragma: no cover - guarded by the chain length
         return None, REASON_MIGRATION_FAILED
 
     after = _migration_snapshot(migrated)
@@ -1741,6 +1798,17 @@ def _migration_snapshot(store: Dict[str, Any]) -> Dict[str, Any]:
         ),
         "change_set_ids": sorted(
             str(r.get("id")) for r in store.get("change_sets", []) if isinstance(r, dict)
+        ),
+        # A migration that dropped or rewrote a human revision, or a
+        # generated-document snapshot, would change what a reader is shown even
+        # though replay meaning survived, so both are part of the snapshot.
+        "correction_ids": sorted(
+            str(r.get("id")) for r in store.get("corrections", []) if isinstance(r, dict)
+        ),
+        "generated_document_ids": sorted(
+            str(r.get("id"))
+            for r in store.get("generated_documents", [])
+            if isinstance(r, dict)
         ),
     }
 

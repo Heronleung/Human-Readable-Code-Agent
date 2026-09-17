@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional
 # The version of the desktop-to-core contract. A boundary rejects any request
 # whose ``contract_version`` differs from this constant with a bounded
 # ``unknown_contract_version`` error.
-CONTRACT_VERSION = "3.7.0"
+CONTRACT_VERSION = "3.8.0"
 
 # Correlation identifier: a client-generated opaque string that the boundary
 # echoes verbatim so a client can match each response to its in-flight request.
@@ -165,6 +165,17 @@ ACTION_MEMORY_RECORD = "get_memory_record"
 # stdlib-only, so it names the actions without importing that module.
 ACTION_MEMORY_SEARCH = "search_memory"
 ACTION_MEMORY_RESUME = "memory_resume"
+# The M4.5 human-revision protocol. ``get_memory_history`` lists the append-only
+# history of one run (immutable generated-document versions plus human
+# corrections); ``resolve_memory_effective`` returns the generated projection
+# with the confirmed overlays the resolver could bind, and every conflict it
+# could not; ``append_memory_correction`` is the one *writing* Memory action,
+# appending a bounded human revision to the boundary-owned store. A correction
+# never alters a normalized record, a run state or the scanned repository, and
+# it may never claim the recorded baseline is current.
+ACTION_MEMORY_HISTORY = "get_memory_history"
+ACTION_MEMORY_EFFECTIVE = "resolve_memory_effective"
+ACTION_MEMORY_CORRECTION = "append_memory_correction"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -288,6 +299,14 @@ MEMORY_ACTIONS = frozenset({ACTION_MEMORY_DOCUMENTS, ACTION_MEMORY_RECORD})
 # artefact — every answer is computed from the same normalized stores the read
 # actions already expose.
 MEMORY_QUERY_ACTIONS = frozenset({ACTION_MEMORY_SEARCH, ACTION_MEMORY_RESUME})
+
+# The M4.5 human-revision protocol. Two reads and one bounded append. The append
+# writes only the per-run Memory store through the storage owner at the
+# boundary-owned base; it takes no path, mutates no normalized record and never
+# touches the scanned repository.
+MEMORY_REVISION_ACTIONS = frozenset(
+    {ACTION_MEMORY_HISTORY, ACTION_MEMORY_EFFECTIVE, ACTION_MEMORY_CORRECTION}
+)
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -306,6 +325,7 @@ ALLOWED_ACTIONS = (
     | RULE_DELTA_INTERPRET_ACTIONS
     | MEMORY_ACTIONS
     | MEMORY_QUERY_ACTIONS
+    | MEMORY_REVISION_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -448,6 +468,13 @@ _ERROR_MESSAGES = {
     # value. The precise reason is available to the offline query model, which is
     # where a caller can inspect it; the wire stays bounded.
     "memory_query_invalid": "the Memory query is not valid",
+    # Memory revision errors (M4.5/v1a). Two bounded codes: one for a request
+    # whose shape cannot be used, and one for a well-formed correction the
+    # revision model refused — a stale baseline, an unknown target, an unknown
+    # revision to supersede, or a bounded-limit or text refusal. Neither
+    # interpolates an id, a target, a term or any stored content.
+    "memory_revision_invalid": "the Memory revision request is not valid",
+    "memory_correction_refused": "the Memory correction was refused",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)

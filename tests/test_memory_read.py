@@ -138,11 +138,15 @@ class ContractSurfaceTests(MemoryReadTestCase):
             with self.subTest(set=name):
                 self.assertTrue(prior.isdisjoint(contract.MEMORY_ACTIONS))
                 self.assertTrue(prior.isdisjoint(contract.MEMORY_QUERY_ACTIONS))
+                self.assertTrue(prior.isdisjoint(contract.MEMORY_REVISION_ACTIONS))
             union |= prior
         # The allowlist stays exactly the union of the declared sets, so nothing
         # can be added to the public surface outside a named set.
         self.assertEqual(
-            union | contract.MEMORY_ACTIONS | contract.MEMORY_QUERY_ACTIONS,
+            union
+            | contract.MEMORY_ACTIONS
+            | contract.MEMORY_QUERY_ACTIONS
+            | contract.MEMORY_REVISION_ACTIONS,
             contract.ALLOWED_ACTIONS,
         )
         for action in ("scan", "open_project", "get_tree", "get_document",

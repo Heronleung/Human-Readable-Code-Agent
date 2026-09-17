@@ -2636,6 +2636,215 @@ def memory_resume_view(result: Any) -> Dict[str, Any]:
     }
 
 
+# -- Memory revisions: correction, history and effective (M4.5/v1a) ------
+
+MEMORY_CORRECTION_OPERATIONS = ("keep", "merge", "supersede", "reject")
+
+MEMORY_CORRECTION_STATES = ("draft", "confirmed", "rejected", "superseded", "archived")
+
+MEMORY_OPERATION_LABELS = {
+    "keep": "Keep as generated",
+    "merge": "Replace with human text",
+    "supersede": "Supersede an earlier revision",
+    "reject": "Reject this claim",
+}
+
+# Every state says what it means, and only ``confirmed`` says the overlay is
+# authority — colour is never the cue.
+MEMORY_CORRECTION_STATE_LABELS = {
+    "draft": "Draft (not authority)",
+    "confirmed": "Confirmed (authority)",
+    "rejected": "Rejected (history only)",
+    "superseded": "Superseded (history only)",
+    "archived": "Archived (history only)",
+}
+
+MEMORY_CONFLICT_LABEL = "Unresolved conflict"
+
+MEMORY_EFFECTIVE_LIMITATION_KEYS = (
+    "never changes a normalized record",
+    "not verified",
+    "not acceptance",
+    "never guessed",
+)
+
+
+def memory_operation_label(operation: Any) -> str:
+    """Return the textual label for a correction operation."""
+    if isinstance(operation, str) and operation in MEMORY_OPERATION_LABELS:
+        return MEMORY_OPERATION_LABELS[operation]
+    return str(operation)
+
+
+def memory_correction_state_label(state: Any) -> str:
+    """Return the textual label for a correction state."""
+    if isinstance(state, str) and state in MEMORY_CORRECTION_STATE_LABELS:
+        return MEMORY_CORRECTION_STATE_LABELS[state]
+    return str(state)
+
+
+def build_memory_history_request(
+    correlation_id: str, run_id: str, document_type: Optional[str] = None
+) -> Dict[str, Any]:
+    """Build a bounded ``get_memory_history`` request. No path is ever sent."""
+    request: Dict[str, Any] = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_MEMORY_HISTORY,
+        "run_id": run_id,
+    }
+    if document_type is not None:
+        request["document_type"] = document_type
+    return request
+
+
+def build_memory_effective_request(
+    correlation_id: str, run_id: str, document_type: str
+) -> Dict[str, Any]:
+    """Build a bounded ``resolve_memory_effective`` request."""
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_MEMORY_EFFECTIVE,
+        "run_id": run_id,
+        "document_type": document_type,
+    }
+
+
+def build_memory_correction_request(
+    correlation_id: str,
+    run_id: str,
+    document_type: str,
+    operation: str,
+    claim_id: str,
+    text: Optional[str] = None,
+    actor: Optional[str] = None,
+    supersedes: Optional[List[str]] = None,
+    source_id: Optional[str] = None,
+    expected_version_id: Optional[str] = None,
+    state: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a bounded ``append_memory_correction`` request.
+
+    The target is a claim's stable projected identity. No path is ever sent, and
+    the baseline the correction binds to is computed by the boundary from the
+    document it projects — never asserted by the caller.
+    """
+    request: Dict[str, Any] = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_MEMORY_CORRECTION,
+        "run_id": run_id,
+        "document_type": document_type,
+        "operation": operation,
+        "target": {"claim_id": claim_id},
+    }
+    if text is not None:
+        request["text"] = text
+    if actor is not None:
+        request["actor"] = actor
+    if supersedes:
+        request["supersedes"] = list(supersedes)
+    if source_id is not None:
+        request["source_id"] = source_id
+    if expected_version_id is not None:
+        request["expected_version_id"] = expected_version_id
+    if state is not None:
+        request["state"] = state
+    return request
+
+
+def memory_history_view(result: Any) -> Dict[str, Any]:
+    """Return the display view of a history, states and limits kept textual."""
+    if not isinstance(result, dict):
+        return {}
+    return {
+        "run_id": result.get("run_id"),
+        "document_type": result.get("document_type"),
+        "generated_versions": [
+            {
+                "version_id": version.get("id"),
+                "revision": version.get("revision"),
+                "document_type_label": version.get("document_type"),
+            }
+            for version in result.get("generated_versions") or []
+            if isinstance(version, dict)
+        ],
+        "corrections": [
+            {
+                "correction_id": correction.get("id"),
+                "operation": correction.get("operation"),
+                "operation_label": memory_operation_label(correction.get("operation")),
+                "state": correction.get("state"),
+                "state_label": memory_correction_state_label(correction.get("state")),
+                "target": correction.get("target"),
+                "text": correction.get("text"),
+                "actor": correction.get("actor"),
+                "created_at": correction.get("created_at"),
+                "supersedes": list(correction.get("supersedes") or []),
+                "is_superseded": correction.get("id") in (result.get("superseded_ids") or []),
+                "is_authority": correction.get("state") == "confirmed",
+                "base_recorded": bool(correction.get("base_recorded")),
+            }
+            for correction in result.get("corrections") or []
+            if isinstance(correction, dict)
+        ],
+        "superseded_ids": list(result.get("superseded_ids") or []),
+        "limitations": list(result.get("limitations") or []),
+    }
+
+
+def memory_effective_view(result: Any) -> Dict[str, Any]:
+    """Return the display view of an effective document.
+
+    A claim keeps both its generated and its effective statement, so a reader can
+    always see what the projection said and what a human made of it, and an
+    unresolved conflict is listed with its reason rather than hidden.
+    """
+    if not isinstance(result, dict):
+        return {}
+    return {
+        "run_id": result.get("run_id"),
+        "document_type": result.get("document_type"),
+        "generated": result.get("generated") or {},
+        "claims": [
+            {
+                "claim_id": claim.get("claim_id"),
+                "generated_statement": claim.get("generated_statement"),
+                "effective_statement": claim.get("effective_statement"),
+                "changed": claim.get("generated_statement")
+                != claim.get("effective_statement"),
+                "generated_provenance_label": memory_provenance_label(
+                    claim.get("generated_provenance")
+                ),
+                "effective_provenance_label": memory_provenance_label(
+                    claim.get("effective_provenance")
+                ),
+                "rejected": bool(claim.get("rejected")),
+                "overlay": claim.get("overlay"),
+            }
+            for claim in result.get("claims") or []
+            if isinstance(claim, dict)
+        ],
+        "conflicts": [
+            {
+                "label": MEMORY_CONFLICT_LABEL,
+                "outcome": conflict.get("outcome"),
+                "correction_id": conflict.get("correction_id"),
+                "operation_label": memory_operation_label(conflict.get("operation")),
+                "state_label": memory_correction_state_label(conflict.get("state")),
+                "reason": conflict.get("reason"),
+                "target": conflict.get("target"),
+                "base_recorded": bool(conflict.get("base_recorded")),
+            }
+            for conflict in result.get("conflicts") or []
+            if isinstance(conflict, dict)
+        ],
+        "applied_correction_ids": list(result.get("applied_correction_ids") or []),
+        "limitations": list(result.get("limitations") or []),
+    }
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -2813,4 +3022,17 @@ __all__ = [
     "build_memory_resume_request",
     "memory_hit_rows",
     "memory_resume_view",
+    "MEMORY_CORRECTION_OPERATIONS",
+    "MEMORY_CORRECTION_STATES",
+    "MEMORY_OPERATION_LABELS",
+    "MEMORY_CORRECTION_STATE_LABELS",
+    "MEMORY_CONFLICT_LABEL",
+    "MEMORY_EFFECTIVE_LIMITATION_KEYS",
+    "memory_operation_label",
+    "memory_correction_state_label",
+    "build_memory_history_request",
+    "build_memory_effective_request",
+    "build_memory_correction_request",
+    "memory_history_view",
+    "memory_effective_view",
 ]

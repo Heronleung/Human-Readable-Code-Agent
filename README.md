@@ -183,7 +183,7 @@ meet the WCAG 4.5:1 contrast threshold in both palettes (checked by
 
 The contract (`hrca/contract.py`) defines:
 
-- `CONTRACT_VERSION` (`3.7.0`) — any other version is rejected,
+- `CONTRACT_VERSION` (`3.8.0`) — any other version is rejected,
 - the request/result envelopes and the client-generated `correlation_id`
   echoed verbatim in every response,
 - the allowed read-only action names — the scan pipeline (`scan`, `read`,
@@ -203,9 +203,13 @@ The contract (`hrca/contract.py`) defines:
   `MAX_MEMORY_ID_CHARS`) and error codes (`memory_run_not_found`,
   `memory_record_not_found`, `memory_kind_not_supported`, `memory_not_readable`),
 - the bounded Memory query actions (`search_memory`, `memory_resume`) added in
-  3.7.0 with the single bounded code `memory_query_invalid`. The increments are
-  additive: every earlier action keeps its name, meaning and version rule, and
-  `ALLOWED_ACTIONS` stays exactly the union of the declared action sets.
+  3.7.0 with the single bounded code `memory_query_invalid`,
+- the M4.5 human-revision actions (`get_memory_history`,
+  `resolve_memory_effective`, `append_memory_correction`) added in 3.8.0, with
+  the bounded codes `memory_revision_invalid` and `memory_correction_refused`.
+  The increments are additive: every earlier action keeps its name, meaning and
+  version rule, and `ALLOWED_ACTIONS` stays exactly the union of the declared
+  action sets.
 
 The workspace policy (`hrca/workspace.py`) lists every ordinary file and folder
 below the accepted root — not only Python files — while still excluding
@@ -986,6 +990,56 @@ other. A result with no typed target renders a **disabled** `Unavailable` button
 the order, the result set or the Resume context changes, and every action
 captures the generation it was built under. A superseded action opens nothing and
 a late response is discarded rather than shown against the current selection.
+
+## Human corrections, confirmation and history (M4.5/v1a)
+
+Schema **1.1.0** adds two human-facing record kinds, and with them the first
+Memory authority a human owns rather than a source. The migration is additive:
+`1.0.0` (and `0.9.0`, by chaining) gains two empty arrays, and no existing
+identity, replay meaning, evidence link or privacy field is touched.
+
+| Record | What it is |
+|---|---|
+| `generated_document` | an immutable snapshot of one projected document at one revision |
+| `correction` | an append-only, human-owned revision over one exact typed target |
+
+**A correction changes what a reader is shown, never what was recorded.** It
+cannot alter a normalized record, cannot change a run's terminal state, cannot
+imply repository adoption, and never claims the recorded baseline is current.
+The three actions are `get_memory_history`, `resolve_memory_effective` and
+`append_memory_correction` — the last one writes only the per-run store, through
+the storage owner at the boundary-owned base.
+
+### Operations, states and identity
+
+`keep` affirms a claim, `merge` replaces its statement with human text,
+`supersede` replaces an earlier revision (naming its parents), and `reject` marks
+a claim rejected without deleting it. Every state says what it means: **draft**,
+**archived** and **superseded** are retained in history and change nothing;
+**confirmed** and **rejected** bind. `unresolved_conflict` is deliberately *not*
+a stored state — writing a resolution outcome into append-only history would be
+a rewrite — so it is a resolution result, distinct from every stored state.
+
+Identity follows the M4.1 pattern: a caller-supplied `source_id` is preferred, so
+an identical retry is observably a no-op while the same identity arriving with
+different content is **refused** rather than silently overwriting a durable
+revision. A correction that records no baseline is refused too, because it could
+never bind and would sit in history looking like authority.
+
+### Effective resolution
+
+`resolve_memory_effective` returns the generated projection with the overlays
+that bind, and every conflict it could not. The baseline a correction binds to is
+computed by the boundary from the document **it** projects — never asserted by a
+caller — and re-checked at resolution time. An overlay applies only while its
+exact target is present **and** unchanged; a missing or changed target becomes an
+explicit unresolved conflict, with the generated statement left intact. Nothing
+is matched by prose similarity, order or a guessed replacement, and the result
+states in words what a correction cannot do: change a record, verify a baseline
+or imply acceptance.
+
+The stored baseline fingerprint is the resolver's internal binding key and never
+crosses the boundary — a reader is told only that a baseline was recorded.
 
 ## Scope and limitations
 

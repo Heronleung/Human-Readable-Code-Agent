@@ -50,6 +50,7 @@ from . import (
     library_store,
     memory_docs,
     memory_query,
+    memory_revisions,
     memory_store,
     proposal,
     provider,
@@ -345,6 +346,12 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _search_memory_result(request, session)
     elif action == contract.ACTION_MEMORY_RESUME:
         result = _memory_resume_result(request, session)
+    elif action == contract.ACTION_MEMORY_HISTORY:
+        result = _get_memory_history_result(request, session)
+    elif action == contract.ACTION_MEMORY_EFFECTIVE:
+        result = _resolve_memory_effective_result(request, session)
+    elif action == contract.ACTION_MEMORY_CORRECTION:
+        result = _append_memory_correction_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -2933,6 +2940,154 @@ def _memory_resume_result(
         raise contract.ContractError("memory_query_invalid")
     result["runs_truncated"] = truncated
     return result
+
+
+# -- Memory revision handlers (M4.5/v1a) ---------------------------------
+
+
+def _memory_document_for(
+    session: WorkspaceSession, run_id: str, document_type: Any
+) -> "tuple":
+    """Return ``(store, document)`` for one projected document, or fail closed."""
+    store = _load_memory_store(session, run_id)
+    document_set, _project_err, _report = memory_docs.project_store(store)
+    if document_set is None:
+        raise contract.ContractError("memory_not_readable")
+    documents = document_set.get("documents")
+    document = documents.get(document_type) if isinstance(documents, dict) else None
+    if not isinstance(document, dict):
+        raise contract.ContractError("memory_revision_invalid")
+    return store, document
+
+
+def _latest_generated_version(
+    store: Dict[str, Any], run_id: str, document_type: str
+) -> Optional[Dict[str, Any]]:
+    versions = [
+        record
+        for record in store.get("generated_documents", [])
+        if isinstance(record, dict)
+        and record.get("run_id") == run_id
+        and record.get("document_type") == document_type
+    ]
+    versions.sort(key=lambda record: record.get("revision", 0))
+    return versions[-1] if versions else None
+
+
+def _revision_run_and_type(request: Dict[str, Any]) -> "tuple":
+    run_id = _bounded_memory_id(request.get("run_id"))
+    document_type = request.get("document_type")
+    if run_id is None:
+        raise contract.ContractError("invalid_request")
+    if document_type is not None and not isinstance(document_type, str):
+        raise contract.ContractError("invalid_request")
+    return run_id, document_type
+
+
+def _get_memory_history_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """List the append-only history of one run."""
+    run_id, document_type = _revision_run_and_type(request)
+    store = _load_memory_store(session, run_id)
+    result, _reason = memory_revisions.history_for(store, run_id, document_type)
+    if result is None:
+        raise contract.ContractError("memory_revision_invalid")
+    return result
+
+
+def _resolve_memory_effective_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Resolve the effective document: the projection plus bindable overlays."""
+    run_id, document_type = _revision_run_and_type(request)
+    if not isinstance(document_type, str):
+        raise contract.ContractError("invalid_request")
+    store, document = _memory_document_for(session, run_id, document_type)
+    version = _latest_generated_version(store, run_id, document_type)
+    result, _reason = memory_revisions.resolve_effective(
+        store, run_id, document_type, document, version
+    )
+    if result is None:
+        raise contract.ContractError("memory_revision_invalid")
+    return result
+
+
+def _append_memory_correction_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Append one bounded human revision to the boundary-owned store.
+
+    This is the only Memory action that writes. It writes the per-run store
+    through the storage owner and nothing else: no normalized record, no run
+    state, no repository file. The generated baseline the correction binds to is
+    computed here, from the document the boundary itself projected, so a durable
+    revision records the baseline it actually saw rather than one a caller
+    claimed.
+    """
+    run_id, document_type = _revision_run_and_type(request)
+    if not isinstance(document_type, str):
+        raise contract.ContractError("invalid_request")
+    target = request.get("target")
+    if not isinstance(target, dict):
+        raise contract.ContractError("invalid_request")
+
+    store, document = _memory_document_for(session, run_id, document_type)
+    claims = {
+        claim["id"]: claim
+        for claim in document.get("claims") or []
+        if isinstance(claim, dict) and isinstance(claim.get("id"), str)
+    }
+    claim_id = target.get("claim_id")
+    claim = claims.get(claim_id) if isinstance(claim_id, str) else None
+    if claim is None:
+        # A target this document does not contain is refused rather than bound
+        # to anything else.
+        raise contract.ContractError("memory_correction_refused")
+
+    expected = request.get("expected_version_id")
+    if isinstance(expected, str) and expected:
+        current = _latest_generated_version(store, run_id, document_type)
+        if current is None or current.get("id") != expected:
+            # A stale expectation means the caller is correcting something that
+            # has moved on; refuse rather than append against an unseen state.
+            raise contract.ContractError("memory_correction_refused")
+
+    version, version_reason = memory_revisions.record_generated_version(
+        store, run_id, document_type, document
+    )
+    if version is None:
+        raise contract.ContractError("memory_correction_refused")
+
+    payload = {
+        "document_type": document_type,
+        "operation": request.get("operation"),
+        "state": request.get("state"),
+        "target": target,
+        "text": request.get("text"),
+        "actor": request.get("actor"),
+        "created_at": request.get("created_at"),
+        "supersedes": request.get("supersedes"),
+        "source_id": request.get("source_id"),
+    }
+    base = memory_revisions.claim_fingerprint(claim)
+    record, _reason, created = memory_revisions.append_correction(
+        store, run_id, payload, base
+    )
+    if record is None:
+        raise contract.ContractError("memory_correction_refused")
+
+    if memory_store.save(session.store_base, run_id, store) is not None:
+        # The in-memory store was mutated but nothing reached disk, so the next
+        # read still sees the last durable state.
+        raise contract.ContractError("memory_not_readable")
+
+    return {
+        "correction": memory_revisions.correction_view(record),
+        "created": created,
+        "generated_version_id": version.get("id"),
+        "generated_revision": version.get("revision"),
+    }
 
 
 if __name__ == "__main__":

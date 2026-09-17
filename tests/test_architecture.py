@@ -71,8 +71,13 @@ _DOCUMENT_SEAM = frozenset({"document", "version_store"})
 # coding-agent runs, is not a capture path, and exposes no Memory UI. The
 # desktop reaches it only through a later, explicitly designed boundary.
 _MEMORY_SEAM = frozenset(
-    {"memory", "memory_store", "memory_cli", "memory_docs", "memory_query"}
+    {"memory", "memory_store", "memory_cli", "memory_docs", "memory_query",
+     "memory_revisions"}
 )
+
+# M4.5 human-revision domain. Like the projector and the query model it is a
+# pure model over normalized records: no store, no I/O, no Qt.
+_REVISIONS_MODULE = "memory_revisions"
 
 # M4.3 evidence-linked document projection. It reads normalized records only, so
 # it may not reach the capture seam or the storage owner.
@@ -92,6 +97,7 @@ _CAPTURE_SEAM = frozenset({"claude_code_hooks", "hook_capture"})
 # import the capture seam.
 _MEMORY_PRODUCT_MODULES = (
     "memory", "memory_store", "memory_cli", "memory_docs", "memory_query",
+    "memory_revisions",
 )
 
 
@@ -279,7 +285,7 @@ class ClientArchitectureTests(unittest.TestCase):
         # The memory domain and its store are offline: they never open a
         # socket, so an offline replay stays network-free.
         for name in ("memory", "memory_store", "memory_cli", "memory_docs",
-                     "memory_query"):
+                     "memory_query", "memory_revisions"):
             path = os.path.join(_SRC, name + ".py")
             imported = _imported_top_level_names(path)
             self.assertTrue(
@@ -451,6 +457,44 @@ class MemoryReadBoundaryTests(unittest.TestCase):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         }
         self.assertNotIn("open", called)
+
+    def test_the_revision_model_is_pure_and_has_no_clock(self):
+        # A revision model that could open a file, reach a store or read a clock
+        # could bind a correction to something the contract never recorded.
+        path = os.path.join(_SRC, _REVISIONS_MODULE + ".py")
+        imported = _imported_top_level_names(path)
+        self.assertTrue(
+            imported.isdisjoint(
+                _CAPTURE_SEAM | {"memory_store", "os", "subprocess", "datetime",
+                                 "time"}
+            ),
+            f"hrca.{_REVISIONS_MODULE} reaches beyond normalized records: "
+            f"{sorted(imported)}",
+        )
+        with open(path, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        called = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertNotIn("open", called)
+
+    def test_only_the_boundary_reaches_the_revision_model(self):
+        offenders = []
+        for name in sorted(os.listdir(_SRC)):
+            if not name.endswith(".py"):
+                continue
+            stem = name[:-3]
+            if stem in ("boundary", _REVISIONS_MODULE):
+                continue
+            if _REVISIONS_MODULE in _imported_top_level_names(
+                os.path.join(_SRC, name)
+            ):
+                offenders.append(stem)
+        self.assertEqual(
+            [], offenders, "these modules import the revision model: %s" % offenders
+        )
 
     def test_only_the_boundary_reaches_the_query_model(self):
         offenders = []

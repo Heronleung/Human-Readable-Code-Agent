@@ -20,7 +20,12 @@ execution at scan time.
   bounded Search/Timeline/Resume read model is `memory_query.py`, reached
   through the `search_memory` / `memory_resume` actions (contract 3.7.0); it is
   a pure model over records with no index and no storage. The M4.4 workflow is
-  the Documents / Search / Resume tabs of that same `memory` destination.
+  the Documents / Search / Resume tabs of that same `memory` destination. Schema
+  1.1.0 (M4.5/v1a) adds append-only human corrections and immutable
+  generated-document versions in `memory_revisions.py`, reached through the
+  `get_memory_history` / `resolve_memory_effective` / `append_memory_correction`
+  actions (contract 3.8.0); a correction changes what is shown, never what was
+  recorded.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`.
 - `evidence/m4.2/` — the bounded record of the two authorized capture sessions
