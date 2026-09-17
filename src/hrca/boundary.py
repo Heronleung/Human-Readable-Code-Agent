@@ -49,6 +49,7 @@ from . import (
     library,
     library_store,
     memory_docs,
+    memory_query,
     memory_store,
     proposal,
     provider,
@@ -340,6 +341,10 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _get_memory_documents_result(request, session)
     elif action == contract.ACTION_MEMORY_RECORD:
         result = _get_memory_record_result(request, session)
+    elif action == contract.ACTION_MEMORY_SEARCH:
+        result = _search_memory_result(request, session)
+    elif action == contract.ACTION_MEMORY_RESUME:
+        result = _memory_resume_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -2876,6 +2881,58 @@ def _get_memory_record_result(
             raise contract.ContractError("memory_kind_not_supported")
         raise contract.ContractError("memory_record_not_found")
     return view
+
+
+# -- Memory query handlers (M4.4/v1) -------------------------------------
+
+
+def _load_query_corpus(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> "tuple":
+    """Return ``(stores, truncated)`` for a bounded query corpus.
+
+    The corpus is the same bounded run set the read actions use, loaded through
+    the storage owner at the boundary-owned base. A query never names a path, so
+    a caller cannot widen the corpus beyond the stores that already exist.
+    """
+    run_ids, truncated = _memory_run_ids(request, session)
+    stores = [_load_memory_store(session, run_id) for run_id in run_ids]
+    return stores, truncated
+
+
+def _search_memory_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Answer a bounded faceted cross-run query over normalized records."""
+    stores, truncated = _load_query_corpus(request, session)
+    order = request.get("order")
+    if order is None:
+        order = memory_query.ORDER_RELEVANCE
+    limit = request.get("limit")
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int)):
+        raise contract.ContractError("memory_query_invalid")
+
+    result, reason, _unsupported = memory_query.search(
+        stores, filters=request.get("filters"), order=order, limit=limit
+    )
+    if result is None:
+        # Every rejectable query shape collapses to one bounded code: a facet
+        # name or a term is caller text and must never reach a protocol error.
+        raise contract.ContractError("memory_query_invalid")
+    result["runs_truncated"] = truncated
+    return result
+
+
+def _memory_resume_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Compose an evidence-linked Resume over a bounded run set."""
+    stores, truncated = _load_query_corpus(request, session)
+    result, reason = memory_query.resume(stores)
+    if result is None:
+        raise contract.ContractError("memory_query_invalid")
+    result["runs_truncated"] = truncated
+    return result
 
 
 if __name__ == "__main__":

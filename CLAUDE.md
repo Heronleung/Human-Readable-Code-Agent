@@ -16,7 +16,10 @@ execution at scan time.
   transcript or a log. The desktop reaches Memory only through the two
   read-only `boundary.py` actions `get_memory_documents` / `get_memory_record`
   (contract 3.6.0); it must never import the Memory seam. The M4.3 read-only
-  Evidence surface is the `memory` nav destination in `client.py`.
+  Evidence surface is the `memory` nav destination in `client.py`. The M4.4
+  bounded Search/Timeline/Resume read model is `memory_query.py`, reached
+  through the `search_memory` / `memory_resume` actions (contract 3.7.0); it is
+  a pure model over records with no index and no storage.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`.
 - `evidence/m4.2/` — the bounded record of the two authorized capture sessions

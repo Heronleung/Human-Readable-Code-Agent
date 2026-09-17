@@ -1047,6 +1047,30 @@ def _view_fields(record: Dict[str, Any], kind: str) -> Dict[str, Any]:
     return fields
 
 
+def iter_records(store: Any):
+    """Yield ``(kind, record)`` for every record the read boundary exposes.
+
+    This is the one place that maps a link kind onto its store array, so a
+    caller cannot invent a kind the boundary would refuse, and a new record type
+    cannot become searchable without also becoming readable.
+    """
+    if not isinstance(store, dict):
+        return
+    run = store.get("agent_run")
+    if isinstance(run, dict) and isinstance(run.get("id"), str):
+        yield LINK_RUN, run
+    for kind in RECORD_VIEW_KINDS:
+        array_name = _KIND_TO_ARRAY.get(kind)
+        if array_name is None:
+            continue
+        records = store.get(array_name)
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if isinstance(record, dict) and isinstance(record.get("id"), str):
+                yield kind, record
+
+
 def _owning_run_id(store: Dict[str, Any], record: Dict[str, Any]) -> Optional[str]:
     """Return the run a record belongs to.
 

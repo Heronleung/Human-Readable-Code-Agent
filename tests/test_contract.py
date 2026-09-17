@@ -63,8 +63,11 @@ from hrca.contract import (
     RULE_DELTA_ACTIONS,
     RULE_DELTA_INTERPRET_ACTIONS,
     MEMORY_ACTIONS,
+    MEMORY_QUERY_ACTIONS,
     ACTION_MEMORY_DOCUMENTS,
     ACTION_MEMORY_RECORD,
+    ACTION_MEMORY_SEARCH,
+    ACTION_MEMORY_RESUME,
     MAX_MEMORY_RUNS,
     MAX_MEMORY_ID_CHARS,
     ALLOWED_ACTIONS,
@@ -105,10 +108,11 @@ _FORBIDDEN_ACTIONS = ("write", "git", "commit", "command", "exec", "network",
 
 class ContractVersionTests(unittest.TestCase):
     def test_contract_version_is_pinned(self):
-        # 3.6.0 adds the bounded Memory read protocol (M4.3/v2a). The increment
-        # is additive: both new actions are read-only, and no prior action's
-        # semantics or version rule changes.
-        self.assertEqual(CONTRACT_VERSION, "3.6.0")
+        # 3.7.0 adds the bounded Memory query protocol (M4.4/v1): cross-run
+        # Search/Timeline and Resume. The increment is additive — both new
+        # actions are read-only, no storage or index is added, and no prior
+        # action's semantics or version rule changes.
+        self.assertEqual(CONTRACT_VERSION, "3.7.0")
 
     def test_serve_sentinel(self):
         self.assertEqual(SERVE_SENTINEL, "--serve")
@@ -147,7 +151,8 @@ class AllowedActionTests(unittest.TestCase):
             | CANDIDATE_PACKAGE_ACTIONS
             | RULE_DELTA_ACTIONS
             | RULE_DELTA_INTERPRET_ACTIONS
-            | MEMORY_ACTIONS,
+            | MEMORY_ACTIONS
+            | MEMORY_QUERY_ACTIONS,
         )
 
     def test_workspace_actions_are_allowlisted(self):

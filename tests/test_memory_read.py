@@ -107,8 +107,13 @@ class MemoryReadTestCase(unittest.TestCase):
 
 
 class ContractSurfaceTests(MemoryReadTestCase):
-    def test_the_contract_is_3_6_0(self):
-        self.assertEqual("3.6.0", contract.CONTRACT_VERSION)
+    def test_the_contract_exposes_the_memory_read_actions(self):
+        # The single version pin lives in test_contract; this asserts the 3.6.0
+        # read actions survive as the protocol advances.
+        self.assertTrue(contract.MEMORY_ACTIONS <= contract.ALLOWED_ACTIONS)
+        for action in sorted(contract.MEMORY_ACTIONS):
+            with self.subTest(action=action):
+                self.assertIn(action, contract.ALLOWED_ACTIONS)
 
     def test_both_memory_actions_are_allowed(self):
         for action in sorted(contract.MEMORY_ACTIONS):
@@ -132,8 +137,14 @@ class ContractSurfaceTests(MemoryReadTestCase):
             prior = getattr(contract, name)
             with self.subTest(set=name):
                 self.assertTrue(prior.isdisjoint(contract.MEMORY_ACTIONS))
+                self.assertTrue(prior.isdisjoint(contract.MEMORY_QUERY_ACTIONS))
             union |= prior
-        self.assertEqual(union | contract.MEMORY_ACTIONS, contract.ALLOWED_ACTIONS)
+        # The allowlist stays exactly the union of the declared sets, so nothing
+        # can be added to the public surface outside a named set.
+        self.assertEqual(
+            union | contract.MEMORY_ACTIONS | contract.MEMORY_QUERY_ACTIONS,
+            contract.ALLOWED_ACTIONS,
+        )
         for action in ("scan", "open_project", "get_tree", "get_document",
                        "get_twin", "get_code_map", "get_readiness", "get_profiles",
                        "plan_advisory", "get_package", "open_document",

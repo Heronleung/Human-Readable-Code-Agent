@@ -183,7 +183,7 @@ meet the WCAG 4.5:1 contrast threshold in both palettes (checked by
 
 The contract (`hrca/contract.py`) defines:
 
-- `CONTRACT_VERSION` (`3.6.0`) — any other version is rejected,
+- `CONTRACT_VERSION` (`3.7.0`) — any other version is rejected,
 - the request/result envelopes and the client-generated `correlation_id`
   echoed verbatim in every response,
 - the allowed read-only action names — the scan pipeline (`scan`, `read`,
@@ -201,9 +201,11 @@ The contract (`hrca/contract.py`) defines:
 - the bounded Memory read actions (`get_memory_documents`, `get_memory_record`)
   added in 3.6.0, with their own limits (`MAX_MEMORY_RUNS`,
   `MAX_MEMORY_ID_CHARS`) and error codes (`memory_run_not_found`,
-  `memory_record_not_found`, `memory_kind_not_supported`, `memory_not_readable`).
-  The increment is additive: every earlier action keeps its name, meaning and
-  version rule.
+  `memory_record_not_found`, `memory_kind_not_supported`, `memory_not_readable`),
+- the bounded Memory query actions (`search_memory`, `memory_resume`) added in
+  3.7.0 with the single bounded code `memory_query_invalid`. The increments are
+  additive: every earlier action keeps its name, meaning and version rule, and
+  `ALLOWED_ACTIONS` stays exactly the union of the declared action sets.
 
 The workspace policy (`hrca/workspace.py`) lists every ordinary file and folder
 below the accepted root — not only Python files — while still excluding
@@ -905,6 +907,49 @@ Offscreen interaction tests drive the real protocol path (surface → boundary �
 surface) and cover navigation, per-target resolution, state fidelity, unresolved
 targets, generation invalidation, accessibility (names, focus, non-colour cues)
 and privacy negatives over rendered text, tooltips and accessible names.
+
+## Bounded Search, Timeline and Resume (M4.4/v1)
+
+`memory_query.py` is a **read model**, not an index: it answers questions across
+stored runs from normalized records and the accepted projected claims, and adds
+no durable artefact, no migration and no second storage authority. Two read-only
+actions carry it on contract `3.7.0`:
+
+| Action | Request | Result |
+|---|---|---|
+| `search_memory` | optional `filters`, `order`, `limit`, `runs` | ranked bounded hits, or a recorded-time timeline |
+| `memory_resume` | optional `runs` | an evidence-linked Resume |
+
+**Facets.** `project`, `work_package`, `date`, `run_state`, `file`, `symbol`,
+`decision` and `text` read named canonical fields; terms are alternatives within
+a facet and facets are combined with AND. `text` searches an explicit allowlist
+(decision and change-set summaries, project names, work-package titles, and the
+contract's own refusal reasons) — nothing else is searchable, because nothing
+else is in a store. `test_result` is nameable but **has no typed data in schema
+1.0.0**, so it is reported as an unsupported facet and the query returns nothing
+rather than every record.
+
+**Every hit is a target.** A hit carries the exact `(run_id, kind, record_id)`
+the read boundary resolves, plus which facets and fields matched and whether the
+matched field was `observed` or source-`reported`. Ranking is total: more matched
+facets first, then facet precedence, then run/kind/record identity.
+
+**Time is ordered only when it is comparable.** Only a strict uniform instant
+(`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS`) is ordered; a zone suffix, an exotic
+fraction or free text is reported as `incomparable`, an absent value as
+`missing`. In `recorded_time` order the comparable items are sorted with stable
+identity ties, and everything else is returned in a separate `unordered` bucket
+with its status. Display order never claims causality, and it is stated as such.
+
+**Resume composes, it never narrates.** It reports the covered runs, the named
+(or ambiguous, or unsupported) goal, blockers, unverified claims and ordered next
+actions — each a typed field, an accepted projected claim, or an explicit
+statement that the schema cannot support the fact. **Acceptance is unsupported**:
+schema `1.0.0` records no accepted/adopted decision, so "last accepted change" is
+reported as absent and a completed run is reported separately as completion, never
+as acceptance. The **current baseline is not verified** for the same reason. An
+unverified claim is one whose reference did not resolve, or whose value is
+source-reported text no record verifies.
 
 ## Scope and limitations
 

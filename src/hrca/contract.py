@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional
 # The version of the desktop-to-core contract. A boundary rejects any request
 # whose ``contract_version`` differs from this constant with a bounded
 # ``unknown_contract_version`` error.
-CONTRACT_VERSION = "3.6.0"
+CONTRACT_VERSION = "3.7.0"
 
 # Correlation identifier: a client-generated opaque string that the boundary
 # echoes verbatim so a client can match each response to its in-flight request.
@@ -156,6 +156,15 @@ ACTION_INTERPRET_RULE_DELTA = "interpret_rule_delta"
 # a record id belonging to another run never resolves.
 ACTION_MEMORY_DOCUMENTS = "get_memory_documents"
 ACTION_MEMORY_RECORD = "get_memory_record"
+# The M4.4 bounded Memory query protocol. ``search_memory`` answers a faceted,
+# deterministically ranked cross-run query over the same allowlisted records and
+# can order an unfiltered query by recorded time (the timeline); ``memory_resume``
+# composes an evidence-linked Resume. Both are read-only and offline, both are
+# rooted at the boundary-owned app-data base, and neither accepts a path. Query
+# bounds and facet names live in :mod:`hrca.memory_query`; this module stays
+# stdlib-only, so it names the actions without importing that module.
+ACTION_MEMORY_SEARCH = "search_memory"
+ACTION_MEMORY_RESUME = "memory_resume"
 
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
@@ -273,6 +282,12 @@ RULE_DELTA_INTERPRET_ACTIONS = frozenset(
 # socket and never reaches a provider or a credential. No action here accepts a
 # path, so store rooting stays entirely boundary-owned.
 MEMORY_ACTIONS = frozenset({ACTION_MEMORY_DOCUMENTS, ACTION_MEMORY_RECORD})
+
+# The M4.4 bounded Memory query protocol. Read-only and offline, and additive on
+# top of the 3.6.0 read actions: it adds no new storage, no index and no durable
+# artefact — every answer is computed from the same normalized stores the read
+# actions already expose.
+MEMORY_QUERY_ACTIONS = frozenset({ACTION_MEMORY_SEARCH, ACTION_MEMORY_RESUME})
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -290,6 +305,7 @@ ALLOWED_ACTIONS = (
     | RULE_DELTA_ACTIONS
     | RULE_DELTA_INTERPRET_ACTIONS
     | MEMORY_ACTIONS
+    | MEMORY_QUERY_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -426,6 +442,12 @@ _ERROR_MESSAGES = {
     "memory_record_not_found": "the requested Memory record is not present in that run",
     "memory_kind_not_supported": "the requested Memory record kind is not supported",
     "memory_not_readable": "the Memory store could not be read",
+    # Memory query errors (M4.4/v1). One bounded code covers every rejectable
+    # query shape — an unknown facet, an unusable term, an unsupported order, an
+    # unusable limit — and never interpolates a facet name, a term or any record
+    # value. The precise reason is available to the offline query model, which is
+    # where a caller can inspect it; the wire stays bounded.
+    "memory_query_invalid": "the Memory query is not valid",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)

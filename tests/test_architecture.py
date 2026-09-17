@@ -70,11 +70,17 @@ _DOCUMENT_SEAM = frozenset({"document", "version_store"})
 # offline Developer Memory contract is the read/replay authority for bounded
 # coding-agent runs, is not a capture path, and exposes no Memory UI. The
 # desktop reaches it only through a later, explicitly designed boundary.
-_MEMORY_SEAM = frozenset({"memory", "memory_store", "memory_cli", "memory_docs"})
+_MEMORY_SEAM = frozenset(
+    {"memory", "memory_store", "memory_cli", "memory_docs", "memory_query"}
+)
 
 # M4.3 evidence-linked document projection. It reads normalized records only, so
 # it may not reach the capture seam or the storage owner.
 _DOCS_MODULE = "memory_docs"
+
+# M4.4 bounded query read model. Like the projector it is a pure model over
+# normalized records and accepted claims: no store, no index, no I/O, no Qt.
+_QUERY_MODULE = "memory_query"
 
 # M4.2 Claude Code capture seam modules. These own the only provider-specific
 # mapping in the project and the only hook collector. A client must never
@@ -84,7 +90,9 @@ _CAPTURE_SEAM = frozenset({"claude_code_hooks", "hook_capture"})
 # Modules that make up the offline Developer Memory product surface. The
 # canonical domain must stay free of adapter vocabulary, so none of these may
 # import the capture seam.
-_MEMORY_PRODUCT_MODULES = ("memory", "memory_store", "memory_cli", "memory_docs")
+_MEMORY_PRODUCT_MODULES = (
+    "memory", "memory_store", "memory_cli", "memory_docs", "memory_query",
+)
 
 
 def _imported_top_level_names(path: str) -> set:
@@ -270,7 +278,8 @@ class ClientArchitectureTests(unittest.TestCase):
     def test_memory_modules_do_not_import_network(self):
         # The memory domain and its store are offline: they never open a
         # socket, so an offline replay stays network-free.
-        for name in ("memory", "memory_store", "memory_cli", "memory_docs"):
+        for name in ("memory", "memory_store", "memory_cli", "memory_docs",
+                     "memory_query"):
             path = os.path.join(_SRC, name + ".py")
             imported = _imported_top_level_names(path)
             self.assertTrue(
@@ -380,8 +389,10 @@ class MemoryReadBoundaryTests(unittest.TestCase):
     the boundary and the offline CLI.
     """
 
-    # Modules allowed to import the projector.
-    _PROJECTOR_CALLERS = frozenset({"boundary", "memory_cli"})
+    # Modules allowed to import the projector. The query model is included
+    # because it composes Resume from the accepted projected claims rather than
+    # re-deriving them.
+    _PROJECTOR_CALLERS = frozenset({"boundary", "memory_cli", _QUERY_MODULE})
 
     def test_the_contract_module_does_not_reach_the_memory_seam(self):
         imported = _imported_top_level_names(os.path.join(_SRC, "contract.py"))
@@ -421,6 +432,38 @@ class MemoryReadBoundaryTests(unittest.TestCase):
                 offenders.append(stem)
         self.assertEqual(
             [], offenders, "these modules import the memory store: %s" % offenders
+        )
+
+    def test_the_query_model_is_a_pure_read_model(self):
+        # A query model that could open a file or reach a store could index
+        # something the boundary never allowed it to see.
+        path = os.path.join(_SRC, _QUERY_MODULE + ".py")
+        imported = _imported_top_level_names(path)
+        self.assertTrue(
+            imported.isdisjoint(_CAPTURE_SEAM | {"memory_store", "os", "subprocess"}),
+            f"hrca.{_QUERY_MODULE} reaches beyond normalized records: {sorted(imported)}",
+        )
+        with open(path, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        called = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertNotIn("open", called)
+
+    def test_only_the_boundary_reaches_the_query_model(self):
+        offenders = []
+        for name in sorted(os.listdir(_SRC)):
+            if not name.endswith(".py"):
+                continue
+            stem = name[:-3]
+            if stem in ("boundary", _QUERY_MODULE):
+                continue
+            if _QUERY_MODULE in _imported_top_level_names(os.path.join(_SRC, name)):
+                offenders.append(stem)
+        self.assertEqual(
+            [], offenders, "these modules import the query model: %s" % offenders
         )
 
     def test_the_boundary_roots_memory_at_the_session_store_base(self):

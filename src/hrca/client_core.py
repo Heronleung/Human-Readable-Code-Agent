@@ -2379,6 +2379,255 @@ def format_memory_record(view: Any) -> str:
     return "\n".join(lines)
 
 
+# -- Memory query: search, timeline and resume (M4.4/v1) ------------------
+#
+# The facade mirrors the query model's facet and order vocabulary; the desktop
+# may not import the Memory seam, so a boundary test asserts the two stay
+# identical.
+
+MEMORY_QUERY_FACETS = (
+    "project",
+    "work_package",
+    "run_state",
+    "date",
+    "file",
+    "symbol",
+    "decision",
+    "text",
+    "test_result",
+)
+
+MEMORY_QUERY_ORDERS = ("relevance", "recorded_time")
+
+MEMORY_FACET_LABELS = {
+    "project": "Project",
+    "work_package": "Work package",
+    "run_state": "Run state",
+    "date": "Date",
+    "file": "File",
+    "symbol": "Symbol",
+    "decision": "Decision",
+    "text": "Text",
+    "test_result": "Test result",
+}
+
+MEMORY_ORDER_LABELS = {
+    "relevance": "Most matched facets first",
+    "recorded_time": "Recorded time (ordered items only)",
+}
+
+# Facets the schema cannot satisfy. Named so a surface can disable them rather
+# than offer a filter that can only ever return nothing.
+MEMORY_UNSUPPORTED_FACETS = ("test_result",)
+
+MEMORY_TIME_STATUS_LABELS = {
+    "comparable": "Recorded time",
+    "missing": "No recorded time",
+    "incomparable": "Recorded time not comparable",
+}
+
+MEMORY_RESUME_UNSUPPORTED = "Unsupported"
+MEMORY_RESUME_NOT_VERIFIED = "Not verified"
+
+
+def memory_facet_label(facet: Any) -> str:
+    """Return the textual label for a query facet."""
+    if isinstance(facet, str) and facet in MEMORY_FACET_LABELS:
+        return MEMORY_FACET_LABELS[facet]
+    return str(facet)
+
+
+def memory_order_label(order: Any) -> str:
+    """Return the textual label for a result order."""
+    if isinstance(order, str) and order in MEMORY_ORDER_LABELS:
+        return MEMORY_ORDER_LABELS[order]
+    return str(order)
+
+
+def memory_time_status_label(status: Any) -> str:
+    """Return the textual label for a hit's recorded-time status."""
+    if isinstance(status, str) and status in MEMORY_TIME_STATUS_LABELS:
+        return MEMORY_TIME_STATUS_LABELS[status]
+    return str(status)
+
+
+def build_search_memory_request(
+    correlation_id: str,
+    filters: Optional[Dict[str, Any]] = None,
+    order: Optional[str] = None,
+    limit: Optional[int] = None,
+    run_ids: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build a bounded ``search_memory`` request. No path is ever sent."""
+    request: Dict[str, Any] = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_MEMORY_SEARCH,
+    }
+    if filters:
+        request["filters"] = {
+            facet: list(terms) for facet, terms in filters.items() if terms
+        }
+    if order is not None:
+        request["order"] = order
+    if limit is not None:
+        request["limit"] = limit
+    if run_ids is not None:
+        request["runs"] = list(run_ids)
+    return request
+
+
+def build_memory_resume_request(
+    correlation_id: str, run_ids: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Build a bounded ``memory_resume`` request. No path is ever sent."""
+    request: Dict[str, Any] = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_MEMORY_RESUME,
+    }
+    if run_ids is not None:
+        request["runs"] = list(run_ids)
+    return request
+
+
+def memory_hit_rows(result: Any) -> Dict[str, Any]:
+    """Return the display rows of a search result, ordered and unordered apart.
+
+    An item whose recorded time is missing or incomparable is never merged into
+    the ordered list: it is returned in its own bucket carrying the reason, so a
+    surface cannot present it as chronological.
+    """
+    if not isinstance(result, dict):
+        return {"ordered": [], "unordered": [], "unsupported_facets": []}
+    return {
+        "ordered": [_hit_row(hit) for hit in result.get("results") or []],
+        "unordered": [_hit_row(hit) for hit in result.get("unordered") or []],
+        "unsupported_facets": [
+            memory_facet_label(f) for f in result.get("unsupported_facets") or []
+        ],
+    }
+
+
+def _hit_row(hit: Any) -> Dict[str, Any]:
+    if not isinstance(hit, dict):
+        return {}
+    target = hit.get("target") if isinstance(hit.get("target"), dict) else {}
+    return {
+        "hit_id": hit.get("hit_id"),
+        "kind": hit.get("kind"),
+        "kind_label": memory_record_kind_label(hit.get("kind")),
+        "record_id": hit.get("record_id"),
+        "run_id": hit.get("run_id"),
+        "run_state_label": memory_state_label(hit.get("run_state")),
+        "run_success": bool(hit.get("run_success")),
+        "matched_facets": [
+            memory_facet_label(f) for f in hit.get("matched_facets") or []
+        ],
+        "matched_fields": list(hit.get("matched_fields") or []),
+        "provenance_label": memory_provenance_label(hit.get("provenance")),
+        "time_status_label": memory_time_status_label(hit.get("time_status")),
+        "recorded_time": hit.get("recorded_time"),
+        "limitations": list(hit.get("limitations") or []),
+        "target": {
+            "run_id": target.get("run_id"),
+            "kind": target.get("kind"),
+            "record_id": target.get("record_id"),
+        },
+        "actionable": bool(target.get("record_id")),
+    }
+
+
+def memory_resume_view(result: Any) -> Dict[str, Any]:
+    """Return the display view of a Resume, keeping unsupported facts visible.
+
+    Acceptance, the current baseline and verification are reported as absent
+    facts, never softened into a positive statement, and a run's completion is
+    never presented as acceptance.
+    """
+    if not isinstance(result, dict):
+        return {}
+    acceptance = result.get("last_accepted_change") or {}
+    baseline = result.get("current_baseline") or {}
+    goal = result.get("current_goal") or {}
+    return {
+        "run_count": result.get("run_count"),
+        "runs": [
+            {
+                "run_id": run.get("run_id"),
+                "state_label": memory_state_label(run.get("state")),
+                "success": bool(run.get("success")),
+                "stale": bool(run.get("stale")),
+                "baseline_status": run.get("baseline_status"),
+            }
+            for run in result.get("runs") or []
+            if isinstance(run, dict)
+        ],
+        "last_accepted_change": {
+            "status": acceptance.get("status"),
+            "label": MEMORY_RESUME_UNSUPPORTED,
+            "reason": acceptance.get("reason"),
+        },
+        "completed_runs": [
+            {
+                "run_id": run.get("run_id"),
+                "state_label": memory_state_label(run.get("state")),
+                "target": run.get("target"),
+            }
+            for run in result.get("completed_runs") or []
+            if isinstance(run, dict)
+        ],
+        "current_goal": {
+            "status": goal.get("status"),
+            "title": goal.get("title"),
+            "provenance_label": memory_provenance_label(goal.get("provenance")),
+            "limitations": list(goal.get("limitations") or []),
+            "target": goal.get("target"),
+        },
+        "current_baseline": {
+            "status": baseline.get("status"),
+            "label": MEMORY_RESUME_NOT_VERIFIED,
+            "reason": baseline.get("reason"),
+        },
+        "blockers": [
+            {
+                "kind": blocker.get("kind"),
+                "kind_label": memory_record_kind_label(blocker.get("kind")),
+                "state_label": memory_state_label(blocker.get("state"))
+                if blocker.get("state")
+                else None,
+                "reason": blocker.get("reason"),
+                "limitations": list(blocker.get("limitations") or []),
+                "target": blocker.get("target"),
+            }
+            for blocker in result.get("blockers") or []
+            if isinstance(blocker, dict)
+        ],
+        "unverified_claims": [
+            {
+                "claim_id": claim.get("claim_id"),
+                "statement": claim.get("statement"),
+                "provenance_label": memory_provenance_label(claim.get("provenance")),
+                "reason": claim.get("reason"),
+                "target": claim.get("target"),
+            }
+            for claim in result.get("unverified_claims") or []
+            if isinstance(claim, dict)
+        ],
+        "next_actions": [
+            {
+                "text": action.get("text"),
+                "provenance_label": memory_provenance_label(action.get("provenance")),
+                "run_id": action.get("run_id"),
+                "target": action.get("target"),
+            }
+            for action in result.get("next_actions") or []
+            if isinstance(action, dict)
+        ],
+        "limitations": list(result.get("limitations") or []),
+    }
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -2538,4 +2787,19 @@ __all__ = [
     "claim_targets",
     "record_detail_rows",
     "format_memory_record",
+    "MEMORY_QUERY_FACETS",
+    "MEMORY_QUERY_ORDERS",
+    "MEMORY_FACET_LABELS",
+    "MEMORY_ORDER_LABELS",
+    "MEMORY_UNSUPPORTED_FACETS",
+    "MEMORY_TIME_STATUS_LABELS",
+    "MEMORY_RESUME_UNSUPPORTED",
+    "MEMORY_RESUME_NOT_VERIFIED",
+    "memory_facet_label",
+    "memory_order_label",
+    "memory_time_status_label",
+    "build_search_memory_request",
+    "build_memory_resume_request",
+    "memory_hit_rows",
+    "memory_resume_view",
 ]
