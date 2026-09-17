@@ -204,6 +204,14 @@ from .client_core import (
     format_delta_disclosure,
     format_delta_interpret_result,
     delta_interpret_state_label,
+    build_get_memory_documents_request,
+    build_get_memory_record_request,
+    memory_run_rows,
+    claim_rows,
+    record_detail_rows,
+    memory_record_kind_label,
+    memory_state_label,
+    memory_origin_label,
 )
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -339,6 +347,7 @@ _NAV_DESTINATIONS = (
     "document",
     "preview",
     "versions",
+    "memory",
     "source_code_map",
     "change_review",
     "validation_evidence",
@@ -358,6 +367,7 @@ _NAV_LABELS = {
     "document": "Document",
     "preview": "Preview",
     "versions": "Versions",
+    "memory": "Memory",
     "source_code_map": "Source & Code Map",
     "change_review": "Change Review",
     "validation_evidence": "Validation Evidence",
@@ -847,6 +857,19 @@ class MainWindow(QMainWindow):
         # the currently open document's identity and base revision, the dirty
         # flag, the accepted-version list, and the mounted widgets.
         self._documents: List[Dict[str, Any]] = []
+
+        # Memory documents surface state (M4.3/v2b): the bounded document sets
+        # and their run rows, the generation that invalidates outstanding
+        # support actions, the resolved record currently shown, and the target
+        # buttons the claim list built.
+        self._memory_document_sets: List[Dict[str, Any]] = []
+        self._memory_runs: List[Dict[str, Any]] = []
+        self._memory_generation: int = 0
+        self._memory_detail: Optional[Dict[str, Any]] = None
+        self._memory_result_truncated: bool = False
+        self._memory_declared_origin: Optional[str] = None
+        self._memory_target_buttons: List[QPushButton] = []
+
         self._document_id: Optional[str] = None
         self._document_name: Optional[str] = None
         self._document_base_revision_id: Optional[str] = None
@@ -1422,6 +1445,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(divider)
 
         layout.addWidget(self._nav_button(_NAV_LABELS["versions"], "versions"))
+        layout.addWidget(self._nav_button(_NAV_LABELS["memory"], "memory"))
 
         self._advanced_button = QPushButton(_NAV_ADVANCED_LABEL + " ▸")
         self._advanced_button.setObjectName("navRailAdvancedButton")
@@ -1488,6 +1512,7 @@ class MainWindow(QMainWindow):
         stack.addWidget(self._document_page)
         stack.addWidget(self._build_preview_workspace())
         stack.addWidget(self._build_versions_page())
+        stack.addWidget(self._build_memory_page())
         stack.addWidget(self._horizontal_splitter)
         stack.addWidget(self._build_change_review_page())
         stack.addWidget(self._build_validation_evidence_page())
@@ -1797,6 +1822,535 @@ class MainWindow(QMainWindow):
 
         self._populate_versions_list()
         return body
+
+    # -- Memory documents destination (M4.3/v2b) --------------------------
+
+    def _build_memory_page(self) -> QWidget:
+        """Build the read-only Memory destination.
+
+        A run selector, a document selector, the bounded claim list of the
+        selected projected document, and a read-only Evidence detail pane.
+
+        Every state is carried by words, so colour assists but never decides: a
+        claim's provenance and a run's terminal state are textual labels, an
+        unresolved support target says so in its own text, and nothing here
+        claims repository freshness or verification the schema cannot support.
+        """
+        body = QWidget()
+        body.setObjectName("memoryPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        header_layout.setSpacing(style.GAP_TIGHT)
+
+        title = QLabel("Memory")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        header_layout.addWidget(title)
+
+        self._memory_run_selector = QComboBox()
+        self._memory_run_selector.setObjectName("memoryRunSelector")
+        self._memory_run_selector.setAccessibleName("Memory run")
+        self._memory_run_selector.setToolTip(
+            "Select the recorded run whose documents are shown"
+        )
+        self._memory_run_selector.currentIndexChanged.connect(
+            self._on_memory_run_changed
+        )
+        header_layout.addWidget(self._memory_run_selector)
+
+        self._memory_document_selector = QComboBox()
+        self._memory_document_selector.setObjectName("memoryDocumentSelector")
+        self._memory_document_selector.setAccessibleName("Memory document")
+        self._memory_document_selector.setToolTip("Select the document to read")
+        self._memory_document_selector.currentIndexChanged.connect(
+            self._on_memory_document_changed
+        )
+        header_layout.addWidget(self._memory_document_selector)
+
+        self._memory_refresh_button = QPushButton("Load documents")
+        self._memory_refresh_button.setObjectName("memoryRefreshButton")
+        self._memory_refresh_button.setAccessibleName("Load Memory documents")
+        self._memory_refresh_button.setToolTip(
+            "Read the projected documents of the stored runs"
+        )
+        self._memory_refresh_button.clicked.connect(self._refresh_memory)
+        header_layout.addWidget(self._memory_refresh_button)
+
+        header_layout.addStretch(1)
+        layout.addWidget(header)
+
+        self._memory_status = QLabel("")
+        self._memory_status.setObjectName("memoryStatus")
+        self._memory_status.setWordWrap(True)
+        self._memory_status.setStyleSheet(style.memory_placeholder_style(self._palette))
+        layout.addWidget(self._memory_status)
+
+        # The selected run's snapshot and baseline state, kept visible whatever
+        # document is selected, so staleness and a baseline gap are never
+        # discoverable only by happening to open one particular document.
+        self._memory_run_status = QLabel("")
+        self._memory_run_status.setObjectName("memoryRunStatus")
+        self._memory_run_status.setWordWrap(True)
+        self._memory_run_status.setStyleSheet(
+            style.memory_claim_meta_style(self._palette)
+        )
+        layout.addWidget(self._memory_run_status)
+
+        splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        splitter.setObjectName("memorySplitter")
+        self._memory_claim_panel = self._build_memory_claim_panel()
+        self._memory_detail_panel = self._build_memory_detail_panel()
+        splitter.addWidget(self._memory_claim_panel)
+        splitter.addWidget(self._memory_detail_panel)
+        splitter.setStretchFactor(0, style.MEMORY_PANE_STRETCH)
+        splitter.setStretchFactor(1, style.MEMORY_PANE_STRETCH)
+        layout.addWidget(splitter, stretch=1)
+
+        self._clear_memory_detail(
+            "Select a claim's support reference to read its exact typed record."
+        )
+        return body
+
+    def _build_memory_claim_panel(self) -> QWidget:
+        """Build the bounded claim list pane."""
+        panel = QWidget()
+        panel.setObjectName("memoryClaimPanel")
+        panel.setMinimumWidth(style.MEMORY_CLAIM_LIST_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.GAP_TIGHT, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_claim_title = QLabel("Claims")
+        self._memory_claim_title.setFont(style.panel_header_font())
+        self._memory_claim_title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(self._memory_claim_title)
+
+        self._memory_claim_list = QWidget()
+        self._memory_claim_list.setObjectName("memoryClaimList")
+        self._memory_claim_layout = QVBoxLayout(self._memory_claim_list)
+        self._memory_claim_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_claim_layout.setSpacing(style.GAP_GROUP)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryClaimScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_claim_list)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    def _build_memory_detail_panel(self) -> QWidget:
+        """Build the read-only Evidence detail pane."""
+        panel = QWidget()
+        panel.setObjectName("memoryDetailPanel")
+        panel.setMinimumWidth(style.MEMORY_DETAIL_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.GAP_TIGHT, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_detail_title = QLabel("Evidence")
+        self._memory_detail_title.setFont(style.panel_header_font())
+        self._memory_detail_title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(self._memory_detail_title)
+
+        self._memory_detail_body = QWidget()
+        self._memory_detail_body.setObjectName("memoryDetailBody")
+        self._memory_detail_layout = QVBoxLayout(self._memory_detail_body)
+        self._memory_detail_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_detail_layout.setSpacing(style.GAP_TIGHT)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryDetailScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_detail_body)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    # -- Memory: reading documents -----------------------------------------
+
+    def _refresh_memory(self) -> None:
+        """Request the bounded projected documents of the stored runs."""
+        cid = contract.new_correlation_id()
+        request = build_get_memory_documents_request(cid)
+        self._set_status(STATE_RUNNING, "reading Memory documents")
+        if not self._send(request, self._on_memory_documents_loaded, self._on_memory_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_documents_loaded(self, result: Dict[str, Any]) -> None:
+        self._apply_memory_documents(result)
+        self._restore_operation_status()
+
+    def _on_memory_failed(self, code: str) -> None:
+        # A read that cannot be served leaves the surface honestly empty rather
+        # than showing a previous result under a new heading.
+        self._memory_document_sets = []
+        self._memory_runs = []
+        self._memory_generation += 1
+        self._memory_run_selector.clear()
+        self._memory_document_selector.clear()
+        self._clear_memory_claims()
+        self._clear_memory_detail("Memory documents are unavailable: %s" % code)
+        self._set_status(STATE_FAILED, "Memory documents are unavailable: %s" % code)
+
+    def _apply_memory_documents(
+        self, result: Dict[str, Any], origin: Optional[str] = None
+    ) -> None:
+        """Adopt a bounded document response and rebuild the selectors.
+
+        Adopting a new result set invalidates every outstanding support action:
+        the generation is bumped first, so a callback captured against the
+        previous result set can no longer open anything. ``origin`` records the
+        capture origin this result was requested with, so the run status can
+        state truthfully whether an origin was ever declared.
+        """
+        self._memory_declared_origin = origin
+        document_sets = result.get("document_sets")
+        self._memory_document_sets = (
+            [s for s in document_sets if isinstance(s, dict)]
+            if isinstance(document_sets, list)
+            else []
+        )
+        self._memory_runs = memory_run_rows(result)
+        self._memory_generation += 1
+        self._memory_result_truncated = bool(result.get("truncated"))
+
+        previous = self._memory_run_selector.currentIndex()
+        self._memory_run_selector.blockSignals(True)
+        self._memory_run_selector.clear()
+        for row in self._memory_runs:
+            self._memory_run_selector.addItem(
+                "%s — %s" % (row["state_label"], row["run_id"]), row["run_id"]
+            )
+        self._memory_run_selector.blockSignals(False)
+
+        if not self._memory_runs:
+            self._memory_document_selector.blockSignals(True)
+            self._memory_document_selector.clear()
+            self._memory_document_selector.blockSignals(False)
+            self._clear_memory_claims()
+            self._clear_memory_detail("No stored Memory run was found.")
+            return
+
+        self._memory_run_selector.setCurrentIndex(
+            previous if 0 <= previous < len(self._memory_runs) else 0
+        )
+        self._populate_memory_documents()
+
+    def _on_memory_run_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        # A run switch invalidates outstanding actions before anything else.
+        self._memory_generation += 1
+        self._populate_memory_documents()
+
+    def _on_memory_document_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        self._memory_generation += 1
+        self._populate_memory_claims()
+
+    def _current_memory_document_set(self) -> Optional[Dict[str, Any]]:
+        index = self._memory_run_selector.currentIndex()
+        if not (0 <= index < len(self._memory_document_sets)):
+            return None
+        return self._memory_document_sets[index]
+
+    def _populate_memory_documents(self) -> None:
+        """Repopulate the document selector from the selected run."""
+        document_set = self._current_memory_document_set()
+        selector = self._memory_document_selector
+        selector.blockSignals(True)
+        selector.clear()
+        if isinstance(document_set, dict):
+            documents = document_set.get("documents")
+            if isinstance(documents, dict):
+                for document_type in sorted(documents):
+                    document = documents[document_type]
+                    title = (
+                        document.get("title")
+                        if isinstance(document, dict) and document.get("title")
+                        else document_type
+                    )
+                    selector.addItem(str(title), document_type)
+        selector.blockSignals(False)
+        self._update_memory_run_status()
+        self._populate_memory_claims()
+
+    def _update_memory_run_status(self) -> None:
+        """State the selected run's snapshot and baseline facts in words.
+
+        Staleness and a missing baseline are different things and are reported
+        separately; neither is ever softened into a freshness or verification
+        claim the schema cannot support.
+        """
+        document_set = self._current_memory_document_set()
+        if not isinstance(document_set, dict):
+            self._memory_run_status.setText("")
+            return
+        run = document_set.get("run")
+        if not isinstance(run, dict):
+            self._memory_run_status.setText("")
+            return
+        stale = bool(run.get("stale"))
+        baseline = run.get("baseline")
+        baseline_status = (
+            baseline.get("status") if isinstance(baseline, dict) else "unsupported"
+        )
+        parts = [
+            "Run state: %s" % memory_state_label(run.get("state")),
+            "snapshot: %s" % ("stale" if stale else "finalized"),
+            "baseline: %s" % baseline_status,
+            # An origin is only ever a caller declaration, so an undeclared one
+            # is stated as such rather than left to be assumed.
+            "origin: %s" % memory_origin_label(self._memory_declared_origin),
+        ]
+        for reason in run.get("stale_reasons") or []:
+            parts.append(str(reason))
+        self._memory_run_status.setText(" | ".join(parts))
+
+    def _clear_memory_claims(self) -> None:
+        while self._memory_claim_layout.count():
+            item = self._memory_claim_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._memory_target_buttons = []
+
+    def _populate_memory_claims(self) -> None:
+        """Render the selected document's claims, each with its support targets."""
+        self._clear_memory_claims()
+        document_set = self._current_memory_document_set()
+        document_type = self._memory_document_selector.currentData()
+        if not isinstance(document_set, dict) or not isinstance(document_type, str):
+            self._clear_memory_detail("No document is selected.")
+            return
+
+        rows = claim_rows(document_set, document_type)
+        run = document_set.get("run") if isinstance(document_set.get("run"), dict) else {}
+        if not rows:
+            self._clear_memory_detail("This document records no claim.")
+            return
+
+        state_label = memory_state_label(run.get("state"))
+        generation = self._memory_generation
+        for row in rows:
+            self._memory_claim_layout.addWidget(
+                self._build_memory_claim_row(row, state_label, generation)
+            )
+        self._memory_claim_layout.addStretch(1)
+        self._clear_memory_detail(
+            "Select a claim's support reference to read its exact typed record."
+        )
+
+    def _build_memory_claim_row(
+        self, row: Dict[str, Any], state_label: str, generation: int
+    ) -> QWidget:
+        """Build one claim row: text, textual provenance, state and targets."""
+        container = QWidget()
+        container.setObjectName("memoryClaim")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_4)
+
+        heading = QWidget()
+        heading_layout = QHBoxLayout(heading)
+        heading_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        heading_layout.setSpacing(style.GAP_TIGHT)
+        provenance = str(row.get("provenance"))
+        chip = QLabel(row.get("provenance_label") or provenance)
+        chip.setObjectName("memoryProvenanceChip")
+        chip.setStyleSheet(style.memory_provenance_chip_style(self._palette, provenance))
+        chip.setAccessibleName("Provenance: %s" % (row.get("provenance_label") or provenance))
+        chip.setToolTip("Provenance: %s" % (row.get("provenance_label") or provenance))
+        heading_layout.addWidget(chip)
+
+        claim_id = QLabel(str(row.get("claim_id")))
+        claim_id.setObjectName("memoryClaimId")
+        claim_id.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        claim_id.setAccessibleName("Claim %s" % row.get("claim_id"))
+        heading_layout.addWidget(claim_id)
+        heading_layout.addStretch(1)
+        layout.addWidget(heading)
+
+        statement = QLabel(str(row.get("text")))
+        statement.setObjectName("memoryClaimText")
+        statement.setWordWrap(True)
+        statement.setStyleSheet(style.memory_claim_style(self._palette))
+        layout.addWidget(statement)
+
+        state = QLabel("Run state: %s" % state_label)
+        state.setObjectName("memoryClaimState")
+        state.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        state.setAccessibleName("Run state: %s" % state_label)
+        layout.addWidget(state)
+
+        for limitation in row.get("limitations") or []:
+            limit = QLabel("Limit: %s" % limitation)
+            limit.setObjectName("memoryClaimLimitation")
+            limit.setWordWrap(True)
+            limit.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(limit)
+
+        for target in row.get("targets") or []:
+            layout.addWidget(
+                self._build_memory_target_button(target, generation, str(row.get("run_id") or ""))
+            )
+        return container
+
+    def _build_memory_target_button(
+        self, target: Dict[str, Any], generation: int, run_id: str
+    ) -> QPushButton:
+        """Build one support target as an explicit, labelled action.
+
+        A resolved target is operable and names the exact typed identity it will
+        open. An unresolved target keeps its requested identity, status and
+        limitation, is disabled, and can never navigate.
+        """
+        kind_label = str(target.get("kind_label"))
+        record_id = str(target.get("record_id"))
+        resolved = bool(target.get("resolved"))
+        button = QPushButton()
+        button.setObjectName("memoryTargetButton")
+        button.setFocusPolicy(Qt.StrongFocus)
+        if resolved:
+            button.setText("Open %s" % kind_label)
+            button.setAccessibleName("Open %s %s" % (kind_label, record_id))
+            button.setToolTip("%s %s" % (kind_label, record_id))
+            button.clicked.connect(
+                partial(
+                    self._open_memory_target,
+                    generation,
+                    run_id,
+                    str(target.get("kind")),
+                    record_id,
+                )
+            )
+        else:
+            reason = str(target.get("reason") or "support is unavailable")
+            button.setText("Unavailable: %s" % kind_label)
+            button.setAccessibleName(
+                "Unavailable %s %s: %s" % (kind_label, record_id, reason)
+            )
+            button.setToolTip(
+                "Requested %s %s — %s" % (kind_label, record_id, reason)
+            )
+            button.setEnabled(False)
+        self._memory_target_buttons.append(button)
+        return button
+
+    # -- Memory: reading one exact typed record ----------------------------
+
+    def _open_memory_target(
+        self, generation: int, run_id: str, kind: str, record_id: str
+    ) -> None:
+        """Open the exact typed record a claim named, if it is still current.
+
+        The generation captured when the action was built must still match: if
+        the document, the run or the result set changed in between, the action is
+        obsolete and opens nothing rather than stale or unrelated evidence.
+        """
+        if generation != self._memory_generation:
+            return
+        if not run_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_get_memory_record_request(cid, run_id, kind, record_id)
+        if not self._send(request, partial(self._on_memory_record_loaded, generation),
+                          self._on_memory_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_record_loaded(
+        self, generation: int, result: Dict[str, Any]
+    ) -> None:
+        # A response for a superseded selection is discarded rather than shown
+        # against the current one.
+        if generation != self._memory_generation:
+            return
+        self._show_memory_detail(result)
+
+    def _clear_memory_detail(self, message: str) -> None:
+        self._memory_detail = None
+        self._memory_detail_title.setText("Evidence")
+        self._set_memory_detail_body([("", message, False)])
+
+    def _show_memory_detail(self, view: Dict[str, Any]) -> None:
+        """Render one resolved typed record through the boundary's allowlist."""
+        self._memory_detail = view
+        kind_label = memory_record_kind_label(view.get("kind"))
+        self._memory_detail_title.setText("%s detail" % kind_label)
+        rows: List[tuple] = [
+            ("Record", str(view.get("record_id")), False),
+            ("Owning run", str(view.get("run_id")), False),
+            ("Kind", kind_label, False),
+        ]
+        for row in record_detail_rows(view):
+            rows.append(
+                (
+                    str(row.get("field")),
+                    str(row.get("value")),
+                    bool(row.get("reported")),
+                )
+            )
+        self._set_memory_detail_body(rows)
+
+    def _set_memory_detail_body(self, rows: List[tuple]) -> None:
+        """Replace the Evidence detail body with labelled field rows."""
+        while self._memory_detail_layout.count():
+            item = self._memory_detail_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        grid_host = QWidget()
+        grid_host.setObjectName("memoryDetailGrid")
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        grid.setSpacing(style.SPACE_4)
+        for index, (name, value, reported) in enumerate(rows):
+            field = QLabel(name)
+            field.setObjectName("memoryDetailField")
+            field.setStyleSheet(style.memory_detail_field_style(self._palette))
+            value_label = QLabel(value)
+            value_label.setObjectName("memoryDetailValue")
+            value_label.setWordWrap(True)
+            value_label.setStyleSheet(style.memory_detail_value_style(self._palette))
+            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            accessible = "%s: %s" % (name, value) if name else value
+            if reported:
+                accessible = "%s (reported by the source)" % accessible
+            value_label.setAccessibleName(accessible)
+            value_label.setToolTip(accessible)
+            grid.addWidget(field, index, 0)
+            grid.addWidget(value_label, index, 1)
+        grid.setColumnStretch(1, style.MEMORY_PANE_STRETCH)
+        self._memory_detail_layout.addWidget(grid_host)
+        self._memory_detail_layout.addStretch(1)
 
     def _build_document_workspace(self) -> QWidget:
         """Build the document-first Working Document workspace (P4.4a).

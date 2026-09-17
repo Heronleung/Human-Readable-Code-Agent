@@ -268,7 +268,7 @@ class MainWindowLayoutTests(unittest.TestCase):
                     QApplication.processEvents()
                     self.assertIs(window._palette, palette)
                     self.assertEqual(window._horizontal_splitter.count(), 3)
-                    self.assertEqual(window._content_stack.count(), 6)
+                    self.assertEqual(window._content_stack.count(), 7)
                     self.assertEqual(window._horizontal_splitter.widget(0), window._explorer_panel)
                     self.assertEqual(window._horizontal_splitter.widget(1), window._source_panel)
                     self.assertEqual(window._horizontal_splitter.widget(2), window._twin_panel)
@@ -356,7 +356,7 @@ class MainWindowLayoutTests(unittest.TestCase):
     def test_nav_rail_is_primary_navigation(self):
         window = MainWindow()
         self.assertIsInstance(window._content_stack, QStackedWidget)
-        self.assertEqual(window._content_stack.count(), 6)
+        self.assertEqual(window._content_stack.count(), 7)
         # Document is the default primary destination.
         self.assertEqual(window._nav_destination, "document")
         self.assertEqual(window._content_stack.currentIndex(), 0)
@@ -1968,10 +1968,10 @@ class NavigationRailTests(unittest.TestCase):
     def test_nav_rail_hierarchy(self):
         window = MainWindow()
         self.assertIsInstance(window._content_stack, QStackedWidget)
-        self.assertEqual(window._content_stack.count(), 6)
+        self.assertEqual(window._content_stack.count(), 7)
         self.assertEqual(
             set(window._nav_buttons),
-            {"document", "preview", "versions",
+            {"document", "preview", "versions", "memory",
              "source_code_map", "change_review", "validation_evidence"},
         )
         self.assertIsInstance(window._advanced_button, QPushButton)
@@ -2010,9 +2010,10 @@ class NavigationRailTests(unittest.TestCase):
             ("document", 0),
             ("preview", 1),
             ("versions", 2),
-            ("source_code_map", 3),
-            ("change_review", 4),
-            ("validation_evidence", 5),
+            ("memory", 3),
+            ("source_code_map", 4),
+            ("change_review", 5),
+            ("validation_evidence", 6),
         ):
             with self.subTest(key=key):
                 window._select_destination(key)

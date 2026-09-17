@@ -15,7 +15,8 @@ execution at scan time.
   projection over normalized records that never reads raw hook JSON, a
   transcript or a log. The desktop reaches Memory only through the two
   read-only `boundary.py` actions `get_memory_documents` / `get_memory_record`
-  (contract 3.6.0); it must never import the Memory seam.
+  (contract 3.6.0); it must never import the Memory seam. The M4.3 read-only
+  Evidence surface is the `memory` nav destination in `client.py`.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`.
 - `evidence/m4.2/` — the bounded record of the two authorized capture sessions

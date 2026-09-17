@@ -862,6 +862,50 @@ kinds, and textual state, provenance and origin labels — because the desktop
 cannot import the seam. A boundary test asserts the mirror stays identical to the
 projector's own vocabulary, so the two cannot drift apart silently.
 
+### The read-only Evidence surface (M4.3/v2b)
+
+The desktop **Memory** destination turns a claim into its supporting record. It
+shows a run selector, a document selector and the bounded claim list of the
+selected document, and a read-only Evidence pane beside it.
+
+**Every claim row states its own provenance, run state and limitations in
+words.** Colour is decoration: a provenance chip always carries the provenance
+text, and each row repeats `Run state: …` and any `Limit: …` so nothing depends
+on a tint. A claim's support references appear as explicit buttons — `Open Run`,
+`Open Evidence` — and the run status line above the list states the selected
+run's terminal state, whether the snapshot is `finalized` or `stale`, whether the
+baseline is `unsupported`, and whether a capture origin was declared.
+
+**Activation resolves by exact typed identity.** A button carries the
+`(run_id, kind, record_id)` the claim named; the request goes to the boundary,
+which resolves only that record in that run, and the detail pane names the record
+and its owning run. Nothing is ever selected by prose, row order, path, digest or
+payload.
+
+**Unresolved support stays visible and inert.** A dangling reference renders as a
+disabled `Unavailable: <kind>` button whose tooltip carries the requested
+identity and the bounded reason. It cannot navigate, is never hidden, never
+substituted, and never counts as verified support.
+
+**Obsolete actions are invalidated by generation.** The surface holds a
+generation that advances whenever the result set, the run or the document
+changes. A button captures the generation it was built under, and a late response
+carries its own; a mismatched generation opens nothing and renders nothing, so a
+switch can never surface stale or unrelated evidence.
+
+**Nothing unsupported is claimed.** `unknown_outcome` reads `Unknown outcome (not
+success)`; a deterministic `failed` run reads `Failed (not success)` and its
+origin label says `Offline deterministic (declared by caller)`; staleness and a
+baseline gap are reported as separate facts; and the surface never says
+`current`, `verified` or `fresh`. The strongest statement it makes about
+verification is the projector's own disclaimer — *never that anything was
+verified*.
+
+Offscreen interaction tests drive the real protocol path (surface → boundary →
+surface) and cover navigation, per-target resolution, state fidelity, unresolved
+targets, generation invalidation, accessibility (names, focus, non-colour cues)
+and privacy negatives over rendered text, tooltips and accessible names.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:

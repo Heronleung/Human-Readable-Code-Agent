@@ -942,6 +942,71 @@ def draft_field_label_style(palette: Palette) -> str:
     return f"color: {palette.text_secondary};"
 
 
+# -- Memory documents surface (M4.3/v2b) ---------------------------------
+#
+# Geometry for the read-only Memory destination. Claim statement text is
+# word-wrapped and rows size themselves, so no row height is fixed here; only
+# the two panes need a minimum so a narrow window still shows identity text.
+
+MEMORY_CLAIM_LIST_MIN_WIDTH = 380
+MEMORY_DETAIL_MIN_WIDTH = 320
+
+# The claim list and the Evidence detail split the surface evenly.
+MEMORY_PANE_STRETCH = 1
+
+# Provenance is rendered as a word ("Observed", "Reported by the source") and
+# may additionally be tinted; the word is the signal, the tint is decoration.
+# ``reported`` therefore maps to the neutral token rather than to a success
+# token, because a source's own report is not a verified fact.
+MEMORY_PROVENANCE_TOKEN = {
+    "observed": STATE_INFO,
+    "reported": STATE_NEUTRAL,
+    "inferred": STATE_NEUTRAL,
+    "user-confirmed": STATE_WARNING,
+}
+
+
+def memory_claim_style(palette: Palette) -> str:
+    """Return the style sheet for a claim statement."""
+    return f"color: {palette.text};"
+
+
+def memory_claim_meta_style(palette: Palette) -> str:
+    """Return the style sheet for a claim's provenance and limitation lines."""
+    return f"color: {palette.text_secondary}; font-size: {STATUS_FONT_SIZE}px;"
+
+
+def memory_detail_title_style(palette: Palette) -> str:
+    """Return the style sheet for the Evidence detail heading."""
+    return f"color: {palette.text}; font-size: {STATUS_FONT_SIZE}px;"
+
+
+def memory_detail_field_style(palette: Palette) -> str:
+    """Return the style sheet for an Evidence detail field name."""
+    return f"color: {palette.text_secondary}; font-size: {STATUS_FONT_SIZE}px;"
+
+
+def memory_detail_value_style(palette: Palette) -> str:
+    """Return the style sheet for an Evidence detail field value."""
+    return f"color: {palette.text}; font-size: {STATUS_FONT_SIZE}px;"
+
+
+def memory_placeholder_style(palette: Palette) -> str:
+    """Return the style sheet for an empty or unavailable Memory state."""
+    return f"color: {palette.text_secondary}; font-size: {STATUS_FONT_SIZE}px;"
+
+
+def memory_provenance_chip_style(palette: Palette, provenance: str) -> str:
+    """Return the chip style for a claim provenance label.
+
+    The caller applies the provenance *word* separately, so the colour is never
+    the sole signal.
+    """
+    return state_chip_style(
+        palette, MEMORY_PROVENANCE_TOKEN.get(provenance, STATE_NEUTRAL)
+    )
+
+
 __all__ = [
     "SPACE_0",
     "SPACE_4",
@@ -1056,4 +1121,15 @@ __all__ = [
     "unavailable_banner_style",
     "draft_notice_style",
     "draft_field_label_style",
+    "MEMORY_CLAIM_LIST_MIN_WIDTH",
+    "MEMORY_DETAIL_MIN_WIDTH",
+    "MEMORY_PANE_STRETCH",
+    "MEMORY_PROVENANCE_TOKEN",
+    "memory_claim_style",
+    "memory_claim_meta_style",
+    "memory_detail_title_style",
+    "memory_detail_field_style",
+    "memory_detail_value_style",
+    "memory_placeholder_style",
+    "memory_provenance_chip_style",
 ]
