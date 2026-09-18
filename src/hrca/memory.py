@@ -429,6 +429,15 @@ def _identity_key(basis: Any) -> str:
     return _fingerprint(basis)[:32]
 
 
+def version_tuple(version: str) -> Tuple[int, ...]:
+    """Return the numeric tuple of a dotted version string.
+
+    Public so a caller comparing a package's declared schema against this one
+    uses the same parse the migration path does, rather than a second opinion.
+    """
+    return _version_tuple(version)
+
+
 def _version_tuple(version: str) -> Tuple[int, ...]:
     return tuple(int(p) for p in version.split(".") if p.isdigit()) or (0,)
 

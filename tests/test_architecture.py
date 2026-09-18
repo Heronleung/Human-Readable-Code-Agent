@@ -72,8 +72,12 @@ _DOCUMENT_SEAM = frozenset({"document", "version_store"})
 # desktop reaches it only through a later, explicitly designed boundary.
 _MEMORY_SEAM = frozenset(
     {"memory", "memory_store", "memory_cli", "memory_docs", "memory_query",
-     "memory_revisions"}
+     "memory_revisions", "memory_package", "memory_package_cli"}
 )
+
+# The M4.5/v2a package boundary. It reaches the network nowhere, spawns nothing
+# and knows nothing about the desktop; it is an offline operator surface.
+_PACKAGE_MODULES = ("memory_package", "memory_package_cli")
 
 # M4.5 human-revision domain. Like the projector and the query model it is a
 # pure model over normalized records: no store, no I/O, no Qt.
@@ -285,7 +289,8 @@ class ClientArchitectureTests(unittest.TestCase):
         # The memory domain and its store are offline: they never open a
         # socket, so an offline replay stays network-free.
         for name in ("memory", "memory_store", "memory_cli", "memory_docs",
-                     "memory_query", "memory_revisions"):
+                     "memory_query", "memory_revisions", "memory_package",
+                     "memory_package_cli"):
             path = os.path.join(_SRC, name + ".py")
             imported = _imported_top_level_names(path)
             self.assertTrue(
@@ -397,8 +402,12 @@ class MemoryReadBoundaryTests(unittest.TestCase):
 
     # Modules allowed to import the projector. The query model is included
     # because it composes Resume from the accepted projected claims rather than
-    # re-deriving them.
-    _PROJECTOR_CALLERS = frozenset({"boundary", "memory_cli", _QUERY_MODULE})
+    # re-deriving them; the package module is included because an export *is* the
+    # projector's allowlisted output, and rebuilding it any other way would be a
+    # second, divergent projection.
+    _PROJECTOR_CALLERS = frozenset(
+        {"boundary", "memory_cli", _QUERY_MODULE, "memory_package"}
+    )
 
     def test_the_contract_module_does_not_reach_the_memory_seam(self):
         imported = _imported_top_level_names(os.path.join(_SRC, "contract.py"))
@@ -425,7 +434,11 @@ class MemoryReadBoundaryTests(unittest.TestCase):
     def test_only_the_boundary_reads_memory_stores(self):
         # ``memory_store`` is imported by the boundary (the read path) and by
         # the offline capture importer. No other module may reach a store.
-        allowed = {"boundary", "hook_capture", "memory_store", "memory_cli"}
+        # The package boundary reads and writes stores for backups and staged
+        # recovery; it is the second sanctioned owner, and it goes through the
+        # storage owner for every read and write.
+        allowed = {"boundary", "hook_capture", "memory_store", "memory_cli",
+                   "memory_package", "memory_package_cli"}
         offenders = []
         for name in sorted(os.listdir(_SRC)):
             if not name.endswith(".py"):
@@ -458,6 +471,23 @@ class MemoryReadBoundaryTests(unittest.TestCase):
         }
         self.assertNotIn("open", called)
 
+    def test_the_package_boundary_stays_offline_and_desktop_free(self):
+        # The package boundary is an offline operator surface: it may read and
+        # write only the paths it is given, and it must not reach the desktop,
+        # a process primitive, a credential or a provider.
+        for name in _PACKAGE_MODULES:
+            with self.subTest(module=name):
+                imported = _imported_top_level_names(os.path.join(_SRC, name + ".py"))
+                self.assertTrue(
+                    imported.isdisjoint(
+                        _NETWORK_MODULES
+                        | {"subprocess", "multiprocessing", "client", "client_core",
+                           "style", "boundary", "credential_store", "deepseek",
+                           "provider", "workspace"}
+                    ),
+                    f"hrca.{name} reaches where it should not: {sorted(imported)}",
+                )
+
     def test_the_revision_model_is_pure_and_has_no_clock(self):
         # A revision model that could open a file, reach a store or read a clock
         # could bind a correction to something the contract never recorded.
@@ -486,7 +516,7 @@ class MemoryReadBoundaryTests(unittest.TestCase):
             if not name.endswith(".py"):
                 continue
             stem = name[:-3]
-            if stem in ("boundary", _REVISIONS_MODULE):
+            if stem in ("boundary", _REVISIONS_MODULE, "memory_package"):
                 continue
             if _REVISIONS_MODULE in _imported_top_level_names(
                 os.path.join(_SRC, name)

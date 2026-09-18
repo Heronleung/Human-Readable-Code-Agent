@@ -1072,6 +1072,70 @@ target, a conflicting identity, a save failure — leaves the prior screen reada
 reports the bounded code, and triggers a fresh bounded reload rather than an
 optimistic update. The effective text only changes after a successful fresh read.
 
+## Versioned export and local-sensitive backup (M4.5/v2a)
+
+`memory_package.py` is the offline operator boundary for portability and
+disaster recovery, with **two profiles that are deliberately kept apart**.
+
+| Profile | Content | May be shared? |
+|---|---|---|
+| `export` | the projected documents, the effective resolution of each, and bounded evidence metadata | **yes** — least disclosure |
+| `backup` | the whole normalized run store, so a restoration can be exact | **never** |
+
+Each profile carries its own label, and the two labels are different sentences:
+an export reads *"Shareable export — least disclosure, allowlisted projections
+only"*, a backup reads *"Local-sensitive backup — never safe to share"*. There is
+no single allowlist and no ambiguous label.
+
+```bash
+uv run python -m hrca.memory_package_cli export --base <dir> --run <id> --out pkg.zip
+uv run python -m hrca.memory_package_cli backup --base <dir> --run <id> --out pkg.zip
+uv run python -m hrca.memory_package_cli inspect pkg.zip
+uv run python -m hrca.memory_package_cli recover --package pkg.zip --active <dir> --staging <dir>
+```
+
+### Packages are deterministic
+
+Entries are sorted, every archive member is stamped with a fixed instant, and no
+clock is consulted: a creation instant is recorded only when a caller supplies
+one. Two packagings of the same snapshot are **byte-identical**, and supplying an
+instant changes only that manifest field — proven by test.
+
+The manifest declares the package schema version, the generator, the profile and
+its label, the Memory schema it was written for, the entry catalogue with sizes
+and checksums, and the profile's own limitations. **Checksums attest the package
+bytes only** — no stored source or evidence fingerprint is exposed.
+
+### A package is hostile until validated
+
+Nothing is read before the archive has been fully checked, and any of these is
+refused with a bounded reason: a traversal, absolute or backslash name; a link or
+other non-regular entry; a duplicate or case-colliding name; an entry the
+manifest does not declare or a declared entry the archive lacks; a malformed
+manifest; an unsupported package, Memory-schema or profile version; a size or
+checksum mismatch; and an excessive entry count, total size or expansion ratio.
+
+An archive written without file-type bits is ordinary content, not a link — the
+check refuses only an entry that *declares* a non-regular type, so a package from
+another tool is not rejected for the wrong reason.
+
+### Recovery stages, verifies, then asks
+
+`recover` validates the package, extracts it into a **fresh isolated staging
+root** (never in place, never over existing content), migrates a *copy*, and
+verifies identity, references, replay and revision integrity: every event must
+belong to its run, every child reference must resolve, every correction parent
+must exist, and every generated version must name a document. It then prints a
+reviewable plan — `create`, `replace`, `identical` or `refused` per run — and
+changes nothing.
+
+Replacement happens only with `--apply` **and** the exact `--expected` active
+identity the plan reported. A stale expectation, an unreadable active store or a
+failed rollback write leaves the active store exactly as it was; a replacement
+preserves the prior store as rollback material first, and the result is re-read
+to prove the store reopens with the expected state. An **export cannot be
+recovered** — it is shareable precisely because it is not a restore source.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:

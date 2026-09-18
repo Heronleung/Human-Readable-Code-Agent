@@ -26,7 +26,10 @@ execution at scan time.
   `get_memory_history` / `resolve_memory_effective` / `append_memory_correction`
   actions (contract 3.8.0); a correction changes what is shown, never what was
   recorded. The M4.5 workflow is the Corrections tab of that same `memory`
-  destination.
+  destination. The M4.5/v2a package boundary is `memory_package.py` (two
+  profiles: a least-disclosure `export` and a local-sensitive `backup`) with the
+  offline operator CLI `memory_package_cli.py`; both are outside the desktop and
+  reach no network, process or credential primitive.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`.
 - `evidence/m4.2/` — the bounded record of the two authorized capture sessions

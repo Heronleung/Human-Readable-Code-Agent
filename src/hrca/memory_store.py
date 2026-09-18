@@ -63,6 +63,16 @@ def _namespace(run_id: str) -> str:
     return run_id.replace(":", "_").replace("/", "_").replace("\\", "_")
 
 
+def store_namespace(run_id: str) -> str:
+    """Return the filesystem-safe namespace the store uses for ``run_id``.
+
+    Public so a caller that has to name a store outside this module — an export
+    or backup entry, for instance — uses exactly the same spelling rather than
+    re-deriving one that could drift.
+    """
+    return _namespace(run_id)
+
+
 def run_store_path(base_dir: str, run_id: str) -> str:
     """Return the absolute path of the memory store for ``run_id``."""
     return os.path.join(memory_dir(base_dir), _namespace(run_id), RUN_STORE_FILENAME)
