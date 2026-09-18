@@ -260,6 +260,73 @@ class ListRunsTests(_Base, unittest.TestCase):
         self.assertEqual([s["run_id"] for s in summaries], [_run_id(store)])
 
 
+class ListRunIdsTests(_Base, unittest.TestCase):
+    """The strict enumeration a caller that must account for every run uses.
+
+    ``list_runs`` skips what it cannot read, which is right for a read model and
+    wrong for anything that has to claim completeness.
+    """
+
+    def test_every_readable_run_is_named_in_order(self):
+        run_ids = []
+        for session_id in ("s-2", "s-1"):
+            store = _store(session_id)
+            memory_store.save(self.base, _run_id(store), store)
+            run_ids.append(_run_id(store))
+        listed, error = memory_store.list_run_ids(self.base)
+        self.assertIsNone(error)
+        self.assertEqual(sorted(run_ids), listed)
+
+    def test_an_empty_base_names_no_run(self):
+        self.assertEqual(([], None), memory_store.list_run_ids(self.base))
+
+    def test_a_corrupt_store_is_refused_not_skipped(self):
+        store = _store()
+        memory_store.save(self.base, _run_id(store), store)
+        broken = memory_store.run_store_path(self.base, "run:fixture:broken:run")
+        os.makedirs(os.path.dirname(broken), exist_ok=True)
+        with open(broken, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        listed, error = memory_store.list_run_ids(self.base)
+        self.assertIsNone(listed)
+        self.assertIsNotNone(error)
+
+
+class StoreStampTests(_Base, unittest.TestCase):
+    """The change-detector content identity cannot replace."""
+
+    def test_an_absent_store_stamps_as_absent(self):
+        store = _store()
+        self.assertEqual("absent", memory_store.store_stamp(self.base, _run_id(store)))
+
+    def test_a_rewrite_moves_the_stamp(self):
+        store = _store()
+        run_id = _run_id(store)
+        memory_store.save(self.base, run_id, store)
+        first = memory_store.store_stamp(self.base, run_id)
+        self.assertNotEqual("absent", first)
+        self.assertEqual(first, memory_store.store_stamp(self.base, run_id))
+        second_store = _store("s-1")
+        second_store["agent_run"]["state"] = memory.RUN_FAILED
+        memory_store.save(self.base, run_id, second_store)
+        self.assertNotEqual(first, memory_store.store_stamp(self.base, run_id))
+
+    def test_a_rewrite_back_to_the_same_bytes_still_moves_the_stamp(self):
+        # The whole point: identity says "unchanged", the stamp does not.
+        store = _store()
+        run_id = _run_id(store)
+        memory_store.save(self.base, run_id, store)
+        first = memory_store.store_stamp(self.base, run_id)
+        trimmed = json.loads(memory.dumps(store))
+        trimmed["events"] = trimmed["events"][:1]
+        memory_store.save(self.base, run_id, trimmed)
+        memory_store.save(self.base, run_id, store)
+        reopened, err = memory_store.load(self.base, run_id)
+        self.assertIsNone(err)
+        self.assertEqual(memory.dumps(store), memory.dumps(reopened))
+        self.assertNotEqual(first, memory_store.store_stamp(self.base, run_id))
+
+
 class PersistencePrivacyTests(_Base, unittest.TestCase):
     """Prove the privacy policy holds at the durable-write boundary.
 

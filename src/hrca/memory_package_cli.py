@@ -15,8 +15,9 @@ Commands
 
 ``export --base <dir> --run <id> --out <path>``
     Write a least-disclosure shareable package of one run's projections.
-``backup --base <dir> --run <id> --out <path>``
-    Write a lossless local-sensitive package of one run's store.
+``backup --base <dir> [--run <id>] --out <path>``
+    Write one lossless local-sensitive package from a single verified
+    cross-run snapshot; without ``--run`` every stored run is included.
 ``inspect <package>``
     Validate one package and print a bounded, content-free summary.
 ``recover --package <path> --active <dir> --staging <dir>``
@@ -77,7 +78,34 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_backup(args: argparse.Namespace) -> int:
-    return _write(args, package.PROFILE_BACKUP, package.backup_entries)
+    """Write one local-sensitive backup from a single verified snapshot.
+
+    A backup is never assembled from independently timed reads: the snapshot is
+    captured, re-verified against the stores, and refused if any store moved, so
+    a multi-run backup cannot mix logical moments.
+    """
+    run_ids = [args.run] if isinstance(args.run, str) and args.run else None
+    snapshot, snapshot_error = package.snapshot_stores(args.base, run_ids)
+    if snapshot is None:
+        _emit({"status": "blocked", "reason": snapshot_error})
+        return 1
+    entries, entry_error = package.backup_entries(snapshot)
+    if entries is None:
+        _emit({"status": "blocked", "reason": entry_error})
+        return 1
+    write_error = package.write_package(
+        args.out, package.PROFILE_BACKUP, entries, args.created_at, snapshot=snapshot
+    )
+    if write_error is not None:
+        _emit({"status": "blocked", "reason": write_error})
+        return 1
+    summary = package.inspect(args.out)
+    summary["status"] = "written"
+    summary["snapshot_identity"] = snapshot["identity"]
+    summary["runs"] = [run["run_id"] for run in snapshot["runs"]]
+    summary["out"] = args.out
+    _emit(summary)
+    return 0
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
@@ -142,7 +170,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     def _add_write_arguments(target: argparse.ArgumentParser) -> None:
         target.add_argument("--base", required=True, help="Memory store base directory")
-        target.add_argument("--run", default=None, help="run id; defaults to the first")
+        target.add_argument(
+            "--run", default=None,
+            help="run id; export defaults to the first, backup to every stored run",
+        )
         target.add_argument("--out", required=True, help="package file to write")
         target.add_argument(
             "--created-at", default=None,
@@ -153,7 +184,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _add_write_arguments(export_parser)
     export_parser.set_defaults(handler=_cmd_export)
 
-    backup_parser = sub.add_parser("backup", help="write a local-sensitive backup")
+    backup_parser = sub.add_parser(
+        "backup", help="write one local-sensitive backup from a verified snapshot"
+    )
     _add_write_arguments(backup_parser)
     backup_parser.set_defaults(handler=_cmd_backup)
 

@@ -29,7 +29,10 @@ execution at scan time.
   destination. The M4.5/v2a package boundary is `memory_package.py` (two
   profiles: a least-disclosure `export` and a local-sensitive `backup`) with the
   offline operator CLI `memory_package_cli.py`; both are outside the desktop and
-  reach no network, process or credential primitive.
+  reach no network, process or credential primitive. A `backup` is built from
+  one verified cross-run snapshot (`capture_stores` / `verify_capture`) and
+  carries its identity in the manifest, which staged recovery re-derives from
+  the staged bytes before an active store is in scope.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`.
 - `evidence/m4.2/` — the bounded record of the two authorized capture sessions

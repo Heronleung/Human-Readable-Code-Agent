@@ -21,6 +21,12 @@ exactly:
   by the opaque run id, so two runs never collide, the selected repository is
   never written to, and no other store namespace is ever touched.
 
+A store is replaced whole, never edited in place. Two callers that have to
+reason about *when* a store was read are served explicitly: :func:`list_run_ids`
+enumerates without ever skipping a store it cannot read (unlike
+:func:`list_runs`, which skips a corrupt one), and :func:`store_stamp` returns a
+change-detector that moves on every replacement even when the content does not.
+
 Only normalized, already-redacted records reach this module: the privacy policy
 in :mod:`hrca.memory` is applied during normalization, before any record exists
 for this module to write.
@@ -155,6 +161,99 @@ def save(base_dir: str, run_id: str, store: dict) -> Optional[str]:
     return _atomic_write(dirpath, path, memory.dumps(store).encode("utf-8"), "memory store")
 
 
+def _read_store_file(path: str) -> Tuple[Optional[dict], Optional[str]]:
+    """Read, parse and migrate one store file; return ``(store, reason)``.
+
+    ``(None, None)`` means the file is absent. Any other failure returns a
+    bounded reason, so a caller can choose to skip an unreadable store
+    (:func:`list_runs`) or to refuse it (:func:`list_run_ids`) without having to
+    re-derive why it failed.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.loads(fh.read())
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError):
+        return None, "a run store could not be read"
+    store, err = memory.migrate_memory(raw)
+    if store is None:
+        return None, err or "a run store could not be migrated"
+    return store, None
+
+
+def _run_id_of(store: dict) -> Optional[str]:
+    """Return the run id a store names, or ``None`` if it names none."""
+    run = store.get("agent_run")
+    run_id = run.get("id") if isinstance(run, dict) else None
+    return run_id if isinstance(run_id, str) and run_id else None
+
+
+def _store_entries(base_dir: str) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Return the namespace directory of every run store under ``base_dir``."""
+    root = memory_dir(base_dir)
+    try:
+        entries = sorted(os.listdir(root))
+    except FileNotFoundError:
+        return [], None
+    except OSError as exc:
+        return None, f"could not read the memory store root: {exc}"
+    found = []
+    for entry in entries:
+        dirpath = os.path.join(root, entry)
+        if not os.path.isdir(dirpath):
+            continue
+        if not os.path.isfile(os.path.join(dirpath, RUN_STORE_FILENAME)):
+            continue
+        found.append(entry)
+    return found, None
+
+
+def list_run_ids(base_dir: str) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Return every run id under ``base_dir``, refusing to skip a store.
+
+    :func:`list_runs` deliberately skips a store it cannot read, because a
+    corrupt record must never masquerade as a run. A caller that has to *prove*
+    it accounted for every run — a cross-run backup snapshot, for instance —
+    cannot accept that silence: it would capture a set it believes is complete
+    while a run quietly went missing. This variant reports the failure instead,
+    so the caller can refuse rather than proceed on a partial view.
+    """
+    entries, error = _store_entries(base_dir)
+    if entries is None:
+        return None, error
+    run_ids: List[str] = []
+    for entry in entries:
+        store, read_error = _read_store_file(
+            os.path.join(memory_dir(base_dir), entry, RUN_STORE_FILENAME)
+        )
+        if store is None:
+            return None, read_error or "a run store disappeared while listing runs"
+        run_id = _run_id_of(store)
+        if run_id is None:
+            return None, "a run store names no run"
+        run_ids.append(run_id)
+    run_ids.sort()
+    return run_ids, None
+
+
+def store_stamp(base_dir: str, run_id: str) -> str:
+    """Return an opaque change-detector for one run store.
+
+    The stamp is derived from the store *file's* identity rather than from its
+    content, so it changes on every replacement — including a replacement that
+    happens to be byte-identical to what it replaced. A caller proving that a
+    set of stores did not move during a capture cannot rely on content alone:
+    a re-import or a restore legitimately writes an earlier state back, and the
+    content would look unchanged while the store was in fact replaced.
+    """
+    try:
+        info = os.stat(run_store_path(base_dir, run_id))
+    except OSError:
+        return "absent"
+    return "stamp:%d:%d:%d" % (info.st_ino, info.st_mtime_ns, info.st_size)
+
+
 def list_runs(base_dir: str) -> List[Dict[str, Any]]:
     """Return a bounded, deterministic summary of every readable run store.
 
@@ -163,27 +262,16 @@ def list_runs(base_dir: str) -> List[Dict[str, Any]]:
     cannot be read or migrated is skipped (never treated as a valid run), so a
     corrupt record can never masquerade as a run. Results are sorted by run id.
     """
-    root = memory_dir(base_dir)
-    try:
-        entries = sorted(os.listdir(root))
-    except OSError:
+    entries, _error = _store_entries(base_dir)
+    if entries is None:
         return []
 
     summaries: List[Dict[str, Any]] = []
     for entry in entries:
-        dirpath = os.path.join(root, entry)
-        if not os.path.isdir(dirpath):
-            continue
-        path = os.path.join(dirpath, RUN_STORE_FILENAME)
-        if not os.path.isfile(path):
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                raw = json.loads(fh.read())
-        except (OSError, ValueError):
-            continue
-        store, err = memory.migrate_memory(raw)
-        if err is not None or store is None:
+        store, _read_error = _read_store_file(
+            os.path.join(memory_dir(base_dir), entry, RUN_STORE_FILENAME)
+        )
+        if store is None:
             continue
         run = store.get("agent_run")
         if not isinstance(run, dict):
@@ -208,7 +296,10 @@ __all__ = [
     "RUN_STORE_FILENAME",
     "memory_dir",
     "run_store_path",
+    "store_namespace",
     "load",
     "save",
     "list_runs",
+    "list_run_ids",
+    "store_stamp",
 ]

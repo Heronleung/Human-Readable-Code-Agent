@@ -22,6 +22,15 @@ A package is data, never code, and is treated as hostile until validated: an
 archive naming a path outside itself, carrying a link, colliding on a name,
 mismatching a checksum, or expanding past its bound is refused before anything
 is written anywhere.
+
+A backup is a claim about a *cross-run state*, so it is built from one verified
+snapshot rather than from independently timed reads: every store in scope is
+captured, re-read and proven unmoved (by content identity *and* by the storage
+owner's change-detector), and the set is proven to resolve every reference
+inside itself, before a single entry exists. The manifest then binds each run to
+the snapshot entry that carries it, and staged recovery re-derives that same
+binding from the staged bytes before an active store is in scope. See
+:func:`capture_stores`, :func:`verify_capture` and :func:`verify_staged_snapshot`.
 """
 
 from __future__ import annotations
@@ -57,6 +66,10 @@ PROFILE_LABELS = {
 
 MANIFEST_NAME = "manifest.json"
 NOTE_NAME = "PACKAGE.txt"
+
+# The manifest's name inside a staging directory. It is deliberately outside the
+# package's own entry namespace, so it can never be confused with content.
+STAGED_MANIFEST_NAME = ".memory-package-manifest.json"
 
 EXPORT_DOCUMENTS_PREFIX = "documents/"
 EXPORT_EFFECTIVE_PREFIX = "effective/"
@@ -106,6 +119,25 @@ REASON_ACTIVE_UNREADABLE = "the active store could not be read"
 REASON_ACTIVE_MISMATCH = "the active store is not the one this plan was built against"
 REASON_NOT_PLANNED = "the run is not part of this restore plan"
 REASON_ROLLBACK_FAILED = "rollback material could not be preserved"
+REASON_SNAPSHOT_MISSING = "a backup package must declare the snapshot it was taken from"
+REASON_SNAPSHOT_MALFORMED = "the declared snapshot is malformed"
+REASON_SNAPSHOT_MISMATCH = "the package does not match the snapshot it declares"
+REASON_SNAPSHOT_UNSTABLE = (
+    "a store changed while the snapshot was being taken, so no coherent "
+    "cross-run state was captured"
+)
+REASON_NO_RUNS = "no run store was found to snapshot"
+REASON_RUN_MISSING = "a requested run has no readable store"
+REASON_RUN_SET_CHANGED = (
+    "the set of stored runs changed while the snapshot was being taken"
+)
+REASON_CROSS_STORE = "a store references a record outside itself"
+
+# The snapshot model this boundary proves. Stores are independent documents: no
+# record in one references, orders, supersedes or otherwise depends on a record
+# in another, so a set of per-store atomic reads *is* a coherent cross-run state
+# once each store is proven unchanged for the whole capture.
+SNAPSHOT_MODEL = "independent-store"
 
 
 # -- canonical helpers ---------------------------------------------------
@@ -281,26 +313,40 @@ def _evidence_metadata(store: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def backup_entries(
-    store: Any, run_id: str
+    snapshot: Any,
 ) -> Tuple[Optional[List[Tuple[Dict[str, Any], bytes]]], Optional[str]]:
-    """Build the lossless local-sensitive entries of one run.
+    """Build the lossless local-sensitive entries of one verified snapshot.
 
-    The store is written whole, because an exact restoration needs everything the
-    contract already retains. Nothing new is collected: no source, no transcript,
-    no credential, no filesystem content.
+    The snapshot is the *only* source: a backup is built from the stores a single
+    verified capture produced, never from independently timed reads, so a
+    multi-run backup can never mix logical moments. Each store is written whole,
+    because an exact restoration needs everything the contract already retains,
+    and nothing new is collected: no source, no transcript, no credential, no
+    filesystem content.
     """
-    if not isinstance(store, dict):
-        return None, REASON_NOT_A_STORE
-    token = _entry_token(run_id)
-    payload = canonical(store).encode("utf-8")
-    record, error = _entry("store", "%s%s.json" % (BACKUP_STORES_PREFIX, token), payload)
-    if error is not None:
-        return None, error
-    note = _note(PROFILE_BACKUP, run_id).encode("utf-8")
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("stores"), dict):
+        return None, REASON_SNAPSHOT_MALFORMED
+    stores = snapshot["stores"]
+    if not stores:
+        return None, REASON_NO_RUNS
+    if verify_independence(stores) is not None:
+        return None, REASON_CROSS_STORE
+
+    run_ids = sorted(stores)
+    note = _note(PROFILE_BACKUP, ", ".join(run_ids)).encode("utf-8")
     note_record, note_error = _entry("note", NOTE_NAME, note)
     if note_error is not None:
         return None, note_error
-    return [(record, payload), (note_record, note)], None
+    entries: List[Tuple[Dict[str, Any], bytes]] = [(note_record, note)]
+    for run_id in run_ids:
+        payload = canonical(stores[run_id]).encode("utf-8")
+        record, error = _entry(
+            "store", "%s%s.json" % (BACKUP_STORES_PREFIX, _entry_token(run_id)), payload
+        )
+        if error is not None:
+            return None, error
+        entries.append((record, payload))
+    return entries, None
 
 
 def _note(profile: str, run_id: str) -> str:
@@ -340,10 +386,17 @@ def build_manifest(
     profile: str,
     entries: List[Tuple[Dict[str, Any], bytes]],
     created_at: Optional[str] = None,
+    snapshot: Any = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Return the canonical manifest for one package."""
     if profile not in PROFILES:
         return None, REASON_PROFILE_UNSUPPORTED
+    if profile == PROFILE_BACKUP:
+        # A backup is a claim about a cross-run state. Without a declared
+        # snapshot it would be an unverifiable set of files.
+        declared, error = _snapshot_block(snapshot, entries)
+        if declared is None:
+            return None, error
     if created_at is not None:
         if not isinstance(created_at, str) or not created_at.strip():
             return None, REASON_MANIFEST_MALFORMED
@@ -373,7 +426,7 @@ def build_manifest(
         catalogue.append(dict(record))
 
     catalogue.sort(key=lambda record: record["name"])
-    return {
+    manifest: Dict[str, Any] = {
         "package_schema_version": PACKAGE_SCHEMA_VERSION,
         "generator": PACKAGE_GENERATOR,
         "profile": profile,
@@ -395,7 +448,79 @@ def build_manifest(
             if profile == PROFILE_EXPORT
             else ["a backup is local-sensitive and must never be shared"]
         ),
-    }, None
+    }
+    if profile == PROFILE_BACKUP:
+        manifest["snapshot"] = declared
+    return manifest, None
+
+
+def _snapshot_block(
+    snapshot: Any, entries: List[Tuple[Dict[str, Any], bytes]]
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Return the manifest's snapshot block, bound to the entries it covers.
+
+    The block is only meaningful if it vouches for *all* the store content the
+    package carries: every run it declares must name an entry that is really
+    there, and every ``stores/`` entry must be declared by a run. A package
+    holding a store no run accounts for would otherwise be a package carrying
+    content its own snapshot does not attest.
+    """
+    if not isinstance(snapshot, dict):
+        return None, REASON_SNAPSHOT_MISSING
+    model = snapshot.get("model")
+    runs = snapshot.get("runs")
+    identity = snapshot.get("identity")
+    if model != SNAPSHOT_MODEL or not isinstance(runs, list) or not runs:
+        return None, REASON_SNAPSHOT_MALFORMED
+    if not isinstance(identity, str) or not identity:
+        return None, REASON_SNAPSHOT_MALFORMED
+
+    checksums = {record["name"]: record["checksum"] for record, _data in entries}
+    store_entries = {
+        record["name"]
+        for record, _data in entries
+        if str(record["name"]).startswith(BACKUP_STORES_PREFIX)
+    }
+    declared = []
+    claimed = set()
+    for run in runs:
+        if not isinstance(run, dict):
+            return None, REASON_SNAPSHOT_MALFORMED
+        run_id = run.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            return None, REASON_SNAPSHOT_MALFORMED
+        entry = run.get("entry")
+        # One entry cannot be two runs, and an entry no run names cannot be
+        # covered: both would leave content the snapshot does not account for.
+        if entry not in checksums or entry in claimed:
+            return None, REASON_SNAPSHOT_MISMATCH
+        claimed.add(entry)
+        # The run's identity *is* the checksum of its entry, so the declared
+        # snapshot and the package bytes cannot disagree.
+        if run.get("identity") != checksums[entry]:
+            return None, REASON_SNAPSHOT_MISMATCH
+        declared.append(
+            {"run_id": run_id, "entry": entry, "identity": run.get("identity")}
+        )
+    if claimed != store_entries:
+        return None, REASON_SNAPSHOT_MISMATCH
+    declared.sort(key=lambda run: run["run_id"])
+    if declared != [
+        {"run_id": run.get("run_id"), "entry": run.get("entry"),
+         "identity": run.get("identity")}
+        for run in runs
+    ]:
+        return None, REASON_SNAPSHOT_MALFORMED
+    if _snapshot_identity(declared) != identity:
+        return None, REASON_SNAPSHOT_MISMATCH
+    return {"model": model, "identity": identity, "runs": declared}, None
+
+
+def _snapshot_identity(declared_runs: List[Dict[str, Any]]) -> str:
+    """Return the identity of a declared run set."""
+    return "snap:" + memory.sha256_hex(
+        canonical({"model": SNAPSHOT_MODEL, "runs": declared_runs}).encode("utf-8")
+    )[:32]
 
 
 def write_package(
@@ -403,9 +528,10 @@ def write_package(
     profile: str,
     entries: List[Tuple[Dict[str, Any], bytes]],
     created_at: Optional[str] = None,
+    snapshot: Any = None,
 ) -> Optional[str]:
     """Write one deterministic package atomically; return a reason or ``None``."""
-    manifest, error = build_manifest(profile, entries, created_at)
+    manifest, error = build_manifest(profile, entries, created_at, snapshot)
     if manifest is None:
         return error
     directory = os.path.dirname(os.path.abspath(path)) or "."
@@ -577,15 +703,34 @@ def _read_archive(
         if record.get("checksum") != checksum_of(data):
             return None, None, REASON_CHECKSUM_MISMATCH
         entries[name] = data
+
+    # 5. The declared snapshot must match the bytes it claims to cover. This runs
+    #    before a caller can stage anything, so an inconsistent capture is
+    #    refused before it can reach an active store.
+    if profile == PROFILE_BACKUP:
+        pairs = [(record, entries[record["name"]]) for record in declared]
+        _block, block_error = _snapshot_block(manifest.get("snapshot"), pairs)
+        if _block is None:
+            return None, None, block_error
+    elif manifest.get("snapshot") is not None:
+        return None, None, REASON_MANIFEST_MALFORMED
     return manifest, entries, None
 
 
 def inspect(path: str) -> Dict[str, Any]:
-    """Return a bounded, content-free summary of one package."""
+    """Return a bounded, content-free summary of one package.
+
+    A backup reports the snapshot identity it declares and the runs that
+    snapshot covers, so the binding a reader has to trust can be read off the
+    package rather than taken from whoever wrote it. Nothing here exposes a
+    stored fingerprint, a payload or a path: a run id and the identity of the
+    package bytes are all a reader gets.
+    """
     manifest, entries, error = read_package(path)
     if manifest is None:
         return {"status": "refused", "reason": error}
-    return {
+    block = manifest.get("snapshot")
+    summary = {
         "status": "ok",
         "profile": manifest.get("profile"),
         "label": manifest.get("label"),
@@ -597,6 +742,13 @@ def inspect(path: str) -> Dict[str, Any]:
         "entries": [record.get("name") for record in manifest.get("entries") or []],
         "limitations": list(manifest.get("limitations") or []),
     }
+    if isinstance(block, dict):
+        summary["snapshot"] = {
+            "model": block.get("model"),
+            "identity": block.get("identity"),
+            "runs": [run.get("run_id") for run in block.get("runs") or []],
+        }
+    return summary
 
 
 # -- staging, recovery and rollback --------------------------------------
@@ -631,50 +783,57 @@ def stage_package(
                 handle.write(data)
         except OSError:
             return None, None, REASON_STAGING_UNUSABLE
+    # The manifest is kept beside the staged content (outside the entry
+    # namespace) so recovery can re-verify the staged bytes against the snapshot
+    # the package declared rather than trusting what it read earlier.
+    try:
+        with open(os.path.join(staging_dir, STAGED_MANIFEST_NAME), "wb") as handle:
+            handle.write(canonical(manifest).encode("utf-8"))
+    except OSError:
+        return None, None, REASON_STAGING_UNUSABLE
     return staging_dir, manifest, None
 
 
-def _load_backup_stores(
-    staging_dir: str,
-) -> Tuple[Optional[Dict[str, Dict[str, Any]]], Optional[str]]:
-    """Load and migrate every store a staged backup carries, in the staging root."""
-    stores: Dict[str, Dict[str, Any]] = {}
-    root = os.path.join(staging_dir, BACKUP_STORES_PREFIX.rstrip("/"))
-    if not os.path.isdir(root):
+def _staged_store(data: bytes) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Parse and migrate one staged store.
+
+    Migration runs on a copy taken from the staging directory, never on anything
+    a caller owns, and a staged store that does not parse or does not name a run
+    is refused rather than repaired.
+    """
+    try:
+        raw = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
         return None, REASON_NOT_A_STORE
-    for name in sorted(os.listdir(root)):
-        if not name.endswith(".json"):
-            continue
-        path = os.path.join(root, name)
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                raw = json.load(handle)
-        except (OSError, ValueError):
-            return None, REASON_NOT_A_STORE
-        # Migration runs on the staged copy, never on anything the caller owns.
-        store, error = memory.migrate_memory(raw)
-        if store is None:
-            return None, REASON_NOT_A_STORE
-        run = store.get("agent_run")
-        if not isinstance(run, dict) or not isinstance(run.get("id"), str):
-            return None, REASON_NOT_A_STORE
-        stores[run["id"]] = store
-    if not stores:
+    store, _error = memory.migrate_memory(raw)
+    if store is None:
         return None, REASON_NOT_A_STORE
-    return stores, None
+    run = store.get("agent_run")
+    if not isinstance(run, dict) or not isinstance(run.get("id"), str) or not run["id"]:
+        return None, REASON_NOT_A_STORE
+    return store, None
 
 
 def verify_store(store: Dict[str, Any]) -> Optional[str]:
     """Return why a loaded store is not internally consistent, or ``None``.
 
-    Identity, reference and replay integrity are checked here: an event must
-    belong to its run, every child reference must resolve, a correction must name
-    revisions that exist, and a generated version must name its own document.
+    Identity, reference and replay integrity are checked here, and the check is
+    deliberately *complete*: every reference the contract guarantees must resolve
+    is verified, so a reference that escapes its own store is caught rather than
+    silently tolerated. That completeness is what makes
+    :func:`verify_independence` a proof rather than an assertion.
+
+    ``rejection.event_ref`` is not required to resolve — it names the event the
+    contract refused, which by definition was never stored — and a correction's
+    optional ``target.record_id`` is context rather than a binding, so neither is
+    treated as a reference the store owes.
     """
     run = store.get("agent_run")
     if not isinstance(run, dict):
         return REASON_NOT_A_STORE
     run_id = run.get("id")
+    if not isinstance(run_id, str) or not run_id:
+        return REASON_NOT_A_STORE
     identifiers = {}
     for array in memory.STORE_ARRAYS:
         records = store.get(array)
@@ -683,9 +842,36 @@ def verify_store(store: Dict[str, Any]) -> Optional[str]:
         identifiers[array] = {
             record.get("id") for record in records if isinstance(record, dict)
         }
-    for record in store.get("events", []):
-        if record.get("run_id") != run_id:
+
+    # The run's own descriptors.
+    for key, array in (("project_id", "projects"),
+                       ("work_package_id", "work_packages")):
+        value = run.get(key)
+        if value is not None and value not in identifiers[array]:
             return REASON_NOT_A_STORE
+
+    # Every run-scoped record belongs to this run, and nothing else does.
+    for array, kind in (("events", "events"), ("evidence", "evidence"),
+                        ("decisions", "decisions"), ("change_sets", "change_sets"),
+                        ("code_entity_links", "code_entity_links"),
+                        ("rejections", "rejections"), ("quarantines", "quarantines"),
+                        ("generated_documents", "generated_documents"),
+                        ("corrections", "corrections")):
+        for record in store.get(array, []):
+            if not isinstance(record, dict):
+                return REASON_NOT_A_STORE
+            if record.get("run_id") != run_id:
+                return REASON_NOT_A_STORE
+
+    for record in store.get("work_packages", []):
+        project_id = record.get("project_id")
+        if project_id is not None and project_id not in identifiers["projects"]:
+            return REASON_NOT_A_STORE
+    for record in store.get("quarantines", []):
+        event_id = record.get("event_id")
+        if event_id is not None and event_id not in identifiers["events"]:
+            return REASON_NOT_A_STORE
+    for record in store.get("events", []):
         for key, array in (("change_set_id", "change_sets"),
                            ("evidence_ids", "evidence"),
                            ("decision_ids", "decisions"),
@@ -696,17 +882,189 @@ def verify_store(store: Dict[str, Any]) -> Optional[str]:
                 if reference is not None and reference not in identifiers[array]:
                     return REASON_NOT_A_STORE
     for record in store.get("corrections", []):
-        if record.get("run_id") != run_id:
-            return REASON_NOT_A_STORE
         for parent in record.get("supersedes") or []:
             if parent not in identifiers["corrections"]:
                 return REASON_NOT_A_STORE
     for record in store.get("generated_documents", []):
-        if record.get("run_id") != run_id:
-            return REASON_NOT_A_STORE
         if not isinstance(record.get("content"), dict):
             return REASON_NOT_A_STORE
     return None
+
+
+def verify_independence(stores: Dict[str, Dict[str, Any]]) -> Optional[str]:
+    """Return why a set of stores is *not* independent, or ``None``.
+
+    Stores are independent when every reference each one makes resolves inside
+    itself. Two runs of one project share a project and work-package *id* — the
+    id is derived from the adapter and the source's own identifier — but each
+    store carries its own descriptor record and resolves the reference locally,
+    so sharing a spelling is not a dependency. A reference that did not resolve
+    locally would be a dependency on another store, and that is what this refuses.
+    """
+    for run_id, store in stores.items():
+        if verify_store(store) is not None:
+            return REASON_CROSS_STORE
+        run = store.get("agent_run")
+        if run.get("id") != run_id:
+            return REASON_CROSS_STORE
+    return None
+
+
+# -- snapshot ------------------------------------------------------------
+
+
+def _store_identity(store: Dict[str, Any]) -> str:
+    """Return the content identity of one store as the package will carry it."""
+    return checksum_of(canonical(store).encode("utf-8"))
+
+
+def capture_stores(
+    base_dir: str, run_ids: Optional[List[str]] = None
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Read every run store in scope once and record exactly what was read.
+
+    The capture is *content-addressed and stamped*: it holds each store's content
+    identity and the storage owner's change-detector for the file it came from,
+    so a later verification can prove nothing moved rather than assume it.
+
+    Scope is either declared or enumerated, and the difference is deliberate. A
+    caller that names runs has fixed the scope, so only those stores have to hold
+    still. A caller that names none is asking for *the store root*, and that set
+    is enumerated through :func:`hrca.memory_store.list_run_ids`, which refuses
+    rather than skips: a run store that cannot be read is never quietly dropped
+    from a package that will claim to cover the root.
+    """
+    if not isinstance(base_dir, str) or not base_dir:
+        return None, REASON_ACTIVE_UNREADABLE
+
+    declared = run_ids is not None
+    if declared:
+        if not isinstance(run_ids, (list, tuple)):
+            return None, REASON_SNAPSHOT_MALFORMED
+        selected = sorted({str(run_id) for run_id in run_ids})
+    else:
+        available, error = memory_store.list_run_ids(base_dir)
+        if error is not None:
+            return None, REASON_ACTIVE_UNREADABLE
+        selected = available
+    if not selected:
+        return None, REASON_NO_RUNS
+
+    stores: Dict[str, Dict[str, Any]] = {}
+    identities: Dict[str, str] = {}
+    stamps: Dict[str, str] = {}
+    for run_id in selected:
+        store, error = memory_store.load(base_dir, run_id)
+        if store is None:
+            return None, (
+                REASON_ACTIVE_UNREADABLE if error is not None else REASON_RUN_MISSING
+            )
+        stores[run_id] = store
+        identities[run_id] = _store_identity(store)
+        stamps[run_id] = memory_store.store_stamp(base_dir, run_id)
+    return {
+        "base_dir": base_dir,
+        "declared": declared,
+        "run_ids": selected,
+        "stores": stores,
+        "identities": identities,
+        "stamps": stamps,
+    }, None
+
+
+def verify_capture(capture: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Re-read every captured store and confirm none of them moved.
+
+    Returns ``(snapshot, reason)``. A store whose content identity *or* whose
+    change-detector differs from the capture is reported as an unstable snapshot;
+    a capture whose scope was not declared is also refused when the store root no
+    longer holds exactly the runs it read.
+
+    Why equality at both ends is enough. A store is replaced whole by an atomic
+    rename, so its stamp moves on every write; an unchanged stamp therefore means
+    the file was not written at all between the two reads, and an unchanged
+    identity confirms what was read either side is the same content. Every
+    capture read happens before every verification read, so the windows in which
+    each store is pinned to its captured content overlap in
+    ``[last capture read, first verification read]`` — non-empty by construction.
+    At that instant the whole captured set coexisted on disk, which is exactly
+    what a snapshot claims. Note that content identity alone would *not* suffice:
+    a re-import or a restore can legitimately write an earlier state back, and
+    the stamp is what catches a store that moved while looking unchanged.
+    """
+    if not isinstance(capture, dict):
+        return None, REASON_SNAPSHOT_MALFORMED
+    stores = capture.get("stores")
+    identities = capture.get("identities")
+    stamps = capture.get("stamps")
+    base_dir = capture.get("base_dir")
+    if (
+        not isinstance(stores, dict)
+        or not isinstance(identities, dict)
+        or not isinstance(stamps, dict)
+    ):
+        return None, REASON_SNAPSHOT_MALFORMED
+    if not stores:
+        return None, REASON_NO_RUNS
+
+    for run_id in sorted(stores):
+        current, error = memory_store.load(base_dir, run_id)
+        if current is None:
+            return None, REASON_SNAPSHOT_UNSTABLE
+        if _store_identity(current) != identities.get(run_id):
+            return None, REASON_SNAPSHOT_UNSTABLE
+        if memory_store.store_stamp(base_dir, run_id) != stamps.get(run_id):
+            return None, REASON_SNAPSHOT_UNSTABLE
+
+    # An undeclared scope claims the whole store root, so the root must still
+    # hold exactly the runs that were read: a run that appeared or vanished
+    # during the capture would make the package an incomplete answer to the
+    # question it was asked.
+    if not capture.get("declared"):
+        available, error = memory_store.list_run_ids(base_dir)
+        if error is not None or available != capture.get("run_ids"):
+            return None, REASON_RUN_SET_CHANGED
+
+    # The captured set must be internally independent *and* internally consistent
+    # before it can be called a snapshot at all.
+    reason = verify_independence(stores)
+    if reason is not None:
+        return None, reason
+
+    runs = [
+        {
+            "run_id": run_id,
+            "entry": "%s%s.json" % (BACKUP_STORES_PREFIX, _entry_token(run_id)),
+            "identity": identities[run_id],
+        }
+        for run_id in sorted(stores)
+    ]
+    identity = "snap:" + memory.sha256_hex(
+        canonical({"model": SNAPSHOT_MODEL, "runs": runs}).encode("utf-8")
+    )[:32]
+    return {
+        "model": SNAPSHOT_MODEL,
+        "identity": identity,
+        "runs": runs,
+        "stores": stores,
+    }, None
+
+
+def snapshot_stores(
+    base_dir: str, run_ids: Optional[List[str]] = None
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Take one verifiable cross-run snapshot of the stores under ``base_dir``.
+
+    This is the only way the backup profile obtains its content, so a backup can
+    never be assembled from independently timed reads: the capture is verified
+    against the stores before it is called a snapshot, and refused if any store
+    moved, if the store root changed under an undeclared scope, or if any store
+    carries a reference it cannot resolve inside itself.
+    """
+    capture, error = capture_stores(base_dir, run_ids)
+    if capture is None:
+        return None, error
+    return verify_capture(capture)
 
 
 def _active_identity(active_base: str, run_id: str) -> str:
@@ -717,6 +1075,88 @@ def _active_identity(active_base: str, run_id: str) -> str:
     return checksum_of(canonical(store).encode("utf-8"))[:24]
 
 
+def verify_staged_snapshot(
+    staging_dir: str,
+) -> Tuple[
+    Optional[Dict[str, Any]], Optional[Dict[str, Dict[str, Any]]], Optional[str]
+]:
+    """Hold the staged content to the snapshot the package declared.
+
+    Returns ``(manifest, stores, reason)``. Recovery never trusts the manifest it
+    read earlier, so everything is re-derived from *one* read of the staging
+    directory: the declared snapshot is checked against the staged bytes, the
+    staged store set must be exactly the declared set, and every staged store
+    must parse to the run its entry claims at exactly the content identity the
+    snapshot declares. Because the stores are returned from the same read they
+    were verified from, a caller cannot apply bytes it did not verify, and a
+    staging directory that was altered, partially written or interrupted is
+    refused before an active store is in scope at all.
+    """
+    manifest_path = os.path.join(staging_dir, STAGED_MANIFEST_NAME)
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError):
+        return None, None, REASON_SNAPSHOT_MALFORMED
+    if not isinstance(manifest, dict) or manifest.get("profile") != PROFILE_BACKUP:
+        return None, None, REASON_NOT_A_STORE
+
+    block = manifest.get("snapshot")
+    declared_runs = block.get("runs") if isinstance(block, dict) else None
+    if not isinstance(declared_runs, list) or not declared_runs:
+        return None, None, REASON_SNAPSHOT_MALFORMED
+
+    entries = []
+    for run in declared_runs:
+        entry = run.get("entry") if isinstance(run, dict) else None
+        if name_error(entry) is not None or not entry.startswith(BACKUP_STORES_PREFIX):
+            return None, None, REASON_SNAPSHOT_MISMATCH
+        entries.append(entry)
+    if len(set(entries)) != len(entries):
+        return None, None, REASON_SNAPSHOT_MISMATCH
+
+    # The staging directory must carry exactly the declared stores: an extra file
+    # would be a store the snapshot does not vouch for, and a missing one is a
+    # snapshot that cannot be honoured.
+    root = os.path.join(staging_dir, BACKUP_STORES_PREFIX.rstrip("/"))
+    try:
+        staged = sorted(
+            name
+            for name in os.listdir(root)
+            if name.endswith(".json") and os.path.isfile(os.path.join(root, name))
+        )
+    except OSError:
+        return None, None, REASON_SNAPSHOT_MISMATCH
+    if staged != sorted(entry.split("/", 1)[1] for entry in entries):
+        return None, None, REASON_SNAPSHOT_MISMATCH
+
+    pairs = []
+    stores: Dict[str, Dict[str, Any]] = {}
+    for run, entry in zip(declared_runs, entries):
+        try:
+            with open(os.path.join(staging_dir, *entry.split("/")), "rb") as handle:
+                data = handle.read()
+        except OSError:
+            return None, None, REASON_SNAPSHOT_MISMATCH
+        store, error = _staged_store(data)
+        if store is None:
+            return None, None, error
+        run_id = store["agent_run"]["id"]
+        # A staged store that names another run, or whose content is not the
+        # identity the snapshot declares, is not this snapshot.
+        if run_id != run.get("run_id") or _store_identity(store) != run.get("identity"):
+            return None, None, REASON_SNAPSHOT_MISMATCH
+        if run_id in stores:
+            return None, None, REASON_SNAPSHOT_MISMATCH
+        stores[run_id] = store
+        pairs.append(({"name": entry, "checksum": checksum_of(data)}, data))
+
+    reinstated, error = _snapshot_block(block, pairs)
+    if reinstated is None:
+        return None, None, error
+    return manifest, stores, None
+
+
 def plan_restore(
     staging_dir: str, active_base: str
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -724,11 +1164,13 @@ def plan_restore(
 
     The plan states, per run, what the package holds, what the active store
     currently is, and what a replacement would do — plus the active identity a
-    caller must echo back before anything is written.
+    caller must echo back before anything is written. The staged bytes are
+    re-verified against the declared snapshot first, so an inconsistent or
+    interrupted staging directory cannot reach a plan.
     """
-    stores, error = _load_backup_stores(staging_dir)
-    if stores is None:
-        return None, error
+    manifest, stores, snapshot_error = verify_staged_snapshot(staging_dir)
+    if manifest is None:
+        return None, snapshot_error
     if not isinstance(active_base, str) or not active_base:
         return None, REASON_ACTIVE_UNREADABLE
 
@@ -763,6 +1205,7 @@ def plan_restore(
     return {
         "profile": PROFILE_BACKUP,
         "staging_dir": staging_dir,
+        "snapshot": manifest.get("snapshot"),
         "runs": entries,
         "restorable": bool(entries)
         and all(entry["action"] in ("create", "replace", "identical") for entry in entries),
@@ -770,6 +1213,8 @@ def plan_restore(
             "a plan changes nothing: the active store is untouched until a caller "
             "echoes the exact active identity back",
             "a run whose staged store fails verification is refused, never repaired",
+            "the staged bytes are re-verified against the declared snapshot before "
+            "any plan is produced",
         ],
     }, None
 
@@ -802,8 +1247,10 @@ def apply_restore(
     if entry["active_identity"] != expected_active_identity:
         return None, REASON_ACTIVE_MISMATCH
 
-    stores, error = _load_backup_stores(staging_dir)
-    if stores is None:
+    # The staged bytes are verified again here, in the same read that yields the
+    # store about to be written, so what is applied is always what was proven.
+    manifest, stores, error = verify_staged_snapshot(staging_dir)
+    if manifest is None:
         return None, error
     store = stores.get(run_id)
     if store is None:

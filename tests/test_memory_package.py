@@ -59,17 +59,24 @@ class PackageTestCase(unittest.TestCase):
         return os.path.join(self.work, name)
 
     def package(self, name="pkg.zip", profile=package.PROFILE_EXPORT, store=None,
-                run_id=None, created_at=None):
-        store = store if store is not None else self.store
-        run_id = run_id or self.run_id
-        builder = (
-            package.export_entries if profile == package.PROFILE_EXPORT
-            else package.backup_entries
-        )
-        entries, error = builder(store, run_id)
-        self.assertIsNone(error)
+                run_id=None, created_at=None, base=None):
+        """Write a package. A backup is always built from a verified snapshot."""
         target = self.path(name)
-        self.assertIsNone(package.write_package(target, profile, entries, created_at))
+        if profile == package.PROFILE_EXPORT:
+            entries, error = package.export_entries(
+                store if store is not None else self.store, run_id or self.run_id
+            )
+            self.assertIsNone(error)
+            self.assertIsNone(package.write_package(target, profile, entries, created_at))
+            return target
+        snapshot, error = package.snapshot_stores(base or self.base)
+        self.assertIsNone(error)
+        entries, error = package.backup_entries(snapshot)
+        self.assertIsNone(error)
+        self.assertIsNone(
+            package.write_package(target, profile, entries, created_at,
+                                  snapshot=snapshot)
+        )
         return target
 
     def export_blob(self, path):
@@ -187,6 +194,7 @@ class BackupProfileTests(PackageTestCase):
             {"document_type": "session_summary", "operation": "keep",
              "target": {"claim_id": CLAIM}},
             revisions.claim_fingerprint(claim))
+        self.assertIsNone(memory_store.save(self.base, self.run_id, self.store))
         path = self.package("b.zip", package.PROFILE_BACKUP)
         members = self.members_of(path)
         name = [n for n in members if n.startswith(package.BACKUP_STORES_PREFIX)][0]
@@ -194,6 +202,83 @@ class BackupProfileTests(PackageTestCase):
         self.assertEqual(1, len(restored["corrections"]))
         self.assertEqual(1, len(restored["generated_documents"]))
         self.assertEqual(len(self.store["events"]), len(restored["events"]))
+
+
+class RefusedRecordTests(PackageTestCase):
+    """What the contract *refused* still backs up, and still round-trips.
+
+    A rejection names the event the contract refused, an unsupported run names a
+    terminal event that was never stored, and a quarantine names the event whose
+    identity was redelivered. None of those is a reference the store owes, so a
+    snapshot that demanded them would refuse to back up exactly the runs whose
+    history is most worth keeping.
+    """
+
+    def refusing_store(self, session_id="s-refused"):
+        store, error, _ = memory.ingest_session({
+            "adapter": "smoke", "session_id": session_id, "events": [
+                {"event_type": "run_started", "source_event_id": "q1", "payload": {}},
+                {"event_type": "run_progress", "source_event_id": "q2",
+                 "payload": {"a": 1}},
+                # The same identity again with different content: quarantined.
+                {"event_type": "run_progress", "source_event_id": "q2",
+                 "payload": {"a": 2}},
+                # A type the contract does not know: rejected, and the run goes
+                # unsupported with a terminal event that was never stored.
+                {"event_type": "teleported", "source_event_id": "q3", "payload": {}},
+                {"event_type": "run_terminated", "source_event_id": "q4",
+                 "outcome": "completed", "payload": {}},
+                {"event_type": "stream_ended", "source_event_id": "q5", "payload": {}}],
+            "project": {"source_id": "p-1", "name": "Project One"},
+            "work_package": {"source_id": "w-1", "title": "Packaging work"}})
+        self.assertIsNone(error)
+        return store
+
+    def test_a_store_with_refused_records_backs_up_and_round_trips(self):
+        store = self.refusing_store()
+        run_id = store["agent_run"]["id"]
+        base = self.path("refused-base")
+        os.makedirs(base, exist_ok=True)
+        self.assertIsNone(memory_store.save(base, run_id, store))
+
+        # The store owes nothing to what it refused ...
+        self.assertTrue(store["rejections"])
+        self.assertTrue(store["quarantines"])
+        self.assertNotIn(
+            store["agent_run"]["terminal_event_id"],
+            {record["id"] for record in store["events"]},
+        )
+        self.assertIsNone(package.verify_store(store))
+
+        # ... so the snapshot accepts it, and the package carries it whole.
+        snapshot, error = package.snapshot_stores(base)
+        self.assertIsNone(error)
+        self.assertEqual([run_id], [r["run_id"] for r in snapshot["runs"]])
+
+        staging_dir, _manifest, stage_error = package.stage_package(
+            self.package("refused.zip", package.PROFILE_BACKUP, base=base),
+            self.path("refused-stage"),
+        )
+        self.assertIsNone(stage_error)
+        empty = self.path("empty-refused")
+        os.makedirs(empty, exist_ok=True)
+        plan, plan_error = package.plan_restore(staging_dir, empty)
+        self.assertIsNone(plan_error)
+        self.assertEqual("create", plan["runs"][0]["action"])
+        result, apply_error = package.apply_restore(
+            staging_dir, empty, plan["runs"][0]["active_identity"], run_id
+        )
+        self.assertIsNone(apply_error)
+        self.assertTrue(result["verified"])
+
+        restored, _load = memory_store.load(empty, run_id)
+        for array in ("events", "rejections", "quarantines", "decisions"):
+            with self.subTest(array=array):
+                self.assertEqual(
+                    [record["id"] for record in store[array]],
+                    [record["id"] for record in restored[array]],
+                )
+        self.assertEqual(package.canonical(store), package.canonical(restored))
 
 
 class ManifestTests(PackageTestCase):
@@ -430,12 +515,27 @@ class RecoveryTests(PackageTestCase):
         self.assertEqual(package.REASON_NOT_A_STORE, error)
 
     def test_a_staged_backup_verifies_and_migrates_a_copy(self):
+        # A store written by an older schema migrates on the *staged* copy: the
+        # active store it was read from is never rewritten.
+        legacy = json.loads(memory.dumps(self.store))
+        legacy["schema_version"] = "0.9.0"
+        del legacy["code_entity_links"]
+        del legacy["agent_run"]["privacy"]
+        path = memory_store.run_store_path(self.base, self.run_id)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(legacy, handle, sort_keys=True)
+        with open(path, "rb") as handle:
+            before = handle.read()
+
         staging_dir, _manifest = self.staging(self.backup())
-        stores, error = package._load_backup_stores(staging_dir)
+        manifest, stores, error = package.verify_staged_snapshot(staging_dir)
         self.assertIsNone(error)
+        self.assertEqual(package.PROFILE_BACKUP, manifest["profile"])
         store = stores[self.run_id]
         self.assertEqual(memory.MEMORY_SCHEMA_VERSION, store["schema_version"])
         self.assertIsNone(package.verify_store(store))
+        with open(path, "rb") as handle:
+            self.assertEqual(before, handle.read(), "the source store was rewritten")
 
     def test_a_backup_round_trips_into_an_empty_active_store(self):
         staging_dir, _manifest = self.staging(self.backup())
@@ -505,8 +605,10 @@ class RecoveryTests(PackageTestCase):
             "work_package": {"source_id": "w-1", "title": "Packaging work"}})
         self.assertIsNone(error)
         self.assertEqual(self.run_id, other["agent_run"]["id"])
-        path = self.package("other.zip", package.PROFILE_BACKUP, store=other,
-                            run_id=self.run_id)
+        other_base = self.path("other-base")
+        os.makedirs(other_base, exist_ok=True)
+        self.assertIsNone(memory_store.save(other_base, self.run_id, other))
+        path = self.package("other.zip", package.PROFILE_BACKUP, base=other_base)
         staging_dir, _manifest = self.staging(path, "staging-other")
         plan, error = package.plan_restore(staging_dir, self.base)
         self.assertIsNone(error)
@@ -601,6 +703,654 @@ class CliTests(PackageTestCase):
             "recover", "--package", backup, "--active", hard,
             "--staging", self.path("cli-staging3"), "--apply",
             "--expected", "wrong", "--run", self.run_id]))
+
+
+class CrossRunIndependenceTests(PackageTestCase):
+    """Stores are independent documents, and that is proven rather than assumed.
+
+    Two runs of one project share a project and work-package *id* — the id is
+    derived from the adapter and the source's own identifier — but each store
+    carries its own descriptor and resolves the reference locally, so sharing a
+    spelling is not a dependency. Independence is what makes a per-store read a
+    meaningful unit at all: a store that referenced another could not be captured
+    on its own. Proving *when* the whole set was read is the snapshot's job — see
+    :class:`InterleavingTests`.
+    """
+
+    def second_run(self, session_id="s-2", path="pkg/b.py"):
+        store, error, _ = memory.ingest_session({
+            "adapter": "smoke", "session_id": session_id, "events": [
+                {"event_type": "run_started", "source_event_id": "f1", "payload": {}},
+                {"event_type": "run_progress", "source_event_id": "f2", "payload": {},
+                 "paths": [path]},
+                {"event_type": "run_terminated", "source_event_id": "f3",
+                 "outcome": "completed", "payload": {}},
+                {"event_type": "stream_ended", "source_event_id": "f4", "payload": {}}],
+            "project": {"source_id": "p-1", "name": "Project One"},
+            "work_package": {"source_id": "w-1", "title": "Packaging work"}})
+        self.assertIsNone(error)
+        self.assertIsNone(
+            memory_store.save(self.base, store["agent_run"]["id"], store)
+        )
+        return store
+
+    def test_two_runs_of_one_project_share_ids_but_not_dependencies(self):
+        other = self.second_run()
+        first, _error = memory_store.load(self.base, self.run_id)
+        second, _error2 = memory_store.load(self.base, other["agent_run"]["id"])
+        shared_projects = (
+            {r["id"] for r in first["projects"]} & {r["id"] for r in second["projects"]}
+        )
+        shared_packages = (
+            {r["id"] for r in first["work_packages"]}
+            & {r["id"] for r in second["work_packages"]}
+        )
+        # The ids coincide ...
+        self.assertTrue(shared_projects)
+        self.assertTrue(shared_packages)
+        # ... and each store still resolves them inside itself.
+        for label, store in (("first", first), ("second", second)):
+            with self.subTest(store=label):
+                self.assertIsNone(package.verify_store(store))
+                own = {r["id"] for r in store["projects"]} | {
+                    r["id"] for r in store["work_packages"]
+                }
+                self.assertIn(store["agent_run"]["project_id"], own)
+                self.assertIn(store["agent_run"]["work_package_id"], own)
+
+    def test_neither_store_references_the_other_run(self):
+        other = self.second_run()
+        first, _error = memory_store.load(self.base, self.run_id)
+        second, _error2 = memory_store.load(self.base, other["agent_run"]["id"])
+        foreign = {
+            record.get("id")
+            for array in memory.STORE_ARRAYS
+            for record in second.get(array, [])
+            if isinstance(record, dict)
+        } | {other["agent_run"]["id"]}
+        local = {
+            record.get("id")
+            for array in memory.STORE_ARRAYS
+            for record in first.get(array, [])
+            if isinstance(record, dict)
+        } | {self.run_id}
+        # Nothing that only the second run owns appears anywhere in the first.
+        for record in first.get("events", []):
+            for key in ("evidence_ids", "decision_ids", "code_entity_link_ids"):
+                for reference in record.get(key) or []:
+                    self.assertNotIn(reference, foreign - local)
+        self.assertFalse((foreign - local) & local)
+
+    def test_an_escaping_reference_fails_the_independence_check(self):
+        store, _error = memory_store.load(self.base, self.run_id)
+        store["work_packages"][0]["project_id"] = "project:elsewhere"
+        self.assertEqual(package.REASON_NOT_A_STORE, package.verify_store(store))
+        self.assertEqual(
+            package.REASON_CROSS_STORE,
+            package.verify_independence({self.run_id: store}),
+        )
+
+    def test_a_dangling_run_scoped_reference_is_caught(self):
+        for array, field in (("evidence", "run_id"), ("decisions", "run_id"),
+                             ("change_sets", "run_id"),
+                             ("generated_documents", "run_id")):
+            with self.subTest(array=array):
+                store, _error = memory_store.load(self.base, self.run_id)
+                if not store.get(array):
+                    continue
+                store[array][0][field] = "run:elsewhere:x:run"
+                self.assertEqual(package.REASON_NOT_A_STORE, package.verify_store(store))
+
+    def test_a_dangling_quarantine_event_is_caught(self):
+        store, _error = memory_store.load(self.base, self.run_id)
+        store["quarantines"] = [
+            {"id": "quarantine:x:1", "run_id": self.run_id, "event_id": "event:absent"}
+        ]
+        self.assertEqual(package.REASON_NOT_A_STORE, package.verify_store(store))
+
+    def test_a_rejection_reference_is_not_required_to_resolve(self):
+        # ``event_ref`` names the event the contract *refused*, which was by
+        # definition never stored, so it is not a reference the store owes.
+        store, _error = memory_store.load(self.base, self.run_id)
+        store["rejections"] = [
+            {"id": "rejection:x:1", "run_id": self.run_id, "reason": "x",
+             "event_ref": "event:never-stored"}
+        ]
+        self.assertIsNone(package.verify_store(store))
+
+
+class SnapshotTests(PackageTestCase):
+    def second_run(self, session_id="s-2"):
+        store, error, _ = memory.ingest_session({
+            "adapter": "smoke", "session_id": session_id, "events": [
+                {"event_type": "run_started", "source_event_id": "f1", "payload": {}},
+                {"event_type": "run_terminated", "source_event_id": "f2",
+                 "outcome": "completed", "payload": {}},
+                {"event_type": "stream_ended", "source_event_id": "f3", "payload": {}}],
+            "project": {"source_id": "p-1", "name": "Project One"},
+            "work_package": {"source_id": "w-1", "title": "Packaging work"}})
+        self.assertIsNone(error)
+        self.assertIsNone(
+            memory_store.save(self.base, store["agent_run"]["id"], store)
+        )
+        return store["agent_run"]["id"]
+
+    def test_one_snapshot_covers_every_run(self):
+        second = self.second_run()
+        snapshot, error = package.snapshot_stores(self.base)
+        self.assertIsNone(error)
+        self.assertEqual(package.SNAPSHOT_MODEL, snapshot["model"])
+        self.assertEqual([self.run_id, second], [r["run_id"] for r in snapshot["runs"]])
+        self.assertTrue(snapshot["identity"].startswith("snap:"))
+
+    def test_the_snapshot_binds_to_the_store_bytes(self):
+        snapshot, _error = package.snapshot_stores(self.base)
+        store, _load = memory_store.load(self.base, self.run_id)
+        run = snapshot["runs"][0]
+        self.assertEqual(package.checksum_of(
+            package.canonical(store).encode("utf-8")), run["identity"])
+
+    def test_a_multi_run_backup_declares_its_snapshot(self):
+        self.second_run()
+        path = self.package("multi.zip", package.PROFILE_BACKUP)
+        manifest = self.manifest_of(path)
+        self.assertEqual(package.SNAPSHOT_MODEL, manifest["snapshot"]["model"])
+        self.assertEqual(2, len(manifest["snapshot"]["runs"]))
+        members = self.members_of(path)
+        for run in manifest["snapshot"]["runs"]:
+            with self.subTest(run=run["run_id"]):
+                self.assertIn(run["entry"], members)
+                self.assertEqual(
+                    package.checksum_of(members[run["entry"]]), run["identity"]
+                )
+
+    def test_a_backup_without_a_snapshot_is_refused(self):
+        path = self.package()
+        manifest = self.manifest_of(path)
+        manifest["profile"] = package.PROFILE_BACKUP
+        self.assert_refused_message(
+            self.rebuilt("n.zip", manifest, self.members_of(path)),
+            package.REASON_SNAPSHOT_MISSING,
+        )
+
+    def assert_refused_message(self, path, reason):
+        manifest, entries, error = package.read_package(path)
+        self.assertIsNone(manifest)
+        self.assertIsNone(entries)
+        self.assertEqual(reason, error)
+
+    def test_a_tampered_snapshot_identity_is_refused(self):
+        path = self.package("b.zip", package.PROFILE_BACKUP)
+        manifest = self.manifest_of(path)
+        manifest["snapshot"]["identity"] = "snap:0000000000000000000000000000000"
+        self.assert_refused_message(
+            self.rebuilt("t.zip", manifest, self.members_of(path)),
+            package.REASON_SNAPSHOT_MISMATCH,
+        )
+
+    def test_a_snapshot_that_does_not_cover_its_entries_is_refused(self):
+        path = self.package("b.zip", package.PROFILE_BACKUP)
+        manifest = self.manifest_of(path)
+        manifest["snapshot"]["runs"][0]["entry"] = "stores/absent.json"
+        self.assert_refused_message(
+            self.rebuilt("u.zip", manifest, self.members_of(path)),
+            package.REASON_SNAPSHOT_MISMATCH,
+        )
+
+    def test_an_export_never_declares_a_snapshot(self):
+        path = self.package()
+        manifest = self.manifest_of(path)
+        self.assertNotIn("snapshot", manifest)
+        # ...and one that does is malformed for the profile.
+        manifest["snapshot"] = {"model": package.SNAPSHOT_MODEL,
+                                "identity": "snap:x", "runs": []}
+        self.assert_refused_message(
+            self.rebuilt("e.zip", manifest, self.members_of(path)),
+            package.REASON_MANIFEST_MALFORMED,
+        )
+
+    def test_a_store_that_vanished_between_reads_refuses_the_snapshot(self):
+        capture, error = package.capture_stores(self.base)
+        self.assertIsNone(error)
+        os.remove(memory_store.run_store_path(self.base, self.run_id))
+        snapshot, reason = package.verify_capture(capture)
+        self.assertIsNone(snapshot)
+        self.assertEqual(package.REASON_SNAPSHOT_UNSTABLE, reason)
+
+    def test_an_empty_base_has_nothing_to_snapshot(self):
+        empty = self.path("nothing")
+        os.makedirs(empty, exist_ok=True)
+        snapshot, error = package.snapshot_stores(empty)
+        self.assertIsNone(snapshot)
+        self.assertEqual(package.REASON_NO_RUNS, error)
+
+    def test_a_store_that_cannot_be_read_refuses_the_snapshot(self):
+        """An undeclared scope is never quietly narrowed to what it could read.
+
+        A snapshot that skipped an unreadable run would be a *partial* backup
+        wearing the manifest of a complete one, so the enumeration refuses
+        instead — while a caller that names its runs still gets those runs.
+        """
+        broken = os.path.join(memory_store.memory_dir(self.base), "run_broken")
+        os.makedirs(broken, exist_ok=True)
+        with open(os.path.join(broken, memory_store.RUN_STORE_FILENAME), "w",
+                  encoding="utf-8") as handle:
+            handle.write("{ not json")
+        snapshot, error = package.snapshot_stores(self.base)
+        self.assertIsNone(snapshot)
+        self.assertEqual(package.REASON_ACTIVE_UNREADABLE, error)
+
+        named, named_error = package.snapshot_stores(self.base, [self.run_id])
+        self.assertIsNone(named_error)
+        self.assertEqual([self.run_id], [r["run_id"] for r in named["runs"]])
+
+    def test_a_named_run_without_a_store_is_refused(self):
+        snapshot, error = package.snapshot_stores(self.base, ["run:absent:x:run"])
+        self.assertIsNone(snapshot)
+        self.assertEqual(package.REASON_RUN_MISSING, error)
+
+    def test_store_content_the_snapshot_does_not_cover_is_refused(self):
+        # A run dropped from the snapshot block, with the block re-signed so the
+        # only thing wrong is its coverage: the package would otherwise carry a
+        # store its own snapshot never vouched for.
+        self.second_run()
+        path = self.package("multi.zip", package.PROFILE_BACKUP)
+        manifest = self.manifest_of(path)
+        block = manifest["snapshot"]
+        block["runs"] = block["runs"][:1]
+        block["identity"] = package._snapshot_identity(block["runs"])
+        self.assert_refused_message(
+            self.rebuilt("uncovered.zip", manifest, self.members_of(path)),
+            package.REASON_SNAPSHOT_MISMATCH,
+        )
+
+    def test_inspect_the_manifest_and_the_plan_agree_on_one_identity(self):
+        # The identity a reader sees, the identity the package declares and the
+        # identity recovery re-derives from the staged bytes are the same one.
+        second = self.second_run()
+        path = self.package("multi.zip", package.PROFILE_BACKUP)
+        summary = package.inspect(path)
+        self.assertEqual(package.SNAPSHOT_MODEL, summary["snapshot"]["model"])
+        self.assertEqual([self.run_id, second], summary["snapshot"]["runs"])
+
+        staging_dir, _manifest, error = package.stage_package(
+            path, self.path("identity-stage")
+        )
+        self.assertIsNone(error)
+        plan, plan_error = package.plan_restore(staging_dir, self.base)
+        self.assertIsNone(plan_error)
+        self.assertEqual(summary["snapshot"]["identity"], plan["snapshot"]["identity"])
+
+        # An export never declares one, so it never reports one either.
+        self.assertNotIn("snapshot", package.inspect(self.package("e.zip")))
+
+    def test_the_snapshot_block_exposes_package_bytes_only(self):
+        # The block is an allowlist, not a summary: a field naming a stored
+        # source, an evidence digest or a path could not be added without this
+        # test failing first.
+        self.second_run()
+        block = self.manifest_of(
+            self.package("multi.zip", package.PROFILE_BACKUP)
+        )["snapshot"]
+        self.assertEqual({"model", "identity", "runs"}, set(block))
+        self.assertEqual(package.SNAPSHOT_MODEL, block["model"])
+        for run in block["runs"]:
+            with self.subTest(run=run["run_id"]):
+                self.assertEqual({"run_id", "entry", "identity"}, set(run))
+                self.assertTrue(run["entry"].startswith(package.BACKUP_STORES_PREFIX))
+                self.assertNotIn("source", run["identity"])
+                self.assertNotIn("fingerprint", run["identity"])
+
+    def test_the_snapshot_is_deterministic(self):
+        first, _error = package.snapshot_stores(self.base)
+        second, _error2 = package.snapshot_stores(self.base)
+        self.assertEqual(first["identity"], second["identity"])
+
+
+class InterleavingTests(PackageTestCase):
+    """A write between capture and verification must refuse the snapshot.
+
+    The interleaving is deterministic: the capture is taken through the public
+    two-step seam a caller would use, a writer then runs, and verification is
+    asked to confirm the capture. No thread or sleep is involved.
+    """
+
+    def second_run(self):
+        store, error, _ = memory.ingest_session({
+            "adapter": "smoke", "session_id": "s-2", "events": [
+                {"event_type": "run_started", "source_event_id": "f1", "payload": {}},
+                {"event_type": "run_terminated", "source_event_id": "f2",
+                 "outcome": "completed", "payload": {}},
+                {"event_type": "stream_ended", "source_event_id": "f3", "payload": {}}],
+            "project": {"source_id": "p-1", "name": "Project One"},
+            "work_package": {"source_id": "w-1", "title": "Packaging work"}})
+        self.assertIsNone(error)
+        self.assertIsNone(
+            memory_store.save(self.base, store["agent_run"]["id"], store)
+        )
+        return store["agent_run"]["id"]
+
+    def _concurrent_write(self):
+        """A writer lands a new event into the first run."""
+        store, _error = memory_store.load(self.base, self.run_id)
+        store["agent_run"]["state"] = memory.RUN_COMPLETED
+        store["events"].append({
+            "id": "event:late", "record_kind": memory.RECORD_EVENT,
+            "run_id": self.run_id, "event_type": memory.EVENT_RUN_PROGRESS,
+            "ingest_ordinal": 99, "payload": {},
+        })
+        self.assertIsNone(memory_store.save(self.base, self.run_id, store))
+
+    def test_a_write_between_capture_and_verification_refuses_the_snapshot(self):
+        self.second_run()
+        capture, error = package.capture_stores(self.base)
+        self.assertIsNone(error)
+        self._concurrent_write()
+        snapshot, reason = package.verify_capture(capture)
+        self.assertIsNone(snapshot)
+        self.assertEqual(package.REASON_SNAPSHOT_UNSTABLE, reason)
+
+    def test_a_store_rewritten_to_the_same_bytes_still_refuses_the_snapshot(self):
+        """A store that moved and came back is still a store that moved.
+
+        This is what the storage owner's change-detector buys: content alone
+        cannot tell a store that was never written from one that was replaced by
+        a byte-identical earlier state, and a re-import or a restore can
+        legitimately write exactly that back. Without the stamp the capture below
+        would be accepted as coherent.
+        """
+        capture, error = package.capture_stores(self.base)
+        self.assertIsNone(error)
+
+        trimmed, _load = memory_store.load(self.base, self.run_id)
+        trimmed["events"] = trimmed["events"][:1]
+        self.assertIsNone(memory_store.save(self.base, self.run_id, trimmed))
+        # ... and straight back to precisely what the capture read.
+        self.assertIsNone(memory_store.save(self.base, self.run_id, self.store))
+
+        current, _reload = memory_store.load(self.base, self.run_id)
+        self.assertEqual(
+            package.canonical(self.store), package.canonical(current),
+            "the store did not actually return to its captured content",
+        )
+        snapshot, reason = package.verify_capture(capture)
+        self.assertIsNone(snapshot)
+        self.assertEqual(package.REASON_SNAPSHOT_UNSTABLE, reason)
+
+    def test_a_refused_snapshot_writes_no_package(self):
+        capture, _error = package.capture_stores(self.base)
+        self._concurrent_write()
+        snapshot, _reason = package.verify_capture(capture)
+        entries, entry_error = package.backup_entries(snapshot)
+        self.assertIsNone(entries)
+        self.assertEqual(package.REASON_SNAPSHOT_MALFORMED, entry_error)
+
+    def test_a_write_before_the_capture_is_simply_the_new_snapshot(self):
+        self.second_run()
+        self._concurrent_write()
+        snapshot, error = package.snapshot_stores(self.base)
+        self.assertIsNone(error)
+        store, _load = memory_store.load(self.base, self.run_id)
+        self.assertEqual(
+            package.checksum_of(package.canonical(store).encode("utf-8")),
+            [r for r in snapshot["runs"] if r["run_id"] == self.run_id][0]["identity"],
+        )
+
+    def test_a_write_between_two_runs_capture_is_detected(self):
+        self.second_run()
+        capture, _error = package.capture_stores(self.base)
+        self._concurrent_write()
+        self._concurrent_write()
+        snapshot, reason = package.verify_capture(capture)
+        self.assertIsNone(snapshot)
+        self.assertEqual(package.REASON_SNAPSHOT_UNSTABLE, reason)
+
+    def test_a_second_run_appearing_mid_capture_is_refused(self):
+        # An undeclared scope *claims the store root*, so a run that appeared
+        # while the capture ran makes the capture an incomplete answer to the
+        # question it was asked: it is refused, never quietly narrowed to the
+        # runs that happened to be read.
+        capture, _error = package.capture_stores(self.base)
+        self.second_run()
+        snapshot, error = package.verify_capture(capture)
+        self.assertIsNone(snapshot)
+        self.assertEqual(package.REASON_RUN_SET_CHANGED, error)
+
+    def test_a_declared_scope_ignores_runs_it_did_not_name(self):
+        # A caller that names its runs has fixed the scope, so another run
+        # appearing is outside it — the capture still describes the runs asked
+        # for, and exactly those.
+        declared, error = package.capture_stores(self.base, [self.run_id])
+        self.assertIsNone(error)
+        self.second_run()
+        snapshot, verify_error = package.verify_capture(declared)
+        self.assertIsNone(verify_error)
+        self.assertEqual([self.run_id], [r["run_id"] for r in snapshot["runs"]])
+
+
+class SnapshotRecoveryTests(PackageTestCase):
+    def staging(self, path, name="snapstage"):
+        staging_dir, manifest, error = package.stage_package(path, self.path(name))
+        self.assertIsNone(error)
+        return staging_dir, manifest
+
+    def test_recovery_reverifies_the_declared_snapshot(self):
+        staging_dir, manifest = self.staging(
+            self.package("b.zip", package.PROFILE_BACKUP)
+        )
+        self.assertIn("snapshot", manifest)
+        verified, stores, error = package.verify_staged_snapshot(staging_dir)
+        self.assertIsNone(error)
+        self.assertEqual(manifest["snapshot"]["identity"],
+                         verified["snapshot"]["identity"])
+        # The stores a caller may apply come from the very read that was verified.
+        self.assertEqual([self.run_id], sorted(stores))
+
+    def test_an_altered_staged_store_is_refused_before_any_plan(self):
+        staging_dir, manifest = self.staging(
+            self.package("b.zip", package.PROFILE_BACKUP)
+        )
+        entry = manifest["snapshot"]["runs"][0]["entry"]
+        target = os.path.join(staging_dir, *entry.split("/"))
+        with open(target, "r", encoding="utf-8") as handle:
+            store = json.load(handle)
+        store["agent_run"]["state"] = memory.RUN_FAILED
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump(store, handle)
+        before = package.canonical(memory_store.load(self.base, self.run_id)[0])
+        plan, error = package.plan_restore(staging_dir, self.base)
+        self.assertIsNone(plan)
+        self.assertEqual(package.REASON_SNAPSHOT_MISMATCH, error)
+        after = package.canonical(memory_store.load(self.base, self.run_id)[0])
+        self.assertEqual(before, after)
+
+    def test_a_removed_staged_store_is_refused(self):
+        staging_dir, manifest = self.staging(
+            self.package("b.zip", package.PROFILE_BACKUP)
+        )
+        entry = manifest["snapshot"]["runs"][0]["entry"]
+        os.remove(os.path.join(staging_dir, *entry.split("/")))
+        plan, error = package.plan_restore(staging_dir, self.base)
+        self.assertIsNone(plan)
+        self.assertEqual(package.REASON_SNAPSHOT_MISMATCH, error)
+
+    def test_a_staged_store_the_snapshot_does_not_declare_is_refused(self):
+        # Recovery restores exactly the declared snapshot, never "whatever else
+        # happens to be sitting in the staging root".
+        staging_dir, manifest = self.staging(
+            self.package("b.zip", package.PROFILE_BACKUP)
+        )
+        entry = manifest["snapshot"]["runs"][0]["entry"]
+        source = os.path.join(staging_dir, *entry.split("/"))
+        with open(source, "rb") as handle:
+            data = handle.read()
+        with open(os.path.join(os.path.dirname(source), "run_extra.json"), "wb") as handle:
+            handle.write(data)
+        plan, error = package.plan_restore(staging_dir, self.base)
+        self.assertIsNone(plan)
+        self.assertEqual(package.REASON_SNAPSHOT_MISMATCH, error)
+
+    def test_a_staged_store_naming_another_run_is_refused(self):
+        # The staged store is re-bound to the *bytes* so the only thing wrong is
+        # which run they name: the entry holds a store, at the identity the
+        # snapshot declares, that is not the run the snapshot says it is.
+        staging_dir, manifest = self.staging(
+            self.package("b.zip", package.PROFILE_BACKUP)
+        )
+        entry = manifest["snapshot"]["runs"][0]["entry"]
+        target = os.path.join(staging_dir, *entry.split("/"))
+        with open(target, "r", encoding="utf-8") as handle:
+            store = json.load(handle)
+        store["agent_run"]["id"] = "run:elsewhere:x:run"
+        payload = package.canonical(store).encode("utf-8")
+        with open(target, "wb") as handle:
+            handle.write(payload)
+
+        staged = json.loads(json.dumps(manifest))
+        run = staged["snapshot"]["runs"][0]
+        run["identity"] = package.checksum_of(payload)
+        staged["snapshot"]["identity"] = package._snapshot_identity(
+            staged["snapshot"]["runs"]
+        )
+        with open(os.path.join(staging_dir, package.STAGED_MANIFEST_NAME), "w",
+                  encoding="utf-8") as handle:
+            json.dump(staged, handle)
+
+        plan, error = package.plan_restore(staging_dir, self.base)
+        self.assertIsNone(plan)
+        self.assertEqual(package.REASON_SNAPSHOT_MISMATCH, error)
+
+    def test_an_unverifiable_staging_directory_is_refused(self):
+        bare = self.path("bare")
+        os.makedirs(bare, exist_ok=True)
+        plan, error = package.plan_restore(bare, self.base)
+        self.assertIsNone(plan)
+        self.assertEqual(package.REASON_SNAPSHOT_MALFORMED, error)
+
+    def test_an_interrupted_capture_yields_no_package_to_stage(self):
+        capture, _error = package.capture_stores(self.base)
+        store, _load = memory_store.load(self.base, self.run_id)
+        store["events"] = []
+        self.assertIsNone(memory_store.save(self.base, self.run_id, store))
+        snapshot, reason = package.verify_capture(capture)
+        self.assertIsNone(snapshot)
+        self.assertEqual(package.REASON_SNAPSHOT_UNSTABLE, reason)
+        self.assertIsNone(package.backup_entries(snapshot)[0])
+
+    def test_a_multi_run_backup_round_trips_both_runs(self):
+        other, error, _ = memory.ingest_session({
+            "adapter": "smoke", "session_id": "s-2", "events": [
+                {"event_type": "run_started", "source_event_id": "f1", "payload": {}},
+                {"event_type": "run_progress", "source_event_id": "f2", "payload": {},
+                 "paths": ["pkg/b.py"]},
+                {"event_type": "run_terminated", "source_event_id": "f3",
+                 "outcome": "failed", "payload": {}},
+                {"event_type": "stream_ended", "source_event_id": "f4", "payload": {}}],
+            "project": {"source_id": "p-1", "name": "Project One"},
+            "work_package": {"source_id": "w-1", "title": "Packaging work"}})
+        self.assertIsNone(error)
+        other_run = other["agent_run"]["id"]
+        self.assertIsNone(memory_store.save(self.base, other_run, other))
+
+        staging_dir, manifest = self.staging(
+            self.package("multi.zip", package.PROFILE_BACKUP), "multistage"
+        )
+        empty = self.path("empty-multi")
+        os.makedirs(empty, exist_ok=True)
+        plan, plan_error = package.plan_restore(staging_dir, empty)
+        self.assertIsNone(plan_error)
+        self.assertEqual(2, len(plan["runs"]))
+        for entry in plan["runs"]:
+            result, apply_error = package.apply_restore(
+                staging_dir, empty, entry["active_identity"], entry["run_id"]
+            )
+            self.assertIsNone(apply_error)
+            self.assertTrue(result["verified"])
+        first, _load = memory_store.load(empty, self.run_id)
+        second, _load2 = memory_store.load(empty, other_run)
+        self.assertEqual("completed", memory.run_state(first))
+        self.assertEqual("failed", memory.run_state(second))
+        self.assertEqual(
+            len(self.store["events"]), len(first["events"]),
+            "no duplication across the cross-run restore",
+        )
+        self.assertEqual(2, len(memory_store.list_runs(empty)))
+
+
+    def _with_history(self, store, run_id, text):
+        """Give one run its own immutable generated version and correction."""
+        document = memory_docs.project_store(store)[0]["documents"]["session_summary"]
+        claim = {c["id"]: c for c in document["claims"]}[CLAIM]
+        revisions.record_generated_version(store, run_id, "session_summary", document)
+        revisions.append_correction(
+            store, run_id,
+            {"document_type": "session_summary", "operation": "merge",
+             "target": {"claim_id": CLAIM}, "text": text},
+            revisions.claim_fingerprint(claim))
+        return store
+
+    def test_a_multi_run_round_trip_keeps_each_runs_history_apart(self):
+        # Two runs, each with its own generated version and correction, restored
+        # from one snapshot: every revision must come back to the run that owns
+        # it, with no drift and no duplication across the pair.
+        self._with_history(self.store, self.run_id, "REVIEWED-ONE")
+        self.assertIsNone(memory_store.save(self.base, self.run_id, self.store))
+
+        other, error, _ = memory.ingest_session({
+            "adapter": "smoke", "session_id": "s-2", "events": [
+                {"event_type": "run_started", "source_event_id": "f1", "payload": {}},
+                {"event_type": "run_progress", "source_event_id": "f2", "payload": {},
+                 "evidence": [{"kind": "diff", "artifact_ref": "artifacts/change.patch",
+                               "bytes": 4}]},
+                {"event_type": "run_terminated", "source_event_id": "f3",
+                 "outcome": "completed", "payload": {}},
+                {"event_type": "stream_ended", "source_event_id": "f4", "payload": {}}],
+            "project": {"source_id": "p-1", "name": "Project One"},
+            "work_package": {"source_id": "w-1", "title": "Packaging work"}})
+        self.assertIsNone(error)
+        other_run = other["agent_run"]["id"]
+        self._with_history(other, other_run, "REVIEWED-TWO")
+        self.assertIsNone(memory_store.save(self.base, other_run, other))
+
+        staging_dir, _manifest = self.staging(
+            self.package("multi.zip", package.PROFILE_BACKUP), "history-stage"
+        )
+        empty = self.path("empty-history")
+        os.makedirs(empty, exist_ok=True)
+        plan, plan_error = package.plan_restore(staging_dir, empty)
+        self.assertIsNone(plan_error)
+        self.assertEqual(
+            [self.run_id, other_run], sorted(e["run_id"] for e in plan["runs"])
+        )
+        for entry in plan["runs"]:
+            with self.subTest(run=entry["run_id"]):
+                result, apply_error = package.apply_restore(
+                    staging_dir, empty, entry["active_identity"], entry["run_id"]
+                )
+                self.assertIsNone(apply_error)
+                self.assertTrue(result["verified"])
+
+        restored_first, _load = memory_store.load(empty, self.run_id)
+        restored_other, _load2 = memory_store.load(empty, other_run)
+        # Each correction landed in its own run, and only there.
+        self.assertEqual(["REVIEWED-ONE"],
+                         [r["text"] for r in restored_first["corrections"]])
+        self.assertEqual(["REVIEWED-TWO"],
+                         [r["text"] for r in restored_other["corrections"]])
+        for label, restored in (("first", restored_first), ("other", restored_other)):
+            with self.subTest(run=label):
+                self.assertEqual(1, len(restored["generated_documents"]))
+                self.assertIsNone(package.verify_store(restored))
+                # ... and each run kept every evidence link it recorded.
+                recorded = [
+                    reference
+                    for record in restored["events"]
+                    for reference in (record.get("evidence_ids") or [])
+                ]
+                for reference in recorded:
+                    self.assertIn(
+                        reference, {r["id"] for r in restored["evidence"]}
+                    )
 
 
 class BoundaryTests(PackageTestCase):

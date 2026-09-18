@@ -1089,6 +1089,7 @@ no single allowlist and no ambiguous label.
 
 ```bash
 uv run python -m hrca.memory_package_cli export --base <dir> --run <id> --out pkg.zip
+uv run python -m hrca.memory_package_cli backup --base <dir> --out pkg.zip
 uv run python -m hrca.memory_package_cli backup --base <dir> --run <id> --out pkg.zip
 uv run python -m hrca.memory_package_cli inspect pkg.zip
 uv run python -m hrca.memory_package_cli recover --package pkg.zip --active <dir> --staging <dir>
@@ -1105,6 +1106,39 @@ The manifest declares the package schema version, the generator, the profile and
 its label, the Memory schema it was written for, the entry catalogue with sizes
 and checksums, and the profile's own limitations. **Checksums attest the package
 bytes only** — no stored source or evidence fingerprint is exposed.
+
+### A backup is one verified snapshot
+
+A backup is a claim about a *cross-run state*, so it is built from one verified
+snapshot rather than from independently timed reads. Every store in scope is
+captured, then re-read and proven unmoved, before a single entry exists:
+
+- **Content identity.** Each store's canonical bytes are hashed; a store whose
+  bytes differ on re-read refuses the snapshot.
+- **A change-detector.** The storage owner also reports a stamp derived from the
+  store *file*, which moves on every replacement even when the content does not.
+  Identity alone is not enough: a re-import or a restore can legitimately write
+  an earlier state back, and content would call that "unchanged".
+- **Independence.** Every store must resolve every reference it makes inside
+  itself. Two runs of one project share a project and work-package *id*, but each
+  store carries its own descriptor and resolves it locally, so a shared spelling
+  is not a dependency.
+
+Every capture read happens before every verification read, so the windows in
+which each store is pinned to its captured content overlap: at that instant the
+whole captured set really coexisted, which is exactly what a snapshot claims.
+
+Naming no run means **the store root**, and that scope is enumerated without ever
+skipping — a run store that cannot be read refuses the snapshot rather than being
+quietly dropped from a package that would claim to cover the root, and a run that
+appears or disappears mid-capture refuses it too. Naming runs fixes the scope, so
+only those stores have to hold still.
+
+The manifest then binds the snapshot to the package: each declared run names the
+entry that carries it, and that entry's checksum *is* the run's identity, so the
+declared snapshot and the package bytes cannot disagree. A `stores/` entry no run
+declares is refused — a package may not carry content its own snapshot does not
+attest.
 
 ### A package is hostile until validated
 
@@ -1128,6 +1162,14 @@ belong to its run, every child reference must resolve, every correction parent
 must exist, and every generated version must name a document. It then prints a
 reviewable plan — `create`, `replace`, `identical` or `refused` per run — and
 changes nothing.
+
+Before a plan exists, the staged bytes are held to the snapshot the package
+declared, re-derived in a **single read**: the staged store set must be exactly
+the declared set, and each staged store must parse to the run its entry claims at
+the identity the snapshot declares. The stores a restore applies come from that
+same verified read, so nothing can be applied that was not proven, and an
+altered, extended or interrupted staging directory is refused while no active
+store is in scope at all.
 
 Replacement happens only with `--apply` **and** the exact `--expected` active
 identity the plan reported. A stale expectation, an unreadable active store or a
