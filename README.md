@@ -761,8 +761,9 @@ account.
 collector, no provider access and no Memory UI exist. Capture runs only when a
 caller explicitly configures hooks and points them at the collector. Correction
 history, export, backup and the Memory-to-Code-Twin link boundary are delivered
-(M4.5); the interactive Code Twin workflow that renders a link remains unbuilt
-(M4.5/v2c).
+(M4.5); the interactive Code Twin link review that reads a link, renders the
+freshness the Twin reports and opens the exact entity is delivered in the Memory
+destination (M4.5/v2c).
 
 ## Evidence-linked documents (M4.3)
 
@@ -1245,6 +1246,66 @@ honest answer instead of inventing one. Freshness is returned, never persisted.
 Both actions are reads. The link is a value; the verdict is computed. No store,
 run state, correction, generated version or source fact is touched, so a link
 can never accept a repository change or claim a verified current baseline.
+
+## The Code Twin link workflow (M4.5/v2c)
+
+The **Code Twin** tab of the Memory destination is the interactive half of the
+link boundary. It reads one stored source claim, binds it against the
+authoritative Twin, and renders the freshness the Twin itself reports — then,
+only while the boundary reported the link actionable, offers to open the exact
+entity the link names.
+
+### Two steps, because the protocol has two
+
+**Bind link** records a link against the entity the Twin holds *now*. **Refresh
+freshness** re-compares that held link with the Twin as it is *later*. They are
+deliberately not one action.
+
+Re-binding on every read would erase the drift the page exists to show: a link
+taken a moment ago always agrees with itself, so `stale`, `historical` and
+`missing` could never appear at all. And no link can be bound against a retained
+or absent entity in the first place — the boundary refuses those outright — so
+holding the earlier link is the only way the Twin's later answer about it can be
+read.
+
+### Every candidate identity is answered, never guessed
+
+A Memory record states only whether its claim is a file or a symbol. Which of
+the three symbol kinds an exact locator is (`class`, `function`, `method`) can
+be said by the authoritative Twin alone, so the page offers each candidate as
+its own complete identity and reports what the boundary answered for each.
+Nothing is reordered, filtered or preferred, and a miss is reported as a miss.
+
+Two exact identities resolving for one claim is an **ambiguity**: the page
+reports it and refuses to open either, rather than choosing between them.
+
+### Opening is an exact-identity claim
+
+An actionable `current` or `stale` link may be opened. The selector is derived
+from the *returned* identity alone — the identity's own body, split exactly once
+— and the response is accepted only when the returned artifact carries that
+exact id. A same-named entity from another module, a current artifact standing in
+for a retained one, an absent artifact, or a bundle with no artifact at all is
+refused, and the link and its verdict stay on screen.
+
+The gate is what the boundary returned, narrowed and never widened: the verdict
+must be actionable, its state must be one the protocol calls actionable, it must
+be about *this* link (identity, kind, workspace, run, record and revision all
+echoed), and exactly one candidate identity must have resolved.
+
+### The desktop does not package
+
+Export, backup and recovery are offline operator workflows with no protocol
+route into this process. The Memory destination says so in place, rather than
+leaving a reader to assume a capability that is not there: there is no package,
+restore or replacement control in the desktop, and none is reachable from it.
+
+### Retained scope, unchanged
+
+A link is a typed reference, never source truth; freshness is returned, never
+persisted; and a confirmation establishes nothing about whether the source still
+holds. This workflow adds no store, no index, no durable artefact and no new
+action: it consumes the two v2b reads and the existing `get_twin` read.
 
 ## Scope and limitations
 

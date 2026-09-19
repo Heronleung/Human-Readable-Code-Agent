@@ -32,7 +32,14 @@ execution at scan time.
   `get_memory_code_link` / `resolve_memory_code_freshness` actions (contract
   3.9.0, additive over 3.8.0). Freshness is a returned comparison against
   authoritative Twin state — never a persisted assertion — and the two actions
-  write nothing, so Memory authority is untouched. The M4.5/v2a package boundary
+  write nothing, so Memory authority is untouched. The M4.5/v2c Code Twin link
+  workflow is the `Code Twin` tab of that same `memory` destination: it binds a
+  link, re-reads the freshness the Twin reports against the held link, and opens
+  the exact entity only after the existing `get_twin` read returns the artifact
+  whose id equals the link's `entity_id`. Binding and comparing are separate
+  actions on purpose — a fresh bind always agrees with itself, so only a held
+  link can show `stale`, `historical` or `missing`. The desktop narrows the
+  returned `actionable` and never widens it. The M4.5/v2a package boundary
   is `memory_package.py` (two
   profiles: a least-disclosure `export` and a local-sensitive `backup`) with the
   offline operator CLI `memory_package_cli.py`; both are outside the desktop and

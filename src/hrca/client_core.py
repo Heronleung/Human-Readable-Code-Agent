@@ -2962,6 +2962,327 @@ def memory_review_view(effective: Any, history: Any) -> Dict[str, Any]:
     }
 
 
+# -- M4.5/v2c Code Twin link review ---------------------------------------
+#
+# The desktop renders the link pair's own returned vocabulary. It never imports
+# the link domain, so the words below are presentation only: a verdict this
+# module does not recognise is shown as an unknown rather than mapped away, and
+# nothing here decides that a link is current.
+
+MEMORY_TWIN_FRESHNESS_LABELS = {
+    "current": "Current",
+    "historical": "Historical",
+    "stale": "Stale",
+    "missing": "Missing",
+    "unsupported": "Unsupported",
+}
+
+# The two states in which a link may be opened. Actionability is *returned*, so
+# this pair exists only to narrow: the desktop refuses a verdict that claimed
+# actionability in a state the protocol never calls actionable. It can never
+# widen a returned claim, and a link the boundary called non-actionable stays
+# inert whatever state accompanies it.
+MEMORY_TWIN_OPENABLE_STATES = ("current", "stale")
+
+# The Twin's own artifact kinds. A Memory record states only whether its claim
+# is a file or a symbol; which of the three symbol kinds an exact locator is can
+# be said by the authoritative Twin alone, so each candidate is offered as its
+# own exact identity and a miss is answered as a miss rather than guessed here.
+MEMORY_TWIN_FILE_KIND = "file"
+MEMORY_TWIN_SYMBOL_KINDS = ("class", "function", "method")
+
+MEMORY_TWIN_KIND_LABELS = {
+    "file": "File",
+    "class": "Class",
+    "function": "Function",
+    "method": "Method",
+}
+
+# The Memory record kind that carries a source claim, and the prefix of every
+# Twin entity identity.
+MEMORY_TWIN_LINK_RECORD_KIND = "code_entity_link"
+MEMORY_TWIN_ENTITY_PREFIX = "artifact:"
+
+MEMORY_TWIN_UNKNOWN = "Unknown"
+MEMORY_TWIN_NOT_REPORTED = "not reported"
+MEMORY_TWIN_NOT_AVAILABLE = "not available"
+MEMORY_TWIN_LIMITATION_NONE = "None reported"
+
+# Bounded reasons the desktop refuses to open, so a refusal is always a sentence
+# and never an identifier, a path or a digest.
+MEMORY_TWIN_REFUSED_UNREADABLE = "the source entity could not be read"
+MEMORY_TWIN_REFUSED_NO_ARTIFACT = "no source artifact was returned for this entity"
+MEMORY_TWIN_REFUSED_SUBSTITUTE = "the returned artifact is not the linked entity"
+MEMORY_TWIN_REFUSED_NO_SELECTOR = "this identity has no exact source selector"
+MEMORY_TWIN_REFUSED_NOT_ACTIONABLE = "the link is not actionable"
+
+
+def memory_twin_kind_label(kind: Any) -> str:
+    """Return the display word for one Twin artifact kind."""
+    if isinstance(kind, str) and kind in MEMORY_TWIN_KIND_LABELS:
+        return MEMORY_TWIN_KIND_LABELS[kind]
+    return MEMORY_TWIN_UNKNOWN
+
+
+def memory_twin_freshness_label(state: Any) -> str:
+    """Return the display word for a returned freshness verdict."""
+    if isinstance(state, str) and state in MEMORY_TWIN_FRESHNESS_LABELS:
+        return MEMORY_TWIN_FRESHNESS_LABELS[state]
+    return MEMORY_TWIN_UNKNOWN
+
+
+def memory_twin_actionable_label(verdict: Any) -> str:
+    """Return returned actionability as a word, never as colour alone.
+
+    A verdict that did not report actionability reads as *not reported* rather
+    than as either answer, so an absent field can never be mistaken for consent.
+    """
+    actionable = verdict.get("actionable") if isinstance(verdict, dict) else None
+    if actionable is True:
+        return "Yes"
+    if actionable is False:
+        return "No"
+    return "Not reported"
+
+
+def _revision_text(value: Any) -> str:
+    """Return one bounded revision as text; a non-integer is not a revision."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return MEMORY_TWIN_NOT_REPORTED
+
+
+def memory_twin_identity_label(kind: Any, body: Any) -> str:
+    """Return the bounded display label of one exact Twin identity."""
+    return "%s %s" % (memory_twin_kind_label(kind), body)
+
+
+def memory_twin_candidate_identities(view: Any) -> List[Dict[str, Any]]:
+    """Return the exact Twin identities one record view admits, in fixed order.
+
+    The bodies come only from the record's own allowlisted ``path`` and
+    ``symbol`` fields — never from a caller, from a path this program resolved,
+    or from the text of a surface. A record that states a file claim admits
+    exactly one identity. A symbol claim admits one per symbol kind, because
+    only the authoritative Twin can say which kind an exact locator is: the
+    desktop offers each exact identity and lets the boundary answer, so an
+    ambiguity is reported as a miss or as several exact hits, never resolved by
+    preferring one spelling over another.
+    """
+    fields = view.get("fields") if isinstance(view, dict) else None
+    if not isinstance(fields, dict):
+        return []
+    path = fields.get("path")
+    symbol = fields.get("symbol")
+    declared = fields.get("entity_kind")
+    bodies: tuple = ()
+    if declared == "file" and isinstance(path, str) and path:
+        bodies = ((MEMORY_TWIN_FILE_KIND, path),)
+    elif declared == "symbol" and isinstance(symbol, str) and symbol:
+        bodies = tuple((kind, symbol) for kind in MEMORY_TWIN_SYMBOL_KINDS)
+    elif isinstance(path, str) and path:
+        bodies = ((MEMORY_TWIN_FILE_KIND, path),)
+    elif isinstance(symbol, str) and symbol:
+        bodies = tuple((kind, symbol) for kind in MEMORY_TWIN_SYMBOL_KINDS)
+    candidates: List[Dict[str, Any]] = []
+    for kind, body in bodies:
+        candidates.append(
+            {
+                "entity_id": "%s%s:%s" % (MEMORY_TWIN_ENTITY_PREFIX, kind, body),
+                "entity_kind": kind,
+                "body": body,
+                "label": memory_twin_identity_label(kind, body),
+            }
+        )
+    return candidates
+
+
+def memory_twin_selector_for(entity_id: Any) -> Optional[str]:
+    """Return the existing typed selector of a returned identity, or ``None``.
+
+    An identity is exactly ``artifact:<kind>:<body>``, and the read-only Twin
+    request selects a projection by that body. Only that exact split is
+    performed — an identity that is not of that shape, or that names a kind the
+    Twin does not own, yields no selector at all rather than a guess.
+    """
+    if not isinstance(entity_id, str):
+        return None
+    if not entity_id.startswith(MEMORY_TWIN_ENTITY_PREFIX):
+        return None
+    remainder = entity_id[len(MEMORY_TWIN_ENTITY_PREFIX):]
+    kind, separator, body = remainder.partition(":")
+    if not separator or kind not in MEMORY_TWIN_KIND_LABELS or not body:
+        return None
+    return body
+
+
+def memory_twin_link_is_openable(link: Any, verdict: Any) -> bool:
+    """Return True only for a returned actionable verdict about this exact link.
+
+    Three conditions have to hold together, and all three are read from what the
+    boundary returned: the verdict must be actionable, its state must be one the
+    protocol calls actionable, and it must be a verdict about *this* link. A
+    verdict for another record, run or revision is never a licence to open.
+    """
+    if not isinstance(link, dict) or not isinstance(verdict, dict):
+        return False
+    if verdict.get("actionable") is not True:
+        return False
+    if verdict.get("freshness") not in MEMORY_TWIN_OPENABLE_STATES:
+        return False
+    return (
+        verdict.get("entity_id") == link.get("entity_id")
+        and verdict.get("entity_kind") == link.get("entity_kind")
+        and verdict.get("workspace_id") == link.get("workspace_id")
+        and verdict.get("memory_run_id") == link.get("memory_run_id")
+        and verdict.get("memory_record_id") == link.get("memory_record_id")
+        and verdict.get("recorded_revision") == link.get("recorded_revision")
+    )
+
+
+def memory_twin_open_refusal(bundle: Any, entity_id: Any) -> Optional[str]:
+    """Return a bounded reason the bundle is not the exact entity, or ``None``.
+
+    Opening is an exact-identity claim. The Twin request answers with whatever
+    artifact its own selector resolved, and that artifact's id must be the
+    identity that was asked for. A different artifact — including a same-named
+    entity from another module, or a current artifact standing in for a
+    retained one — is refused without opening anything.
+    """
+    if not isinstance(bundle, dict):
+        return MEMORY_TWIN_REFUSED_UNREADABLE
+    artifact = bundle.get("artifact")
+    if not isinstance(artifact, dict) or not artifact.get("id"):
+        return MEMORY_TWIN_REFUSED_NO_ARTIFACT
+    if artifact.get("id") != entity_id:
+        return MEMORY_TWIN_REFUSED_SUBSTITUTE
+    return None
+
+
+def memory_twin_link_records(document_set: Any) -> List[Dict[str, Any]]:
+    """Return the distinct source-claim records one run's documents name.
+
+    A record id comes from the claim the projector emitted, so no surface ever
+    derives a record identity from a row position or a display label. The order
+    follows the documents and their claims, which are themselves ordered.
+    """
+    records: List[Dict[str, Any]] = []
+    if not isinstance(document_set, dict):
+        return records
+    documents = document_set.get("documents")
+    if not isinstance(documents, dict):
+        return records
+    seen = set()
+    for document_type in sorted(documents):
+        document = documents.get(document_type)
+        if not isinstance(document, dict):
+            continue
+        for claim in document.get("claims") or []:
+            if not isinstance(claim, dict):
+                continue
+            for link in claim.get("links") or []:
+                if not isinstance(link, dict):
+                    continue
+                if link.get("kind") != MEMORY_TWIN_LINK_RECORD_KIND:
+                    continue
+                record_id = link.get("id")
+                if not isinstance(record_id, str) or record_id in seen:
+                    continue
+                seen.add(record_id)
+                records.append(
+                    {
+                        "record_id": record_id,
+                        "label": "%s %s"
+                        % (memory_record_kind_label(MEMORY_TWIN_LINK_RECORD_KIND), record_id),
+                    }
+                )
+    return records
+
+
+def memory_link_rows(link: Any) -> List[tuple]:
+    """Return the bounded review rows of one typed link."""
+    if not isinstance(link, dict):
+        return []
+    return [
+        ("Entity identity", str(link.get("entity_id") or MEMORY_TWIN_NOT_REPORTED)),
+        ("Entity kind", memory_twin_kind_label(link.get("entity_kind"))),
+        ("Recorded revision", _revision_text(link.get("recorded_revision"))),
+        ("Memory run", str(link.get("memory_run_id") or MEMORY_TWIN_NOT_REPORTED)),
+        ("Memory record", str(link.get("memory_record_id") or MEMORY_TWIN_NOT_REPORTED)),
+    ]
+
+
+def memory_freshness_rows(verdict: Any) -> List[tuple]:
+    """Return the bounded review rows of one returned freshness verdict.
+
+    The state and the returned actionability are both words, so the two things
+    a reader must not read from colour alone are never colour alone.
+    """
+    if not isinstance(verdict, dict):
+        return []
+    reason = verdict.get("reason")
+    return [
+        ("State", memory_twin_freshness_label(verdict.get("freshness"))),
+        ("Actionable", memory_twin_actionable_label(verdict)),
+        ("Recorded revision", _revision_text(verdict.get("recorded_revision"))),
+        ("Current revision", _revision_text(verdict.get("current_revision"))),
+        ("Limitation", str(reason) if isinstance(reason, str) and reason else MEMORY_TWIN_LIMITATION_NONE),
+    ]
+
+
+def build_memory_code_link_request(
+    correlation_id: str,
+    entity_id: str,
+    entity_kind: str,
+    run_id: str,
+    record_id: str,
+    kind: str = MEMORY_TWIN_LINK_RECORD_KIND,
+) -> Dict[str, Any]:
+    """Build a ``get_memory_code_link`` request for one exact Twin identity.
+
+    The request carries the identity a caller asks about; the *revision* is
+    never sent, because the boundary reads it from the authoritative store.
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_MEMORY_CODE_LINK,
+        "entity_id": entity_id,
+        "entity_kind": entity_kind,
+        "run_id": run_id,
+        "record_id": record_id,
+        "kind": kind,
+    }
+
+
+def build_memory_code_freshness_request(
+    correlation_id: str, link: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Build a ``resolve_memory_code_freshness`` request for one returned link.
+
+    Exactly the link's own returned fields are echoed — nothing is added, and
+    no comparison input is supplied by the client.
+    """
+    request: Dict[str, Any] = {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_MEMORY_CODE_FRESHNESS,
+    }
+    if isinstance(link, dict):
+        for field in (
+            "link_schema_version",
+            "workspace_id",
+            "entity_id",
+            "entity_kind",
+            "memory_run_id",
+            "memory_record_id",
+            "recorded_revision",
+        ):
+            if field in link:
+                request[field] = link[field]
+    return request
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -3161,4 +3482,30 @@ __all__ = [
     "memory_correction_source_id",
     "memory_conflict_choices",
     "memory_review_view",
+    "MEMORY_TWIN_FRESHNESS_LABELS",
+    "MEMORY_TWIN_OPENABLE_STATES",
+    "MEMORY_TWIN_FILE_KIND",
+    "MEMORY_TWIN_SYMBOL_KINDS",
+    "MEMORY_TWIN_KIND_LABELS",
+    "MEMORY_TWIN_LINK_RECORD_KIND",
+    "MEMORY_TWIN_ENTITY_PREFIX",
+    "MEMORY_TWIN_LIMITATION_NONE",
+    "MEMORY_TWIN_REFUSED_UNREADABLE",
+    "MEMORY_TWIN_REFUSED_NO_ARTIFACT",
+    "MEMORY_TWIN_REFUSED_SUBSTITUTE",
+    "MEMORY_TWIN_REFUSED_NO_SELECTOR",
+    "MEMORY_TWIN_REFUSED_NOT_ACTIONABLE",
+    "memory_twin_kind_label",
+    "memory_twin_freshness_label",
+    "memory_twin_actionable_label",
+    "memory_twin_identity_label",
+    "memory_twin_candidate_identities",
+    "memory_twin_selector_for",
+    "memory_twin_link_is_openable",
+    "memory_twin_open_refusal",
+    "memory_twin_link_records",
+    "memory_link_rows",
+    "memory_freshness_rows",
+    "build_memory_code_link_request",
+    "build_memory_code_freshness_request",
 ]

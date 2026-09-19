@@ -193,7 +193,7 @@ class SurfaceTests(MemoryQuerySurfaceTestCase):
     def test_the_destination_has_labelled_pages(self):
         tabs = self.window._memory_tabs
         self.assertEqual(
-            ["Documents", "Search", "Resume", "Corrections"],
+            ["Documents", "Search", "Resume", "Corrections", "Code Twin"],
             [tabs.tabText(i) for i in range(tabs.count())],
         )
         self.assertEqual("Memory pages", tabs.accessibleName())

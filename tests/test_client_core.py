@@ -94,6 +94,23 @@ from hrca.client_core import (
 )
 
 
+from hrca.client_core import (
+    MEMORY_TWIN_OPENABLE_STATES,
+    MEMORY_TWIN_REFUSED_SUBSTITUTE,
+    build_memory_code_freshness_request,
+    build_memory_code_link_request,
+    memory_freshness_rows,
+    memory_link_rows,
+    memory_twin_actionable_label,
+    memory_twin_candidate_identities,
+    memory_twin_freshness_label,
+    memory_twin_link_is_openable,
+    memory_twin_link_records,
+    memory_twin_open_refusal,
+    memory_twin_selector_for,
+)
+
+
 class LineBufferTests(unittest.TestCase):
     def test_accumulates_complete_lines(self):
         buf = LineBuffer(max_bytes=1000)
@@ -1107,6 +1124,236 @@ class DeltaInterpretClientVocabularyTests(unittest.TestCase):
                   "usage": None, "candidate": None, "limitations": []}
         text = format_delta_interpret_result(result)
         self.assertIn("Usage: unknown", text)
+
+
+class MemoryTwinLinkViewTests(unittest.TestCase):
+    """The Code Twin link vocabulary the desktop renders (M4.5/v2c).
+
+    Every one of these is presentation over a value the boundary returned: the
+    view models decide no freshness, widen no actionability, and derive no
+    identity the record did not already state.
+    """
+
+    _LINK = {
+        "link_schema_version": "1.0.0",
+        "workspace_id": "ws:1",
+        "entity_id": "artifact:function:pkg.mod.f",
+        "entity_kind": "function",
+        "memory_run_id": "run:1",
+        "memory_record_id": "rec:1",
+        "recorded_revision": 3,
+    }
+
+    def _verdict(self, freshness="current", actionable=True, **overrides):
+        verdict = dict(self._LINK, freshness=freshness, actionable=actionable,
+                       current_revision=3, reason=None)
+        verdict.pop("link_schema_version", None)
+        verdict.update(overrides)
+        return verdict
+
+    def test_every_returned_verdict_has_a_word(self):
+        for state in ("current", "historical", "stale", "missing", "unsupported"):
+            with self.subTest(state=state):
+                self.assertNotEqual("Unknown", memory_twin_freshness_label(state))
+
+    def test_an_unrecognised_verdict_is_never_mapped_away(self):
+        self.assertEqual("Unknown", memory_twin_freshness_label("a_state_from_later"))
+
+    def test_actionability_is_reported_and_absence_is_not_consent(self):
+        self.assertEqual("Yes", memory_twin_actionable_label({"actionable": True}))
+        self.assertEqual("No", memory_twin_actionable_label({"actionable": False}))
+        self.assertEqual("Not reported", memory_twin_actionable_label({}))
+        self.assertEqual("Not reported", memory_twin_actionable_label(None))
+
+    def test_a_file_claim_admits_exactly_one_identity(self):
+        candidates = memory_twin_candidate_identities(
+            {"fields": {"path": "pkg/mod.py", "symbol": None, "entity_kind": "file"}}
+        )
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("artifact:file:pkg/mod.py", candidates[0]["entity_id"])
+        self.assertEqual("file", candidates[0]["entity_kind"])
+
+    def test_a_symbol_claim_admits_one_identity_per_symbol_kind(self):
+        candidates = memory_twin_candidate_identities(
+            {"fields": {"path": "pkg/mod.py", "symbol": "pkg.mod.f",
+                        "entity_kind": "symbol"}}
+        )
+        self.assertEqual(
+            ["artifact:class:pkg.mod.f", "artifact:function:pkg.mod.f",
+             "artifact:method:pkg.mod.f"],
+            [candidate["entity_id"] for candidate in candidates],
+        )
+
+    def test_a_record_without_a_body_admits_nothing(self):
+        for view in ({"fields": {}}, {"fields": None}, {}, None, "record"):
+            with self.subTest(view=view):
+                self.assertEqual([], memory_twin_candidate_identities(view))
+
+    def test_the_selector_is_the_identity_body_and_nothing_else(self):
+        self.assertEqual(
+            "pkg.mod.f", memory_twin_selector_for("artifact:function:pkg.mod.f")
+        )
+        self.assertEqual(
+            "pkg/mod.py", memory_twin_selector_for("artifact:file:pkg/mod.py")
+        )
+
+    def test_an_identity_of_another_shape_yields_no_selector(self):
+        for value in ("pkg.mod.f", "artifact:function:", "artifact:widget:x",
+                      "artifactfunction:x", "/abs/mod.py", "", None, 7):
+            with self.subTest(value=value):
+                self.assertIsNone(memory_twin_selector_for(value))
+
+    def test_only_returned_actionability_in_an_actionable_state_licenses_opening(self):
+        self.assertTrue(memory_twin_link_is_openable(self._LINK, self._verdict()))
+        self.assertTrue(
+            memory_twin_link_is_openable(self._LINK, self._verdict("stale", True))
+        )
+
+    def test_a_non_actionable_verdict_is_never_widened(self):
+        for state in ("historical", "missing", "unsupported"):
+            with self.subTest(state=state):
+                self.assertFalse(
+                    memory_twin_link_is_openable(self._LINK, self._verdict(state, False))
+                )
+
+    def test_an_actionable_claim_in_a_non_actionable_state_is_narrowed(self):
+        # The protocol never calls history actionable; if a verdict ever did,
+        # this surface still refuses rather than trusting the claim.
+        self.assertFalse(
+            memory_twin_link_is_openable(
+                self._LINK, self._verdict("historical", True)
+            )
+        )
+
+    def test_a_verdict_about_another_link_is_not_a_licence(self):
+        for field, value in (
+            ("entity_id", "artifact:function:pkg.other.f"),
+            ("entity_kind", "method"),
+            ("workspace_id", "ws:2"),
+            ("memory_run_id", "run:2"),
+            ("memory_record_id", "rec:2"),
+            ("recorded_revision", 4),
+        ):
+            with self.subTest(field=field):
+                verdict = self._verdict(**{field: value})
+                self.assertFalse(memory_twin_link_is_openable(self._LINK, verdict))
+
+    def test_an_absent_or_substituted_artifact_is_refused(self):
+        entity = "artifact:function:pkg.mod.f"
+        self.assertIsNone(
+            memory_twin_open_refusal({"artifact": {"id": entity}}, entity)
+        )
+        self.assertEqual(
+            MEMORY_TWIN_REFUSED_SUBSTITUTE,
+            memory_twin_open_refusal(
+                {"artifact": {"id": "artifact:function:pkg.other.f"}}, entity
+            ),
+        )
+        self.assertIsNotNone(memory_twin_open_refusal({"artifact": None}, entity))
+        self.assertIsNotNone(memory_twin_open_refusal({"artifact": {}}, entity))
+        self.assertIsNotNone(memory_twin_open_refusal(None, entity))
+
+    def test_the_link_rows_carry_only_returned_fields(self):
+        rows = dict(memory_link_rows(self._LINK))
+        self.assertEqual("artifact:function:pkg.mod.f", rows["Entity identity"])
+        self.assertEqual("Function", rows["Entity kind"])
+        self.assertEqual("3", rows["Recorded revision"])
+        self.assertEqual("run:1", rows["Memory run"])
+        self.assertEqual("rec:1", rows["Memory record"])
+
+    def test_an_absent_revision_is_not_invented(self):
+        rows = dict(memory_link_rows({"entity_id": "artifact:file:a.py"}))
+        self.assertEqual("not reported", rows["Recorded revision"])
+
+    def test_the_freshness_rows_carry_the_word_and_the_limitation(self):
+        rows = dict(
+            memory_freshness_rows(
+                self._verdict(
+                    "unsupported", False,
+                    reason="no comparable authoritative Twin state is available",
+                )
+            )
+        )
+        self.assertEqual("Unsupported", rows["State"])
+        self.assertEqual("No", rows["Actionable"])
+        self.assertEqual(
+            "no comparable authoritative Twin state is available", rows["Limitation"]
+        )
+
+    def test_a_verdict_without_a_reason_says_none_reported(self):
+        rows = dict(memory_freshness_rows(self._verdict()))
+        self.assertEqual("None reported", rows["Limitation"])
+
+    def test_the_openable_states_are_the_protocols_own_actionable_ones(self):
+        self.assertEqual(("current", "stale"), MEMORY_TWIN_OPENABLE_STATES)
+
+    def test_the_link_records_come_from_the_claims_not_from_row_order(self):
+        document_set = {
+            "documents": {
+                "session_summary": {
+                    "claims": [
+                        {"links": [{"kind": "code_entity_link", "id": "record:1"},
+                                   {"kind": "event", "id": "record:2"}],
+                         "unresolved": []},
+                        {"links": [{"kind": "code_entity_link", "id": "record:1"}],
+                         "unresolved": []},
+                    ]
+                },
+                "change_record": {
+                    "claims": [{"links": [{"kind": "code_entity_link", "id": "record:3"}],
+                                "unresolved": []}]
+                },
+            }
+        }
+        records = memory_twin_link_records(document_set)
+        # Documents are visited in a fixed order and a repeated reference is
+        # reported once, so the list is stable whatever order the map holds.
+        self.assertEqual(["record:3", "record:1"], [r["record_id"] for r in records])
+        self.assertEqual(records, memory_twin_link_records(document_set))
+
+    def test_a_document_set_without_claims_names_no_record(self):
+        for document_set in ({"documents": {}}, {"documents": None}, {}, None):
+            with self.subTest(document_set=document_set):
+                self.assertEqual([], memory_twin_link_records(document_set))
+
+
+class MemoryTwinRequestTests(unittest.TestCase):
+    """The desktop sends only the identities the protocol asks for."""
+
+    def test_a_bind_request_carries_no_revision(self):
+        request = build_memory_code_link_request(
+            "c1", "artifact:function:pkg.mod.f", "function", "run:1", "rec:1"
+        )
+        self.assertEqual(contract.ACTION_MEMORY_CODE_LINK, request["action"])
+        self.assertEqual(contract.CONTRACT_VERSION, request["contract_version"])
+        self.assertEqual("c1", request["correlation_id"])
+        self.assertNotIn("recorded_revision", request)
+        self.assertNotIn("workspace_id", request)
+
+    def test_a_bind_request_names_the_record_kind_it_binds(self):
+        request = build_memory_code_link_request(
+            "c1", "artifact:function:pkg.mod.f", "function", "run:1", "rec:1"
+        )
+        self.assertEqual("code_entity_link", request["kind"])
+
+    def test_a_freshness_request_echoes_only_the_links_own_returned_fields(self):
+        link = {
+            "link_schema_version": "1.0.0",
+            "workspace_id": "ws:1",
+            "entity_id": "artifact:function:pkg.mod.f",
+            "entity_kind": "function",
+            "memory_run_id": "run:1",
+            "memory_record_id": "rec:1",
+            "recorded_revision": 2,
+        }
+        request = build_memory_code_freshness_request("c2", link)
+        self.assertEqual(contract.ACTION_MEMORY_CODE_FRESHNESS, request["action"])
+        self.assertEqual("c2", request["correlation_id"])
+        for field, value in link.items():
+            self.assertEqual(value, request[field])
+        self.assertEqual(
+            set(link) | {"contract_version", "correlation_id", "action"}, set(request)
+        )
 
 
 if __name__ == "__main__":

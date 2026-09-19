@@ -234,6 +234,22 @@ from .client_core import (
     build_memory_history_request,
     build_memory_effective_request,
     build_memory_correction_request,
+    build_memory_code_link_request,
+    build_memory_code_freshness_request,
+    memory_twin_candidate_identities,
+    memory_twin_selector_for,
+    memory_twin_link_is_openable,
+    memory_twin_open_refusal,
+    memory_twin_link_records,
+    memory_twin_freshness_label,
+    memory_twin_actionable_label,
+    memory_link_rows,
+    memory_freshness_rows,
+    build_get_twin_request,
+    format_twin_projection,
+    MEMORY_TWIN_LINK_RECORD_KIND,
+    MEMORY_TWIN_REFUSED_NO_SELECTOR,
+    MEMORY_TWIN_REFUSED_NOT_ACTIONABLE,
 )
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -314,6 +330,28 @@ _RULE_DELTA_STATE_TOKEN = {
 # candidate. Held as a client-side literal so the shell never imports the
 # interpretation domain.
 _RULE_DELTA_REVIEWABLE = "reviewable_candidate"
+
+# The retained scope of the Memory destination, stated where the destination is
+# read rather than implied. Packaging and recovery are offline operator
+# workflows with no boundary route into this process, so the desktop says so
+# instead of leaving a reader to assume a capability that is not there.
+MEMORY_SCOPE_NOTE = (
+    "Read-only views over stored runs. Export, backup and recovery are offline "
+    "operator (CLI) workflows: this desktop never packages, restores or "
+    "replaces a Memory store. A Code Twin link is a typed reference, not source "
+    "truth, and its freshness is whatever the Twin last reported."
+)
+
+
+def _twin_rows(rows: List[tuple]) -> List[tuple]:
+    """Return labelled rows in the detail renderer's ``(field, value, reported)``
+    shape.
+
+    A link and a freshness verdict are values the boundary returned, not
+    source-reported text, so no row is marked as merely reported.
+    """
+    return [(str(name), str(value), False) for name, value in rows]
+
 
 # Fixed, honest unavailable messages for the document surface. Each ``reason``
 # is one of the workspace's bounded unavailable reasons; the banner never echoes
@@ -916,6 +954,22 @@ class MainWindow(QMainWindow):
         self._memory_review_draft: Optional[Dict[str, Any]] = None
         self._memory_review_version_id: Optional[str] = None
         self._memory_review_attempt_token: str = contract.new_correlation_id()
+
+        # Memory Code Twin link state (M4.5/v2c): the reviewed link and its
+        # returned freshness verdict, the run/record/identity selection the link
+        # was bound to, the generation that invalidates outstanding link and
+        # open actions, and the identity the open is currently proving.
+        self._memory_twin_generation: int = 0
+        self._memory_twin_document_sets: List[Dict[str, Any]] = []
+        self._memory_twin_record: Optional[Dict[str, Any]] = None
+        self._memory_twin_link: Optional[Dict[str, Any]] = None
+        self._memory_twin_freshness: Optional[Dict[str, Any]] = None
+        self._memory_twin_context: Optional[tuple] = None
+        self._memory_twin_open_identity: Optional[str] = None
+        self._memory_twin_candidates: List[Dict[str, Any]] = []
+        self._memory_twin_outcomes: List[Dict[str, Any]] = []
+        self._memory_twin_index: int = 0
+        self._memory_twin_resolved_count: int = 0
 
         self._document_id: Optional[str] = None
         self._document_name: Optional[str] = None
@@ -1875,15 +1929,24 @@ class MainWindow(QMainWindow):
     def _build_memory_page(self) -> QWidget:
         """Build the read-only Memory destination.
 
-        Three read-only pages over the same bounded protocol: Documents (the
+        Five read-only pages over the same bounded protocol: Documents (the
         projected claims of one run and their exact supporting records), Search
-        (a faceted cross-run query with relevance or recorded-time ordering) and
-        Resume (the evidence-linked resume).
+        (a faceted cross-run query with relevance or recorded-time ordering),
+        Resume (the evidence-linked resume), Corrections (human revisions, with
+        the generated statement always alongside the effective one) and Code
+        Twin (the typed link between one stored record and one exact Twin
+        entity, with the freshness the Twin itself reports).
 
         Every state is carried by words, so colour assists but never decides: a
-        claim's provenance, a hit's match and time status, and a resume's
-        unsupported or not-verified facts are all textual labels, and nothing
-        here claims freshness or verification the schema cannot support.
+        claim's provenance, a hit's match and time status, a resume's
+        unsupported or not-verified facts, and a link's freshness and
+        actionability are all textual labels, and nothing here claims freshness
+        or verification the schema cannot support.
+
+        Export, backup and recovery are deliberately absent: they are offline
+        operator workflows with no route to this process, so the note below
+        states that scope rather than implying a packaging surface that does not
+        exist.
         """
         body = QWidget()
         body.setObjectName("memoryPanel")
@@ -1898,6 +1961,12 @@ class MainWindow(QMainWindow):
         title.setStyleSheet(style.secondary_text_style(self._palette))
         layout.addWidget(title)
 
+        scope_note = QLabel(MEMORY_SCOPE_NOTE)
+        scope_note.setObjectName("memoryScopeNote")
+        scope_note.setWordWrap(True)
+        scope_note.setStyleSheet(style.memory_placeholder_style(self._palette))
+        layout.addWidget(scope_note)
+
         self._memory_tabs = QTabWidget()
         self._memory_tabs.setObjectName("memoryTabs")
         self._memory_tabs.setAccessibleName("Memory pages")
@@ -1905,6 +1974,7 @@ class MainWindow(QMainWindow):
         self._memory_tabs.addTab(self._build_memory_search_page(), "Search")
         self._memory_tabs.addTab(self._build_memory_resume_page(), "Resume")
         self._memory_tabs.addTab(self._build_memory_review_page(), "Corrections")
+        self._memory_tabs.addTab(self._build_memory_twin_page(), "Code Twin")
         layout.addWidget(self._memory_tabs, stretch=1)
         return body
 
@@ -2711,6 +2781,809 @@ class MainWindow(QMainWindow):
         return panel
 
     # -- Memory review: corrections, confirmation and history (M4.5/v1b) ---
+
+    # -- Memory Code Twin link: building ------------------------------------
+
+    def _build_memory_twin_page(self) -> QWidget:
+        """Build the Code Twin page: one typed link and its returned freshness.
+
+        Two steps, because the protocol has two: **Bind link** records a link
+        against the entity the Twin holds now, and **Refresh freshness**
+        re-compares that held link with the Twin as it is later. They are
+        deliberately separate. A link is a value carrying the revision it was
+        taken at, and freshness is a fresh comparison against it — so re-binding
+        would silently erase exactly the drift this page exists to report, and a
+        link recorded against a retained or absent entity could not be bound at
+        all.
+
+        Opening is offered only while the boundary itself reported the held link
+        actionable, and is settled by the returned artifact's own id rather than
+        by the selector having resolved to *something*.
+
+        Export, backup and recovery are deliberately not here. They are offline
+        operator workflows with no route into this process, so a packaging or
+        restore control would offer a capability the boundary cannot serve.
+        """
+        body = QWidget()
+        body.setObjectName("memoryTwinPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        controls = QWidget()
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        controls_layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_twin_run_selector = QComboBox()
+        self._memory_twin_run_selector.setObjectName("memoryTwinRunSelector")
+        self._memory_twin_run_selector.setAccessibleName("Code Twin link run")
+        self._memory_twin_run_selector.setToolTip(
+            "The stored run whose source claim is reviewed"
+        )
+        self._memory_twin_run_selector.currentIndexChanged.connect(
+            self._on_memory_twin_run_changed
+        )
+        controls_layout.addWidget(self._memory_twin_run_selector)
+
+        self._memory_twin_record_selector = QComboBox()
+        self._memory_twin_record_selector.setObjectName("memoryTwinRecordSelector")
+        self._memory_twin_record_selector.setAccessibleName("Code Twin link record")
+        self._memory_twin_record_selector.setToolTip(
+            "The exact source-claim record the link is bound to"
+        )
+        self._memory_twin_record_selector.currentIndexChanged.connect(
+            self._on_memory_twin_record_changed
+        )
+        controls_layout.addWidget(self._memory_twin_record_selector)
+
+        self._memory_twin_bind_button = QPushButton("Bind link")
+        self._memory_twin_bind_button.setObjectName("memoryTwinBindButton")
+        self._memory_twin_bind_button.setAccessibleName("Bind the Code Twin link")
+        self._memory_twin_bind_button.setToolTip(
+            "Bind the link against the authoritative Twin and read its freshness"
+        )
+        self._memory_twin_bind_button.clicked.connect(self._bind_memory_twin_link)
+        controls_layout.addWidget(self._memory_twin_bind_button)
+
+        self._memory_twin_refresh_button = QPushButton("Refresh freshness")
+        self._memory_twin_refresh_button.setObjectName("memoryTwinRefreshButton")
+        self._memory_twin_refresh_button.setAccessibleName(
+            "Refresh the Code Twin freshness"
+        )
+        self._memory_twin_refresh_button.setToolTip(
+            "Re-compare the held link with the Twin now; the link itself is "
+            "never re-bound, so a moved revision is reported rather than erased"
+        )
+        self._memory_twin_refresh_button.clicked.connect(
+            self._refresh_memory_twin_freshness
+        )
+        controls_layout.addWidget(self._memory_twin_refresh_button)
+
+        controls_layout.addStretch(1)
+        layout.addWidget(controls)
+
+        self._memory_twin_status = QLabel("")
+        self._memory_twin_status.setObjectName("memoryTwinStatus")
+        self._memory_twin_status.setWordWrap(True)
+        self._memory_twin_status.setStyleSheet(
+            style.memory_placeholder_style(self._palette)
+        )
+        layout.addWidget(self._memory_twin_status)
+
+        splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        splitter.setObjectName("memoryTwinSplitter")
+        splitter.addWidget(self._build_memory_twin_link_panel())
+        splitter.addWidget(self._build_memory_twin_source_panel())
+        splitter.setStretchFactor(0, style.MEMORY_PANE_STRETCH)
+        splitter.setStretchFactor(1, style.MEMORY_PANE_STRETCH)
+        layout.addWidget(splitter, stretch=1)
+
+        self._clear_memory_twin("Review a link to read its identity and freshness.")
+        return body
+
+    def _build_memory_twin_link_panel(self) -> QWidget:
+        """Build the link and freshness panel, and the gated open action."""
+        panel = QWidget()
+        panel.setObjectName("memoryTwinLinkPanel")
+        panel.setMinimumWidth(style.MEMORY_CLAIM_LIST_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.GAP_TIGHT, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        outcome_heading = QLabel("Candidate identities")
+        outcome_heading.setObjectName("memoryTwinHeading")
+        outcome_heading.setFont(style.panel_header_font())
+        outcome_heading.setStyleSheet(style.secondary_text_style(self._palette))
+
+        self._memory_twin_outcome_body = QWidget()
+        self._memory_twin_outcome_body.setObjectName("memoryTwinOutcomeBody")
+        self._memory_twin_outcome_layout = QVBoxLayout(self._memory_twin_outcome_body)
+        self._memory_twin_outcome_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_twin_outcome_layout.setSpacing(style.SPACE_4)
+
+        link_heading = QLabel("Link")
+        link_heading.setObjectName("memoryTwinHeading")
+        link_heading.setFont(style.panel_header_font())
+        link_heading.setStyleSheet(style.secondary_text_style(self._palette))
+
+        self._memory_twin_link_body = QWidget()
+        self._memory_twin_link_body.setObjectName("memoryTwinLinkBody")
+        self._memory_twin_link_layout = QVBoxLayout(self._memory_twin_link_body)
+        self._memory_twin_link_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_twin_link_layout.setSpacing(style.GAP_GROUP)
+
+        freshness_heading = QLabel("Freshness")
+        freshness_heading.setObjectName("memoryTwinHeading")
+        freshness_heading.setFont(style.panel_header_font())
+        freshness_heading.setStyleSheet(style.secondary_text_style(self._palette))
+
+        self._memory_twin_freshness_body = QWidget()
+        self._memory_twin_freshness_body.setObjectName("memoryTwinFreshnessBody")
+        self._memory_twin_freshness_layout = QVBoxLayout(
+            self._memory_twin_freshness_body
+        )
+        self._memory_twin_freshness_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_twin_freshness_layout.setSpacing(style.GAP_GROUP)
+
+        host = QWidget()
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        host_layout.setSpacing(style.GAP_TIGHT)
+        for widget in (
+            outcome_heading,
+            self._memory_twin_outcome_body,
+            link_heading,
+            self._memory_twin_link_body,
+            freshness_heading,
+            self._memory_twin_freshness_body,
+        ):
+            host_layout.addWidget(widget)
+        host_layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryTwinLinkScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(host)
+        layout.addWidget(scroll, stretch=1)
+
+        self._memory_twin_open_button = QPushButton("Open source entity")
+        self._memory_twin_open_button.setObjectName("memoryTwinOpenButton")
+        self._memory_twin_open_button.setFocusPolicy(Qt.StrongFocus)
+        self._memory_twin_open_button.setEnabled(False)
+        self._memory_twin_open_button.clicked.connect(self._open_memory_twin_entity)
+        layout.addWidget(self._memory_twin_open_button)
+
+        self._memory_twin_open_status = QLabel("")
+        self._memory_twin_open_status.setObjectName("memoryTwinOpenStatus")
+        self._memory_twin_open_status.setWordWrap(True)
+        self._memory_twin_open_status.setStyleSheet(
+            style.memory_claim_meta_style(self._palette)
+        )
+        layout.addWidget(self._memory_twin_open_status)
+        return panel
+
+    def _build_memory_twin_source_panel(self) -> QWidget:
+        """Build the panel that shows the exact source entity once opened."""
+        panel = QWidget()
+        panel.setObjectName("memoryTwinSourcePanel")
+        panel.setMinimumWidth(style.MEMORY_DETAIL_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.GAP_TIGHT, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        heading = QLabel("Source entity")
+        heading.setObjectName("memoryTwinHeading")
+        heading.setFont(style.panel_header_font())
+        heading.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(heading)
+
+        self._memory_twin_source_text = QLabel("")
+        self._memory_twin_source_text.setObjectName("memoryTwinSourceText")
+        self._memory_twin_source_text.setWordWrap(True)
+        self._memory_twin_source_text.setFocusPolicy(Qt.StrongFocus)
+        self._memory_twin_source_text.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
+        self._memory_twin_source_text.setAccessibleName("Opened source entity")
+        self._memory_twin_source_text.setToolTip(
+            "The bounded projection of the exact entity the link names"
+        )
+        self._memory_twin_source_text.setStyleSheet(
+            style.memory_detail_value_style(self._palette)
+        )
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryTwinSourceScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_twin_source_text)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    # -- Memory Code Twin link: reading -------------------------------------
+
+    def _clear_memory_twin(self, message: str) -> None:
+        """Clear the review, leaving a bounded reason in place of each panel."""
+        self._memory_twin_record = None
+        self._memory_twin_link = None
+        self._memory_twin_freshness = None
+        self._memory_twin_context = None
+        self._memory_twin_open_identity = None
+        self._memory_twin_resolved_count = 0
+        self._memory_twin_outcomes = []
+        self._memory_twin_index = 0
+        self._clear_layout(self._memory_twin_outcome_layout)
+        self._render_detail_rows(self._memory_twin_link_layout, [("", message, False)])
+        self._render_detail_rows(self._memory_twin_freshness_layout, [("", message, False)])
+        self._clear_memory_twin_source(message)
+        self._memory_twin_open_button.setEnabled(False)
+        self._memory_twin_open_button.setAccessibleName(
+            "Open source entity — disabled: no link has been reviewed"
+        )
+        self._memory_twin_open_button.setToolTip(
+            "Unavailable: review a link and let the Twin report it actionable"
+        )
+        self._memory_twin_open_status.setText(
+            "Nothing can be opened until the Twin reports the link actionable."
+        )
+
+    def _render_memory_twin_outcomes(self) -> None:
+        """Show what each exact candidate identity resolved to, in words."""
+        self._clear_layout(self._memory_twin_outcome_layout)
+        if not self._memory_twin_outcomes:
+            placeholder = QLabel("No candidate identity has been reviewed.")
+            placeholder.setObjectName("memoryTwinOutcomeEmpty")
+            placeholder.setWordWrap(True)
+            placeholder.setStyleSheet(style.memory_placeholder_style(self._palette))
+            self._memory_twin_outcome_layout.addWidget(placeholder)
+            return
+        for outcome in self._memory_twin_outcomes:
+            row = QLabel(str(outcome.get("summary")))
+            row.setObjectName("memoryTwinOutcome")
+            row.setWordWrap(True)
+            row.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            self._memory_twin_outcome_layout.addWidget(row)
+
+    def _clear_memory_twin_source(self, message: str) -> None:
+        """Clear the opened-entity panel without opening or inferring anything."""
+        self._memory_twin_source_text.setText(message)
+
+    def _bind_memory_twin_link(self) -> None:
+        """Read one link end to end, or the context it needs to be read from.
+
+        The generation advances before the first request, so a response that
+        arrives after the selection moved on is discarded rather than rendered
+        against the current context.
+        """
+        self._memory_twin_generation += 1
+        generation = self._memory_twin_generation
+        run_id = self._memory_twin_run_selector.currentData()
+        record_id = self._memory_twin_record_selector.currentData()
+        if isinstance(run_id, str) and isinstance(record_id, str):
+            self._request_memory_twin_record(generation, run_id, record_id)
+            return
+        cid = contract.new_correlation_id()
+        request = build_get_memory_documents_request(cid)
+        self._set_status(STATE_RUNNING, "reading Memory documents")
+        if not self._send(
+            request,
+            partial(self._on_memory_twin_documents, generation),
+            partial(self._on_memory_twin_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_twin_documents(
+        self, generation: int, result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_twin_generation:
+            return
+        document_sets = [
+            s for s in (result.get("document_sets") or []) if isinstance(s, dict)
+        ]
+        self._memory_twin_document_sets = document_sets
+        selector = self._memory_twin_run_selector
+        previous = selector.currentIndex()
+        selector.blockSignals(True)
+        selector.clear()
+        for document_set in document_sets:
+            run = document_set.get("run") if isinstance(document_set.get("run"), dict) else {}
+            selector.addItem(
+                "%s — %s" % (memory_state_label(run.get("state")), run.get("run_id")),
+                run.get("run_id"),
+            )
+        selector.blockSignals(False)
+        if not document_sets:
+            self._clear_memory_twin("No stored Memory run was found.")
+            return
+        selector.setCurrentIndex(previous if 0 <= previous < len(document_sets) else 0)
+        self._populate_memory_twin_records(generation)
+
+    def _populate_memory_twin_records(self, generation: int) -> None:
+        """Offer the source claims of the selected run, from its own documents."""
+        index = self._memory_twin_run_selector.currentIndex()
+        document_set = (
+            self._memory_twin_document_sets[index]
+            if 0 <= index < len(self._memory_twin_document_sets)
+            else None
+        )
+        records = memory_twin_link_records(document_set)
+        selector = self._memory_twin_record_selector
+        previous = selector.currentIndex()
+        selector.blockSignals(True)
+        selector.clear()
+        for record in records:
+            selector.addItem(str(record.get("label")), record.get("record_id"))
+        selector.blockSignals(False)
+        if not records:
+            self._clear_memory_twin(
+                "This run records no source claim, so there is no link to review."
+            )
+            return
+        selector.setCurrentIndex(previous if 0 <= previous < len(records) else 0)
+        run_id = self._memory_twin_run_selector.currentData()
+        record_id = selector.currentData()
+        if isinstance(run_id, str) and isinstance(record_id, str):
+            self._request_memory_twin_record(generation, run_id, record_id)
+
+    def _request_memory_twin_record(
+        self, generation: int, run_id: str, record_id: str
+    ) -> None:
+        """Read the exact source-claim record, to learn the bodies it claims."""
+        self._memory_twin_candidates = []
+        self._memory_twin_outcomes = []
+        self._memory_twin_index = 0
+        self._memory_twin_resolved_count = 0
+        # A bind replaces the held link: the old link's revision is no longer
+        # what this surface is reading.
+        self._memory_twin_link = None
+        self._memory_twin_freshness = None
+        self._memory_twin_context = None
+        self._clear_layout(self._memory_twin_outcome_layout)
+        cid = contract.new_correlation_id()
+        request = build_get_memory_record_request(
+            cid, run_id, MEMORY_TWIN_LINK_RECORD_KIND, record_id
+        )
+        self._set_status(STATE_RUNNING, "reading the source claim")
+        if not self._send(
+            request,
+            partial(self._on_memory_twin_record, generation),
+            partial(self._on_memory_twin_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_twin_record(
+        self, generation: int, result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_twin_generation:
+            return
+        self._memory_twin_record = result
+        self._memory_twin_candidates = memory_twin_candidate_identities(result)
+        self._memory_twin_outcomes = []
+        self._memory_twin_index = 0
+        self._memory_twin_resolved_count = 0
+        if not self._memory_twin_candidates:
+            self._clear_memory_twin(
+                "This claim names no source entity, so no link can be bound to it."
+            )
+            return
+        self._advance_memory_twin_review(generation)
+
+    def _set_memory_twin_outcome(self, index: int, summary: str) -> None:
+        """Replace one candidate's outcome row in place, and redraw the list."""
+        while len(self._memory_twin_outcomes) <= index:
+            self._memory_twin_outcomes.append({"summary": ""})
+        self._memory_twin_outcomes[index] = {"summary": summary}
+        self._render_memory_twin_outcomes()
+
+    def _advance_memory_twin_review(self, generation: int) -> None:
+        """Bind the next exact candidate identity, or finish when none remain.
+
+        Every candidate is a complete identity composed from the record's own
+        stored body, so each is answered by the boundary on its own terms. This
+        iterates because only the authoritative Twin can say which symbol kind a
+        locator is: nothing here reorders, filters or prefers one spelling, and
+        two exact hits are reported as an ambiguity rather than resolved.
+        """
+        if generation != self._memory_twin_generation:
+            return
+        run_id = self._memory_twin_run_selector.currentData()
+        record_id = self._memory_twin_record_selector.currentData()
+        if not isinstance(run_id, str) or not isinstance(record_id, str):
+            self._clear_memory_twin("No source-claim record is selected.")
+            return
+        if self._memory_twin_index >= len(self._memory_twin_candidates):
+            self._finalize_memory_twin_review(generation)
+            return
+        candidate = self._memory_twin_candidates[self._memory_twin_index]
+        self._request_memory_code_link(generation, run_id, record_id, candidate)
+
+    def _request_memory_code_link(
+        self,
+        generation: int,
+        run_id: str,
+        record_id: str,
+        candidate: Dict[str, Any],
+    ) -> None:
+        """Bind one exact identity to the record and read the typed link."""
+        entity_id = str(candidate.get("entity_id"))
+        entity_kind = str(candidate.get("entity_kind"))
+        cid = contract.new_correlation_id()
+        request = build_memory_code_link_request(
+            cid, entity_id, entity_kind, run_id, record_id
+        )
+        self._set_status(STATE_RUNNING, "binding the Code Twin link")
+        if not self._send(
+            request,
+            partial(self._on_memory_twin_link, generation, candidate),
+            partial(self._on_memory_twin_bind_refused, generation, candidate),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_twin_bind_refused(
+        self, generation: int, candidate: Dict[str, Any], code: str
+    ) -> None:
+        """Record a candidate the boundary refused and move to the next one."""
+        if generation != self._memory_twin_generation:
+            return
+        self._set_memory_twin_outcome(
+            self._memory_twin_index,
+            "%s — %s" % (candidate.get("label"), contract.error_message(code)),
+        )
+        self._memory_twin_index += 1
+        self._advance_memory_twin_review(generation)
+
+    def _on_memory_twin_link(
+        self, generation: int, candidate: Dict[str, Any], result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_twin_generation:
+            return
+        link = result if isinstance(result, dict) else None
+        if not memory_link_rows(link):
+            self._set_memory_twin_outcome(
+                self._memory_twin_index,
+                "%s — no link was returned" % candidate.get("label"),
+            )
+            self._memory_twin_index += 1
+            self._advance_memory_twin_review(generation)
+            return
+        self._memory_twin_link = link
+        self._memory_twin_context = (
+            self._memory_twin_run_selector.currentData(),
+            self._memory_twin_record_selector.currentData(),
+        )
+        self._memory_twin_resolved_count += 1
+        self._set_memory_twin_outcome(
+            self._memory_twin_index,
+            "%s — link bound; reading the freshness the Twin reports"
+            % candidate.get("label"),
+        )
+        self._request_memory_code_freshness(generation, candidate, link)
+
+    def _request_memory_code_freshness(
+        self, generation: int, candidate: Dict[str, Any], link: Dict[str, Any]
+    ) -> None:
+        """Compare the recorded revision with authoritative Twin state."""
+        cid = contract.new_correlation_id()
+        request = build_memory_code_freshness_request(cid, link)
+        self._set_status(STATE_RUNNING, "reading Code Twin freshness")
+        if not self._send(
+            request,
+            partial(self._on_memory_twin_freshness, generation, candidate),
+            partial(self._on_memory_twin_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_twin_freshness(
+        self, generation: int, candidate: Dict[str, Any], result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_twin_generation:
+            return
+        verdict = result if isinstance(result, dict) else None
+        self._memory_twin_freshness = verdict
+        state_label = memory_twin_freshness_label(
+            verdict.get("freshness") if isinstance(verdict, dict) else None
+        )
+        self._set_memory_twin_outcome(
+            self._memory_twin_index,
+            "%s — %s, actionable %s"
+            % (
+                candidate.get("label"),
+                state_label,
+                memory_twin_actionable_label(verdict),
+            ),
+        )
+        self._memory_twin_index += 1
+        self._advance_memory_twin_review(generation)
+
+    def _finalize_memory_twin_review(self, generation: int) -> None:
+        """Render the resolved link and its verdict, then apply the open gate."""
+        if generation != self._memory_twin_generation:
+            return
+        self._render_memory_twin_resolution()
+
+    def _render_memory_twin_resolution(self) -> None:
+        """Draw the held link and its latest verdict, and re-apply the gate.
+
+        The link is whatever the boundary last returned and is never rebuilt
+        here: the point of re-reading freshness is to compare that recorded
+        revision with the Twin as it is now, so a moved revision is reported
+        instead of being overwritten by a fresh bind.
+        """
+        link = self._memory_twin_link
+        verdict = self._memory_twin_freshness
+        rows = memory_link_rows(link)
+        if not rows:
+            self._render_detail_rows(
+                self._memory_twin_link_layout,
+                [("", "No candidate identity produced a link for this claim.", False)],
+            )
+            self._render_detail_rows(
+                self._memory_twin_freshness_layout,
+                [("", "No freshness can be reported without a link.", False)],
+            )
+            self._clear_memory_twin_source("No source entity is open.")
+            self._apply_memory_twin_gate()
+            self._restore_operation_status()
+            return
+        self._render_detail_rows(self._memory_twin_link_layout, _twin_rows(rows))
+        freshness = memory_freshness_rows(verdict)
+        if not freshness:
+            freshness = [("", "No freshness has been read for this link.", False)]
+            self._render_detail_rows(self._memory_twin_freshness_layout, freshness)
+        else:
+            self._render_detail_rows(
+                self._memory_twin_freshness_layout, _twin_rows(freshness)
+            )
+        self._clear_memory_twin_source(
+            "No entity is open. Opening accepts the link only if the returned "
+            "artifact is this exact identity."
+        )
+        self._apply_memory_twin_gate()
+        self._restore_operation_status()
+
+    def _refresh_memory_twin_freshness(self) -> None:
+        """Re-compare the held link with the Twin, without re-binding it.
+
+        This is the only way a moved revision can be seen: a link records the
+        revision it was taken at, so a fresh bind would always agree with itself
+        and the drift would be invisible. A link recorded against an entity the
+        Twin has since retained or dropped is refused at bind time, so it is
+        precisely by holding the earlier link that history and absence become
+        readable at all.
+        """
+        if self._memory_twin_link is None:
+            self._memory_twin_open_status.setText(
+                "Nothing to refresh: bind a link first."
+            )
+            return
+        if self._memory_twin_resolved_count != 1:
+            self._memory_twin_open_status.setText(
+                "Nothing to refresh: this claim did not resolve to exactly one identity."
+            )
+            return
+        self._memory_twin_generation += 1
+        generation = self._memory_twin_generation
+        cid = contract.new_correlation_id()
+        request = build_memory_code_freshness_request(cid, self._memory_twin_link)
+        self._set_status(STATE_RUNNING, "refreshing Code Twin freshness")
+        if not self._send(
+            request,
+            partial(self._on_memory_twin_freshness_refreshed, generation),
+            partial(self._on_memory_twin_refresh_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_twin_refresh_failed(self, generation: int, code: str) -> None:
+        """A failed comparison keeps the link: only the verdict is unknown."""
+        if generation != self._memory_twin_generation:
+            return
+        self._memory_twin_freshness = None
+        self._render_memory_twin_resolution()
+        self._memory_twin_open_status.setText(
+            "The freshness could not be read: %s. The link itself is unchanged."
+            % contract.error_message(code)
+        )
+        self._set_status(STATE_FAILED, contract.error_message(code))
+
+    def _on_memory_twin_freshness_refreshed(
+        self, generation: int, result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_twin_generation:
+            return
+        verdict = result if isinstance(result, dict) else None
+        if not memory_freshness_rows(verdict):
+            self._clear_memory_twin("No freshness verdict was returned.")
+            return
+        self._memory_twin_freshness = verdict
+        self._render_memory_twin_resolution()
+
+    def _apply_memory_twin_gate(self) -> None:
+        """Enable opening only for one returned actionable verdict on this link.
+
+        The gate is the boundary's own answer, narrowed and never widened: an
+        actionable verdict in a state the protocol calls actionable, about this
+        exact link, and exactly one candidate identity resolving. Everything
+        else stays visible and inert, and the button says which case it is in
+        words as well as in its enabled state.
+        """
+        link = self._memory_twin_link
+        verdict = self._memory_twin_freshness
+        state_label = memory_twin_freshness_label(
+            verdict.get("freshness") if isinstance(verdict, dict) else None
+        )
+        actionable_label = memory_twin_actionable_label(verdict)
+        if link is None:
+            self._memory_twin_open_button.setEnabled(False)
+            self._memory_twin_open_button.setAccessibleName(
+                "Open source entity — disabled: no candidate identity produced a link"
+            )
+            self._memory_twin_open_button.setToolTip(
+                "Disabled: this claim produced no link to open"
+            )
+            self._memory_twin_open_status.setText(
+                "No candidate identity produced a link for this claim, so nothing "
+                "can be opened and nothing is inferred in its place."
+            )
+            return
+        if self._memory_twin_resolved_count > 1:
+            self._memory_twin_open_button.setEnabled(False)
+            self._memory_twin_open_button.setAccessibleName(
+                "Open source entity — disabled: more than one identity resolved"
+            )
+            self._memory_twin_open_button.setToolTip(
+                "Disabled: more than one exact identity resolved for this claim"
+            )
+            self._memory_twin_open_status.setText(
+                "More than one exact identity resolved for this claim, so nothing "
+                "is opened: an ambiguous link is reported, never chosen between."
+            )
+            return
+        if not memory_twin_link_is_openable(link, verdict):
+            self._memory_twin_open_button.setEnabled(False)
+            self._memory_twin_open_button.setAccessibleName(
+                "Open source entity — disabled: the link is %s and reported %s"
+                % (state_label, actionable_label)
+            )
+            self._memory_twin_open_button.setToolTip(
+                "Disabled: the link is %s and reported actionable: %s"
+                % (state_label, actionable_label)
+            )
+            self._memory_twin_open_status.setText(
+                "This link is %s and actionable: %s, so nothing can be opened. "
+                "The link and its verdict stay visible."
+                % (state_label, actionable_label)
+            )
+            return
+        identity = str(link.get("entity_id"))
+        self._memory_twin_open_button.setEnabled(True)
+        self._memory_twin_open_button.setAccessibleName(
+            "Open the source entity %s" % identity
+        )
+        self._memory_twin_open_button.setToolTip(
+            "Open %s — the Twin reported this link %s and actionable"
+            % (identity, state_label)
+        )
+        self._memory_twin_open_status.setText(
+            "The Twin reported this link %s and actionable: opening will accept "
+            "it only if the returned artifact is this exact entity." % state_label
+        )
+
+    def _open_memory_twin_entity(self) -> None:
+        """Open the linked entity, proving the returned artifact's exact id.
+
+        Two independent things must still hold: the selection must be the one
+        the link was bound to, and the verdict must be the boundary's own
+        actionable answer about that same link. The selector is then derived
+        from the *returned* identity, and the response is accepted only when the
+        artifact it carries is that identity.
+        """
+        generation = self._memory_twin_generation
+        link = self._memory_twin_link
+        verdict = self._memory_twin_freshness
+        if not memory_twin_link_is_openable(link, verdict):
+            self._memory_twin_open_status.setText(
+                "Nothing was opened: %s." % MEMORY_TWIN_REFUSED_NOT_ACTIONABLE
+            )
+            return
+        if self._memory_twin_resolved_count != 1:
+            self._memory_twin_open_status.setText(
+                "Nothing was opened: this claim did not resolve to exactly one identity."
+            )
+            return
+        run_id = self._memory_twin_run_selector.currentData()
+        record_id = self._memory_twin_record_selector.currentData()
+        if self._memory_twin_context != (run_id, record_id):
+            self._memory_twin_open_status.setText(
+                "Nothing was opened: the selection changed since the link was read."
+            )
+            return
+        selector = memory_twin_selector_for(link.get("entity_id"))
+        if selector is None:
+            self._clear_memory_twin_source(MEMORY_TWIN_REFUSED_NO_SELECTOR + ".")
+            self._memory_twin_open_status.setText(
+                "Nothing was opened: this identity has no exact source selector."
+            )
+            return
+        self._memory_twin_open_identity = str(link.get("entity_id"))
+        cid = contract.new_correlation_id()
+        request = build_get_twin_request(cid, selector)
+        self._set_status(STATE_RUNNING, "opening the linked source entity")
+        if not self._send(
+            request,
+            partial(self._on_memory_twin_opened, generation),
+            partial(self._on_memory_twin_open_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_twin_opened(self, generation: int, result: Dict[str, Any]) -> None:
+        """Render the entity only when the returned artifact is that entity."""
+        if generation != self._memory_twin_generation:
+            return
+        entity_id = self._memory_twin_open_identity
+        if self._memory_twin_context is None:
+            return
+        refusal = memory_twin_open_refusal(result, entity_id)
+        if refusal is not None:
+            self._clear_memory_twin_source(refusal + ".")
+            self._memory_twin_open_status.setText(
+                "Nothing was opened: %s. The link and its verdict are unchanged."
+                % refusal
+            )
+            self._restore_operation_status()
+            return
+        self._memory_twin_source_text.setText(format_twin_projection(result))
+        self._memory_twin_open_status.setText(
+            "Opened %s: the returned artifact carries exactly this identity."
+            % str(entity_id)
+        )
+        self._restore_operation_status()
+
+    # -- Memory Code Twin link: invalidation --------------------------------
+
+    def _on_memory_twin_run_changed(self) -> None:
+        """A new run invalidates the link and narrows the records it offers."""
+        self._memory_twin_generation += 1
+        self._clear_memory_twin("Review a link to read its identity and freshness.")
+        self._populate_memory_twin_records(self._memory_twin_generation)
+
+    def _on_memory_twin_record_changed(self) -> None:
+        """A new record invalidates the link and the identities it admitted."""
+        self._memory_twin_generation += 1
+        self._clear_memory_twin("Review a link to read its identity and freshness.")
+
+    def _on_memory_twin_failed(self, generation: int, code: str) -> None:
+        if generation != self._memory_twin_generation:
+            return
+        self._clear_memory_twin(contract.error_message(code))
+        self._set_status(STATE_FAILED, contract.error_message(code))
+
+    def _on_memory_twin_open_failed(self, generation: int, code: str) -> None:
+        if generation != self._memory_twin_generation:
+            return
+        self._clear_memory_twin_source(contract.error_message(code) + ".")
+        self._memory_twin_open_status.setText(
+            "Nothing was opened: %s. The link and its verdict are unchanged."
+            % contract.error_message(code)
+        )
+        self._restore_operation_status()
 
     def _build_memory_review_page(self) -> QWidget:
         """Build the Corrections page: comparison, editor, conflicts and history.
