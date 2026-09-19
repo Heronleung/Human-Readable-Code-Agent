@@ -759,9 +759,10 @@ account.
 
 **M4.2 capture is not a product feature.** No hook installation, no background
 collector, no provider access and no Memory UI exist. Capture runs only when a
-caller explicitly configures hooks and points them at the collector. Search,
-Resume and timeline remain unbuilt (M4.4); correction history, export and Code
-Twin linkage remain unbuilt (M4.5).
+caller explicitly configures hooks and points them at the collector. Correction
+history, export, backup and the Memory-to-Code-Twin link boundary are delivered
+(M4.5); the interactive Code Twin workflow that renders a link remains unbuilt
+(M4.5/v2c).
 
 ## Evidence-linked documents (M4.3)
 
@@ -1177,6 +1178,73 @@ failed rollback write leaves the active store exactly as it was; a replacement
 preserves the prior store as rollback material first, and the result is re-read
 to prove the store reopens with the expected state. An **export cannot be
 recovered** — it is shareable precisely because it is not a restore source.
+
+## Memory-to-Code-Twin links and freshness (M4.5/v2b)
+
+`memory_twin_link.py` is the typed bound between one stored Memory record and one
+exact Code Twin entity, plus an honest answer to the only question that bound
+raises: *does the source revision the link was taken against still hold?* Two
+read-only boundary actions carry it, and neither writes anything.
+
+| Action | Input | Returns |
+|---|---|---|
+| `get_memory_code_link` | a Memory run, record and record kind, plus one exact Twin entity identity | the typed link, with the revision read *from the authoritative Twin store* |
+| `resolve_memory_code_freshness` | that link | one freshness verdict |
+
+### Identity is exact or it is a miss
+
+The entity identity is the Twin's own deterministic identifier —
+`artifact:file:<root-relative-path>` or `artifact:<kind>:<locator>`, where the
+kind is one of `class`/`function`/`method` and the locator is the scanner's
+dotted `module.path.Class.method`. Resolution is a lookup **by that identifier**
+in the authoritative store, and nothing else is consulted: not a display label,
+not prose, not a path substring, not row order, not a digest, not the Memory
+record's own `symbol` or `path`, and never a caller-supplied repository path. A
+same-named function in another module is a *different* entity; an identifier one
+character from a real one is a miss, and a miss is never filled by a
+similarly-named entity.
+
+A file identity must be a plain root-relative path: an absolute name, a drive or
+colon, a backslash and a `..` segment are all refused, so a link cannot name a
+location outside the workspace.
+
+### The recorded revision is the Twin's revision number
+
+A link records the Twin's own workspace revision — the monotone
+`scan_generation`, which the Twin advances only when a scan really changes the
+workspace. It is not a content digest, and it deliberately is not: elsewhere in
+this program a fingerprint never crosses a boundary as a value (a digest is
+reported as a present/absent boolean), so a revision *number* is the honest
+representation of "the revision this link was taken against" that adds no new
+disclosure class. The boundary reads the revision **from the store** and refuses
+to take one from a caller, so a caller cannot assert its own currency, and a
+fingerprint cannot be smuggled through the revision field.
+
+### Five verdicts, and only one of them is current
+
+`resolve_memory_code_freshness` recomputes the comparison on every call from
+current authority: a stored link, a generated statement or a confirmation is
+**never** allowed to establish currentness.
+
+| Verdict | Meaning |
+|---|---|
+| `current` | the entity resolves as a current artifact **and** the recorded revision equals the authoritative one |
+| `historical` | the Twin retains the entity as an earlier version (a last-valid symbol kept when its file stopped parsing, or a record held back from an ambiguous rename) |
+| `stale` | the entity is a current artifact, but the source has moved past the recorded revision |
+| `missing` | the identifier is not in the authoritative store |
+| `unsupported` | no comparison is possible: no readable authority, an unsupported Twin schema, a link taken against another workspace, an artifact state this contract does not classify, or an unusable revision |
+
+A retained earlier version is decided **before** the revision is compared, so
+history can never read as current — and no link can be *taken* against a
+retained version in the first place. `missing` and `unsupported` are returned as
+visible, non-actionable results rather than errors, so a caller can render an
+honest answer instead of inventing one. Freshness is returned, never persisted.
+
+### Nothing is written
+
+Both actions are reads. The link is a value; the verdict is computed. No store,
+run state, correction, generated version or source fact is touched, so a link
+can never accept a repository change or claim a verified current baseline.
 
 ## Scope and limitations
 

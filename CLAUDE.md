@@ -26,7 +26,14 @@ execution at scan time.
   `get_memory_history` / `resolve_memory_effective` / `append_memory_correction`
   actions (contract 3.8.0); a correction changes what is shown, never what was
   recorded. The M4.5 workflow is the Corrections tab of that same `memory`
-  destination. The M4.5/v2a package boundary is `memory_package.py` (two
+  destination. The M4.5/v2b Code Twin linkage is `memory_twin_link.py`: a pure
+  domain that binds one Memory record to one exact Twin entity identity plus the
+  Twin's own workspace revision number, reached through the read-only
+  `get_memory_code_link` / `resolve_memory_code_freshness` actions (contract
+  3.9.0, additive over 3.8.0). Freshness is a returned comparison against
+  authoritative Twin state — never a persisted assertion — and the two actions
+  write nothing, so Memory authority is untouched. The M4.5/v2a package boundary
+  is `memory_package.py` (two
   profiles: a least-disclosure `export` and a local-sensitive `backup`) with the
   offline operator CLI `memory_package_cli.py`; both are outside the desktop and
   reach no network, process or credential primitive. A `backup` is built from

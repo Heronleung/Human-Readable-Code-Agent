@@ -1394,7 +1394,10 @@ class BoundaryTests(PackageTestCase):
         self.assertNotIn("time", imported)
 
     def test_the_contract_and_schema_are_unchanged(self):
-        self.assertEqual("3.8.0", contract.CONTRACT_VERSION)
+        # The v2b Code Twin link pair moved the protocol to 3.9.0 additively;
+        # the Memory schema and this boundary's offline, actionless surface are
+        # exactly as v2a left them.
+        self.assertEqual("3.9.0", contract.CONTRACT_VERSION)
         self.assertEqual("1.1.0", memory.MEMORY_SCHEMA_VERSION)
         self.assertNotIn("memory_package", contract.ALLOWED_ACTIONS)
 

@@ -132,6 +132,7 @@ class ContractSurfaceTests(MemoryReadTestCase):
         # The new actions join through their own set: no prior set's membership
         # changes, and nothing is added to the allowlist outside a declared set.
         self.assertTrue(contract.MEMORY_ACTIONS <= contract.ALLOWED_ACTIONS)
+        self.assertTrue(contract.MEMORY_CODE_LINK_ACTIONS <= contract.ALLOWED_ACTIONS)
         union = set()
         for name in self._PRIOR_ACTION_SETS:
             prior = getattr(contract, name)
@@ -139,6 +140,7 @@ class ContractSurfaceTests(MemoryReadTestCase):
                 self.assertTrue(prior.isdisjoint(contract.MEMORY_ACTIONS))
                 self.assertTrue(prior.isdisjoint(contract.MEMORY_QUERY_ACTIONS))
                 self.assertTrue(prior.isdisjoint(contract.MEMORY_REVISION_ACTIONS))
+                self.assertTrue(prior.isdisjoint(contract.MEMORY_CODE_LINK_ACTIONS))
             union |= prior
         # The allowlist stays exactly the union of the declared sets, so nothing
         # can be added to the public surface outside a named set.
@@ -146,7 +148,8 @@ class ContractSurfaceTests(MemoryReadTestCase):
             union
             | contract.MEMORY_ACTIONS
             | contract.MEMORY_QUERY_ACTIONS
-            | contract.MEMORY_REVISION_ACTIONS,
+            | contract.MEMORY_REVISION_ACTIONS
+            | contract.MEMORY_CODE_LINK_ACTIONS,
             contract.ALLOWED_ACTIONS,
         )
         for action in ("scan", "open_project", "get_tree", "get_document",

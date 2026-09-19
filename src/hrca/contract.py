@@ -30,7 +30,12 @@ from typing import Any, Dict, Optional
 # The version of the desktop-to-core contract. A boundary rejects any request
 # whose ``contract_version`` differs from this constant with a bounded
 # ``unknown_contract_version`` error.
-CONTRACT_VERSION = "3.8.0"
+#
+# 3.9.0 is additive over 3.8.0: it adds the M4.5/v2b Memory Code Twin link pair
+# below and removes or alters nothing. Every 3.8.0 action keeps its name, its
+# request shape and its response shape, so a client that sends no link request
+# cannot observe the increment.
+CONTRACT_VERSION = "3.9.0"
 
 # Correlation identifier: a client-generated opaque string that the boundary
 # echoes verbatim so a client can match each response to its in-flight request.
@@ -177,6 +182,20 @@ ACTION_MEMORY_HISTORY = "get_memory_history"
 ACTION_MEMORY_EFFECTIVE = "resolve_memory_effective"
 ACTION_MEMORY_CORRECTION = "append_memory_correction"
 
+# The M4.5/v2b Code Twin link pair. Both are *reads*: neither writes a store, a
+# link or anything else, so a link can never accept a repository change, alter
+# run state, correction authority, generated evidence or source truth.
+# ``get_memory_code_link`` builds the typed link binding one Memory record to one
+# exact Twin entity plus the Twin's own workspace revision, read from the
+# authoritative store rather than accepted from a caller.
+# ``resolve_memory_code_freshness`` compares that recorded revision against
+# current authoritative Twin state and returns one bounded freshness verdict.
+# Freshness is returned, never persisted, so no stored link can assert
+# currentness. The recorded revision is the Twin's revision *number*, not a
+# content digest, so no fingerprint value crosses the boundary either way.
+ACTION_MEMORY_CODE_LINK = "get_memory_code_link"
+ACTION_MEMORY_CODE_FRESHNESS = "resolve_memory_code_freshness"
+
 SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
 WORKSPACE_ACTIONS = frozenset(
     {ACTION_OPEN_PROJECT, ACTION_GET_TREE, ACTION_GET_DOCUMENT}
@@ -307,6 +326,15 @@ MEMORY_QUERY_ACTIONS = frozenset({ACTION_MEMORY_SEARCH, ACTION_MEMORY_RESUME})
 MEMORY_REVISION_ACTIONS = frozenset(
     {ACTION_MEMORY_HISTORY, ACTION_MEMORY_EFFECTIVE, ACTION_MEMORY_CORRECTION}
 )
+
+# The M4.5/v2b Code Twin linkage protocol. Read-only and offline, and additive on
+# top of 3.8.0: it adds no storage, no index and no durable artefact. A link is a
+# value computed from a stored Memory record and the authoritative Twin store the
+# boundary already roots at the session store base, and the freshness verdict is
+# recomputed on every call from current authority rather than remembered.
+MEMORY_CODE_LINK_ACTIONS = frozenset(
+    {ACTION_MEMORY_CODE_LINK, ACTION_MEMORY_CODE_FRESHNESS}
+)
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -326,6 +354,7 @@ ALLOWED_ACTIONS = (
     | MEMORY_ACTIONS
     | MEMORY_QUERY_ACTIONS
     | MEMORY_REVISION_ACTIONS
+    | MEMORY_CODE_LINK_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -475,6 +504,17 @@ _ERROR_MESSAGES = {
     # interpolates an id, a target, a term or any stored content.
     "memory_revision_invalid": "the Memory revision request is not valid",
     "memory_correction_refused": "the Memory correction was refused",
+    # Code Twin linkage errors (M4.5/v2b). Three bounded codes: one for a link
+    # request whose shape cannot be used (a malformed entity identity, a kind
+    # that disagrees with the identity, an unusable revision), one for an entity
+    # the authoritative Twin store does not hold, and one for an entity it holds
+    # but not as a current artifact. None interpolates an id, a kind, a locator,
+    # a revision or any stored content, so neither caller text nor store content
+    # can leak into a protocol error. Freshness itself is never an error: an
+    # uncomparable link is returned as the bounded ``unsupported`` verdict.
+    "memory_code_link_invalid": "the Memory Code Twin link request is not valid",
+    "twin_entity_not_found": "the Code Twin entity does not exist in that workspace",
+    "twin_entity_not_current": "the Code Twin entity is not a current projection of source",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)

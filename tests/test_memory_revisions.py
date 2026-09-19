@@ -525,8 +525,10 @@ class ProtocolTests(unittest.TestCase):
             )
         )
 
-    def test_the_contract_is_3_8_0_and_the_actions_are_allowed(self):
-        self.assertEqual("3.8.0", contract.CONTRACT_VERSION)
+    def test_the_revision_actions_survived_the_code_link_increment(self):
+        # M4.5/v2b took the contract to 3.9.0 by adding its own set; every
+        # revision action keeps its name and stays allowed, unchanged.
+        self.assertEqual("3.9.0", contract.CONTRACT_VERSION)
         for action in sorted(contract.MEMORY_REVISION_ACTIONS):
             with self.subTest(action=action):
                 self.assertIn(action, contract.ALLOWED_ACTIONS)

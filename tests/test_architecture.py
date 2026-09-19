@@ -72,7 +72,8 @@ _DOCUMENT_SEAM = frozenset({"document", "version_store"})
 # desktop reaches it only through a later, explicitly designed boundary.
 _MEMORY_SEAM = frozenset(
     {"memory", "memory_store", "memory_cli", "memory_docs", "memory_query",
-     "memory_revisions", "memory_package", "memory_package_cli"}
+     "memory_revisions", "memory_package", "memory_package_cli",
+     "memory_twin_link"}
 )
 
 # The M4.5/v2a package boundary. It reaches the network nowhere, spawns nothing
@@ -559,7 +560,8 @@ class MemoryReadBoundaryTests(unittest.TestCase):
             for node in ast.walk(tree)
             if isinstance(node, ast.FunctionDef)
             and node.name.startswith(
-                ("_memory", "_get_memory", "_bounded_memory", "_load_memory")
+                ("_memory", "_get_memory", "_bounded_memory", "_load_memory",
+                 "_resolve_memory")
             )
         ]
         self.assertTrue(functions, "the Memory handlers must exist")

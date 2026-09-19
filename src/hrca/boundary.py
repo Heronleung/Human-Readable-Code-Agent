@@ -52,6 +52,7 @@ from . import (
     memory_query,
     memory_revisions,
     memory_store,
+    memory_twin_link,
     proposal,
     provider,
     provider_config,
@@ -352,6 +353,10 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _resolve_memory_effective_result(request, session)
     elif action == contract.ACTION_MEMORY_CORRECTION:
         result = _append_memory_correction_result(request, session)
+    elif action == contract.ACTION_MEMORY_CODE_LINK:
+        result = _get_memory_code_link_result(request, session)
+    elif action == contract.ACTION_MEMORY_CODE_FRESHNESS:
+        result = _resolve_memory_code_freshness_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -3088,6 +3093,153 @@ def _append_memory_correction_result(
         "generated_version_id": version.get("id"),
         "generated_revision": version.get("revision"),
     }
+
+
+# -- Memory Code Twin link handlers (M4.5/v2b) ---------------------------
+
+
+def _memory_code_entity_identity(request: Dict[str, Any]) -> Tuple[str, str]:
+    """Validate the exact Twin entity a link names, without resolving it.
+
+    Only a bounded, well-formed typed artifact identifier is accepted, and the
+    declared kind must be that identifier's own kind. Nothing is resolved here
+    and nothing is looked up: the identity is taken exactly as given, so no
+    display label, prose, path substring, row order or caller-supplied
+    repository path can ever stand in for it.
+    """
+    entity_id = _bounded_memory_id(request.get("entity_id"))
+    entity_kind = request.get("entity_kind")
+    if entity_id is None or not isinstance(entity_kind, str) or not entity_kind:
+        raise contract.ContractError("memory_code_link_invalid")
+    parsed_kind, _body, error = memory_twin_link.parse_entity_id(entity_id)
+    if error is not None or parsed_kind != entity_kind:
+        raise contract.ContractError("memory_code_link_invalid")
+    return entity_id, entity_kind
+
+
+def _memory_code_link_record(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Tuple[str, str]:
+    """Return the ``(run_id, record_id)`` of the Memory record a link binds.
+
+    The record must really exist, of a kind the read contract can name, inside
+    the run the request names — and the store's own run identity is re-checked
+    against the request, so a record can never be attributed to the wrong run.
+    """
+    run_id = _bounded_memory_id(request.get("run_id"))
+    record_id = _bounded_memory_id(request.get("record_id"))
+    kind = request.get("kind")
+    if run_id is None or record_id is None:
+        raise contract.ContractError("memory_code_link_invalid")
+    if not isinstance(kind, str) or kind not in memory_docs.RECORD_VIEW_KINDS:
+        raise contract.ContractError("memory_kind_not_supported")
+    store = _load_memory_store(session, run_id)
+    run = store.get("agent_run")
+    if not isinstance(run, dict) or run.get("id") != run_id:
+        raise contract.ContractError("memory_run_not_found")
+    view, view_err = memory_docs.record_view(store, kind, record_id)
+    if view is None:
+        if view_err == memory_docs.REASON_KIND_NOT_SUPPORTED:
+            raise contract.ContractError("memory_kind_not_supported")
+        raise contract.ContractError("memory_record_not_found")
+    return run_id, record_id
+
+
+def _load_memory_code_twin_store(
+    session: WorkspaceSession,
+) -> Tuple[Dict[str, Any], str]:
+    """Load the authoritative Twin store for the accepted workspace.
+
+    The workspace identity is derived from the session's accepted root, never
+    from the request, so a link can only be taken against the workspace this
+    session is rooted at. A Twin that is absent, unreadable or written by an
+    unsupported schema yields no usable authority and is refused rather than
+    guessed at.
+    """
+    workspace_id = twin.workspace_id_for(session.root)
+    store, err = twin_store.load(session.store_base, workspace_id)
+    if err is not None or store is None:
+        raise contract.ContractError("twin_not_synchronized")
+    return store, workspace_id
+
+
+def _get_memory_code_link_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Bind one Memory record to one exact Code Twin entity and return the link.
+
+    The recorded revision is read *from the authoritative Twin store*, never
+    taken from the caller, so a link cannot assert its own currency and no
+    caller-supplied value can manufacture currentness. The link is refused
+    unless the entity really exists in that workspace as a current artifact,
+    which is what keeps a link from being born against history. Nothing is
+    written: the link is a value returned to the caller.
+    """
+    entity_id, entity_kind = _memory_code_entity_identity(request)
+    run_id, record_id = _memory_code_link_record(request, session)
+    store, workspace_id = _load_memory_code_twin_store(session)
+
+    link, link_error = memory_twin_link.build_link(
+        workspace_id, entity_id, entity_kind, run_id, record_id, store
+    )
+    if link is None:
+        if link_error in (
+            memory_twin_link.REASON_ENTITY_MALFORMED,
+            memory_twin_link.REASON_KIND_MISMATCH,
+        ):
+            raise contract.ContractError("memory_code_link_invalid")
+        if link_error == memory_twin_link.REASON_ENTITY_ABSENT:
+            raise contract.ContractError("twin_entity_not_found")
+        if link_error == memory_twin_link.REASON_ENTITY_RETAINED:
+            raise contract.ContractError("twin_entity_not_current")
+        raise contract.ContractError("twin_not_synchronized")
+    return link
+
+
+def _resolve_memory_code_freshness_result(
+    request: Dict[str, Any], session: WorkspaceSession
+) -> Dict[str, Any]:
+    """Return the honest freshness of a link against current Twin state.
+
+    The comparison is recomputed now, from the authoritative store, on every
+    call: a link's recorded revision is only ever a claim to be checked, so no
+    stored link, no Memory prose and no confirmation can establish currentness.
+    The result is always one of the five bounded freshness states and never an
+    error — a link that cannot be compared is reported ``unsupported`` rather
+    than refused, so a caller can always render an honest answer. A link taken
+    against another workspace is never compared against this one.
+
+    The verdict is about the *source revision* only. Whether the bound Memory
+    record still exists is a precondition of the bind, not part of the
+    comparison, and Memory is append-only, so no supported operation removes a
+    record a link was taken against.
+    """
+    link, link_error = memory_twin_link.validate_link(
+        {
+            "link_schema_version": request.get("link_schema_version"),
+            "workspace_id": request.get("workspace_id"),
+            "entity_id": request.get("entity_id"),
+            "entity_kind": request.get("entity_kind"),
+            "memory_run_id": request.get("memory_run_id"),
+            "memory_record_id": request.get("memory_record_id"),
+            "recorded_revision": request.get("recorded_revision"),
+        }
+    )
+    if link is None:
+        raise contract.ContractError("memory_code_link_invalid")
+
+    workspace_id = twin.workspace_id_for(session.root)
+    store, err = twin_store.load(session.store_base, workspace_id)
+    if err is not None:
+        store = None
+    if isinstance(store, dict):
+        # A store whose own workspace identity disagrees with this session's is
+        # not authority for this workspace, so nothing is compared against it.
+        revision = store.get("workspace_revision")
+        declared = revision.get("workspace_id") if isinstance(revision, dict) else None
+        if declared != workspace_id:
+            store = None
+    return memory_twin_link.resolve_freshness(link, store, workspace_id)
 
 
 if __name__ == "__main__":
