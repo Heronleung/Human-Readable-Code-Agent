@@ -8,7 +8,7 @@ import os
 import unittest
 from contextlib import redirect_stdout
 
-from hrca.scanner import scan_directory
+from hrca.scanner import SCHEMA_VERSION, scan_directory
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.normpath(os.path.join(_HERE, "..", "fixtures"))
@@ -131,7 +131,9 @@ class CliTests(unittest.TestCase):
         with redirect_stdout(buf):
             main([FIXTURES])
         doc = json.loads(buf.getvalue())
-        self.assertEqual(doc["schema_version"], "1.0.0")
+        # The CLI carries the scanner's *declared* version through rather than a
+        # copy of it; the literal is pinned once, in tests/test_scanner_grammar.py.
+        self.assertEqual(doc["schema_version"], SCHEMA_VERSION)
         self.assertEqual(doc["generator"], "hrca-scanner")
         self.assertEqual(doc["root"], FIXTURES.replace("\\", "/"))
 

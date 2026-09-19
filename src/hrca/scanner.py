@@ -9,6 +9,7 @@ and emits canonical JSON records for:
 * ``relations``    — imports, calls, returns, raises, and inheritance bases.
 * ``parse_errors`` — per-file ``SyntaxError`` records (the scan continues).
 * ``confidence``   — explicit confidence states for non-high-confidence items.
+* ``grammar``      — the bounded grammar context that produced the scan.
 
 Design invariants (see README for the full contract):
 
@@ -21,16 +22,87 @@ Design invariants (see README for the full contract):
 * **Explicitly unresolved** — dynamic imports (``importlib.import_module`` /
   ``__import__``) are emitted as ``imports`` relations with ``status``
   ``"unresolved"`` instead of being silently dropped or guessed.
+* **Attributed grammar** — the document states the grammar that read the source,
+  because the same source can be a genuine ``SyntaxError`` under one Python
+  grammar and valid under a later one. The attribution is *context*, never a
+  verdict: a file that fails to parse stays a ``parse_error`` with its own
+  bounded details, and nothing here claims another interpreter would accept it.
 """
 
 from __future__ import annotations
 
 import ast
 import os
-from typing import Dict, Iterator, List, Optional, Set
+import sys
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 GENERATOR = "hrca-scanner"
+
+# -- grammar context -----------------------------------------------------
+
+# The grammar that read the source is *context* for every other record, so it is
+# reported once per document. Only two stable, non-sensitive facts cross: the
+# implementation *family* and the major.minor grammar version. Executable paths,
+# full ``sys.version`` text, build identifiers, platform and OS values,
+# environment details, arguments and unrestricted runtime metadata are
+# deliberately never read, so they cannot leak into canonical output.
+
+GRAMMAR_IMPLEMENTATION_MAX_CHARS = 32
+GRAMMAR_UNKNOWN = "unknown"
+_GRAMMAR_IMPLEMENTATION_ALLOWED = frozenset(
+    "abcdefghijklmnopqrstuvwxyz0123456789_-"
+)
+
+
+def _grammar_implementation() -> str:
+    """Return the bounded implementation family, or ``unknown``.
+
+    The family is a short identifier such as ``cpython``. Anything longer than
+    the bound, or carrying characters an identifier cannot carry, is reported as
+    ``unknown`` rather than echoed — an unexpected value is a reason to say
+    nothing, not a reason to pass it through.
+    """
+    name = getattr(getattr(sys, "implementation", None), "name", None)
+    if not isinstance(name, str):
+        return GRAMMAR_UNKNOWN
+    candidate = name.strip().lower()
+    if not candidate or len(candidate) > GRAMMAR_IMPLEMENTATION_MAX_CHARS:
+        return GRAMMAR_UNKNOWN
+    if not set(candidate) <= _GRAMMAR_IMPLEMENTATION_ALLOWED:
+        return GRAMMAR_UNKNOWN
+    return candidate
+
+
+def _grammar_version() -> str:
+    """Return the ``major.minor`` grammar version, or ``unknown``.
+
+    Only the two components that name a grammar are reported. The micro version,
+    release level and serial are build facts, not grammar facts, and are never
+    consulted.
+    """
+    info = getattr(sys, "version_info", None)
+    major = getattr(info, "major", None)
+    minor = getattr(info, "minor", None)
+    if not isinstance(major, int) or not isinstance(minor, int):
+        return GRAMMAR_UNKNOWN
+    if isinstance(major, bool) or isinstance(minor, bool) or major < 0 or minor < 0:
+        return GRAMMAR_UNKNOWN
+    return "%d.%d" % (major, minor)
+
+
+def grammar_context() -> Dict[str, str]:
+    """Return the bounded grammar context of the running interpreter.
+
+    The result has exactly two keys and both are always present, so a consumer
+    can compare contexts without inferring a missing value. It is constant for
+    the lifetime of a process, so repeated scans under one grammar are
+    byte-identical.
+    """
+    return {
+        "implementation": _grammar_implementation(),
+        "version": _grammar_version(),
+    }
 
 _CONF_HIGH = "high"
 _CONF_LOW = "low"
@@ -138,6 +210,7 @@ class Scanner:
         return {
             "schema_version": SCHEMA_VERSION,
             "generator": GENERATOR,
+            "grammar": grammar_context(),
             "root": self._root_arg,
             "files": files,
             "symbols": symbols,
@@ -570,3 +643,75 @@ class _Extractor:
 def scan_directory(root: str) -> dict:
     """Scan ``root`` and return the canonical record document as a dict."""
     return Scanner(root).scan()
+
+
+# -- schema compatibility -------------------------------------------------
+
+# Pure migrations map an *older* ``schema_version`` to a function that upgrades a
+# document dict. The 1.0.0 -> 1.1.0 step is **purely additive**: it added the
+# bounded ``grammar`` context and changed no existing record, so a 1.0.0
+# document is already a well-formed 1.1.0 document that simply never recorded
+# which grammar read it. The step therefore only supplies the unknown context —
+# it rewrites no record and invents no fact.
+#
+# A document at a *future* or unknown version is never migrated and never
+# guessed at; like the Twin store, it is refused with a bounded reason so a
+# consumer cannot half-read records whose shape it does not know.
+MIGRATIONS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {}
+
+
+def _version_tuple(version: str) -> Tuple[int, ...]:
+    return tuple(int(p) for p in version.split(".") if p.isdigit()) or (0,)
+
+
+def migrate_document(
+    raw: Any,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Validate and migrate a scanner document to the current schema version.
+
+    Returns ``(document, error)``: on success ``error`` is ``None``; on a
+    malformed document, a missing version, or a version that is newer than this
+    scanner supports, ``document`` is ``None`` and ``error`` is a bounded
+    reason that names no path and no content.
+
+    The migration never changes a record's meaning. A document that fails to
+    parse, or that carries an unexpected version, is refused rather than
+    repaired — silently upgrading an unknown document is how a consumer ends up
+    reading fields that were never there.
+    """
+    if not isinstance(raw, dict):
+        return None, "scan document is not a mapping"
+    version = raw.get("schema_version")
+    if not isinstance(version, str) or not version:
+        return None, "missing schema_version"
+    try:
+        current = _version_tuple(SCHEMA_VERSION)
+        found = _version_tuple(version)
+    except ValueError:
+        return None, "invalid schema_version"
+
+    if found == current:
+        return raw, None
+    if found > current:
+        return None, "schema_version is newer than supported"
+    if version not in MIGRATIONS:
+        return None, "schema_version is not migratable"
+    return MIGRATIONS[version](dict(raw)), None
+
+
+def _migrate_1_0_0(document: Dict[str, Any]) -> Dict[str, Any]:
+    """Upgrade a 1.0.0 document: supply the grammar context it never recorded.
+
+    The unknown context is the honest value. A 1.0.0 document was produced by an
+    interpreter nobody recorded, so this reports that nothing is known about the
+    grammar rather than assuming the one now running.
+    """
+    document["grammar"] = {
+        "implementation": GRAMMAR_UNKNOWN,
+        "version": GRAMMAR_UNKNOWN,
+    }
+    document["schema_version"] = SCHEMA_VERSION
+    return document
+
+
+MIGRATIONS["1.0.0"] = _migrate_1_0_0

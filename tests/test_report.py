@@ -8,7 +8,7 @@ import unittest
 
 from hrca.planning import build_plan
 from hrca.report import REPORT_VERSION, build_report
-from hrca.scanner import scan_directory
+from hrca.scanner import SCHEMA_VERSION, scan_directory
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.normpath(os.path.join(_HERE, "..", "fixtures"))
@@ -105,7 +105,9 @@ class ReportBuilderTests(unittest.TestCase):
         self.assertEqual(summary["relations"], 20)
         self.assertEqual(summary["parse_errors"], 1)
         self.assertEqual(summary["confidence"], 1)
-        self.assertEqual(report["validation"]["scanner_schema_version"], "1.0.0")
+        # The report states the scanner's *declared* version rather than a copy
+        # of it; the literal is pinned once, in tests/test_scanner_grammar.py.
+        self.assertEqual(report["validation"]["scanner_schema_version"], SCHEMA_VERSION)
         self.assertEqual(
             report["validation"]["scanner_root"], FIXTURES.replace("\\", "/")
         )

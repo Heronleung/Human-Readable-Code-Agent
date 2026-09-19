@@ -72,7 +72,12 @@ uv run python -m hrca.memory_cli project --base <store-dir>  # M4.3 documents
 
 - Parse with the stdlib `ast` module only; no runtime dependencies.
 - Emit canonical JSON records under `files`, `symbols`, `relations`,
-  `parse_errors`, and `confidence`.
+  `parse_errors`, `confidence`, and `grammar`. `grammar` is the bounded context
+  of the grammar that read the tree — implementation family and `major.minor`
+  only, never a path, platform, build or environment value — so a consumer can
+  attribute a version-dependent `SyntaxError` instead of reading it as a source
+  defect. It is context, never a verdict: an unparseable file stays a
+  `parse_error`, and nothing claims another grammar would accept it.
 - **Deterministic**: sorted records, canonical key order, stable IDs of the
   form `module.path.Class.method`; identical rescans are byte-identical.
 - **No fabrication**: relation `target`s are the literal names in source —
@@ -94,6 +99,9 @@ dependency injection, or runtime monkey-patching.
 - Keep the scanner dependency-free (stdlib only).
 - Use `uv` for the environment (see Commands); do not use system `pip` or
   `--break-system-packages`.
-- When extending the record schema, bump `SCHEMA_VERSION` and add a fixture +
-  test that exercises the change.
+- When extending the record schema, bump `SCHEMA_VERSION`, register the step in
+  the module's `MIGRATIONS` map, and add a fixture + test that exercises the
+  change. An older version the registry can upgrade is migrated; a missing,
+  malformed or *newer* version is refused with a bounded reason, never guessed
+  at or half-read.
 - Never commit secrets or generated artefacts; respect `.gitignore`.

@@ -59,11 +59,41 @@ The scanner emits a single JSON document with these top-level arrays:
 | `relations`     | `imports`, `calls`, `returns`, `raises`, `inherits`             |
 | `parse_errors`  | per-file `SyntaxError` records (the scan continues)             |
 | `confidence`    | explicit states for items below `high` confidence               |
+| `grammar`       | the bounded grammar context that read the source                |
 
 Symbols carry a `source_range` (`lineno`/`col_offset`/`end_lineno`/
 `end_col_offset`) and are identified by stable dotted IDs such as
 `app.service.Service.handle`. Relations carry the literal `target` name as
 written in source, plus a `status` (`resolved` / `unresolved` / `recorded`).
+
+### The grammar context
+
+Scanner schema `1.1.0` adds one block: the grammar that produced the scan.
+
+```json
+"grammar": { "implementation": "cpython", "version": "3.11" }
+```
+
+It carries exactly two facts — the implementation *family* and the
+`major.minor` **grammar** version — and nothing else. Executable paths, full
+`sys.version` text, build identifiers, platform and OS values, environment
+details, arguments and unrestricted runtime metadata are never read, so they
+cannot reach canonical output. A value that is missing, over-long or not
+identifier-shaped is reported as `unknown` rather than echoed.
+
+This is *context*, never a verdict. The same source can be a genuine
+`SyntaxError` under one grammar and valid under a later one, and the scan
+document is what lets a consumer tell those apart: a file that fails to parse
+stays a `parse_error` with its own bounded details, and nothing claims another
+interpreter would accept it. Both keys are always present, so contexts compare
+without inferring a missing value, and the context is constant within a process,
+so repeated scans stay byte-identical.
+
+**Compatibility.** `1.0.0` → `1.1.0` is purely additive: the step supplies the
+`unknown` context a `1.0.0` document never recorded and rewrites no record.
+`scanner.migrate_document` returns `(document, error)`; a document whose version
+is newer than the scanner supports, or is missing or malformed, is refused with
+a bounded reason rather than half-read.
 
 ## Desktop client (P3.2)
 
@@ -1326,7 +1356,14 @@ Determinism and no-fabrication are the core guarantees:
   defaults are not modeled as named symbols.
 - **Cross-version note.** Identifiers are stable across identical rescans in
   the same environment. Expression rendering uses `ast.unparse`, whose exact
-  spelling can vary slightly between Python minor versions.
+  spelling can vary slightly between Python minor versions — and the *grammar*
+  that reads a tree is itself versioned, which is the sharper effect: source
+  using syntax a grammar cannot express (PEP 695 type parameters, for one) is a
+  genuine `SyntaxError` there and parses into entities under a later grammar.
+  The document therefore reports its `grammar` context, so a consumer can
+  attribute that difference rather than read it as a defect in the source.
+  `grammar_fixtures/` is exactly this case, and `tests/test_scanner_grammar.py`
+  holds it to expectations authored per grammar *capability*, not per release.
 
 - **Developer Memory is offline (M4.1) with one explicit capture path (M4.2).**
   M4.1 replays bounded sessions from the fixture corpus; M4.2 additionally maps
