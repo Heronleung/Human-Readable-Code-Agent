@@ -76,7 +76,29 @@ execution at scan time.
   Materializing a candidate is not validating, approving or adopting one:
   `candidate_edit`, `candidate_diff` and `candidate` import no provider,
   credential, runner, contract, workspace or store seam, and no repository test
-  or build is ever executed as candidate validation.
+  or build is ever executed as candidate validation. The P5.5a validation
+  contract is `validation_policy.py` (the code-owned check table),
+  `validation_plan.py` (the plan document), `validation.py` (binding, dispatch
+  through the accepted runner, and the append-only evidence store) and
+  `validation_cli.py`. A check is **not** a command: the accepted runner takes a
+  handler name and a payload, never an argv, so a caller names a check id and
+  the product supplies the package, the handler, the fixed input, the timeout,
+  the resource profile and the network and credential policy. A plan request
+  carrying a command, an image, a mount, an environment value, a timeout, a
+  resource limit, a credential, a privilege setting or a working directory is
+  refused by name. The seven terminal states are `passed`, `failed`,
+  `timed_out`, `cancelled`, `unavailable`, `refused` and `unknown`, and the
+  overall state is the most severe any check reached; `evidence_complete` is
+  true only when every check passed. **Passing evidence is not approval**: every
+  attempt and result pins `approved`, `adopted` and `applied` false and
+  declares the whole mutation surface false. Attempts are written one file per
+  content-addressed identity under a caller-supplied evidence base, plus one
+  appended index line — repeats take a new ordinal and cannot overwrite or merge
+  into earlier evidence, and re-reading re-derives every identity. `validation.py`
+  is the only module here that writes, and only beneath that base. Note the name
+  collision with the P4.1 proposal package's `validation_plan` *field*, which is
+  a list of check descriptions: this is a separate document with its own
+  `hrca-validation-plan` generator and `plan:` identity.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`, and
   `fixtures/intent/manifest.json` the P5.3 hand-authored intent oracle.
@@ -104,6 +126,7 @@ uv run python -m hrca.hook_capture report --spool evidence/m4.2/live/session-1  
 uv run python -m hrca.memory_cli project --base <store-dir>  # M4.3 documents
 uv run python -m hrca.intent_cli propose --intent <f> --scanner <f> --twin <f>  # P5.3 proposal
 uv run python -m hrca.candidate_cli review --edit <f> --intent <f> --scanner <f> --twin <f> --repo <dir>  # P5.4 diff
+uv run python -m hrca.validation_cli run --candidate <dir> --review <f> --evidence-base <dir>  # P5.5a evidence
 ```
 
 ## Contract (Phase 1)

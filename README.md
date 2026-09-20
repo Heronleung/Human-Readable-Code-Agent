@@ -1613,6 +1613,142 @@ contract is reached offline through `candidate_cli.py` only. No repository test
 or build is executed as candidate validation, and the controlled runner is never
 invoked — candidate-driven validation is a later phase.
 
+## Bounded validation evidence without adoption (P5.5a)
+
+Three modules produce honest, bounded evidence about one exact P5.4 candidate
+and never turn a green result into an approval. `validation_policy.py` is the
+code-owned command table, `validation_plan.py` the plan document,
+`validation.py` the dispatch, binding and append-only evidence store, and
+`validation_cli.py` the offline operator tool.
+
+```
+uv run python -m hrca.validation_cli plan   --candidate <dir> --review <f>
+uv run python -m hrca.validation_cli run    --candidate <dir> --review <f> --evidence-base <dir>
+uv run python -m hrca.validation_cli verify --evidence-base <dir>
+```
+
+Exit code `0` means passing evidence. It does not mean approved, adopted or
+applied — the contract has none of those to give.
+
+### Why a check is not a command
+
+The accepted runner does not take a command. `ContainerRunner.run` takes a
+**handler name** and an input payload, and the container's entrypoint argv is a
+module constant. So the strongest policy available here is not "a reviewed argv
+per check" but "a reviewed *package* per check", from which the handler and the
+form and result schemas all come. A caller names a check id and nothing else;
+the command, the image, the mounts, the environment, the timeout, the resource
+limits, the network policy and the working directory are all unreachable.
+
+That is enforced, not merely intended: a plan request may carry `checks` and
+nothing else. `command`, `argv`, `shell`, `image`, `mount`, `environment`,
+`timeout`, `memory`, `network`, `credential`, `privileged`, `cwd` and
+`handler` each get their own bounded refusal sentence, and any other key gets a
+generic one. The fixed inputs are the code-owned protected inputs in
+`delta_verifier` — the same inputs the delta verifier already treats as
+protected from provider influence — and the packages are the accepted ones, so
+`validate_policy()` fails if a check could ever name a package or handler the
+allowlist does not hold.
+
+### What a plan binds, and what it refuses
+
+A plan binds the exact candidate: its identity, the hash and size of its
+manifest and review envelope, the candidate root's own name, every staged
+path/hash/size, and the P5.3 binding the candidate was built against — the
+Intent id, the Proposal id, the binding fingerprint, and the workspace,
+baseline, scan-generation, scanner schema and grammar context. Nothing runs
+until all of that has been re-read from the candidate root and required to equal
+what the plan names. A moved candidate, a review that disagrees with the
+manifest, an extra file, a missing file, a link, a changed byte — each is a
+refusal with its own reason. Nothing is rebased, refreshed, reconstructed or
+regenerated.
+
+A plan never carries where the candidate lives. The root appears as its own
+name, so an absolute path in a plan is a malformed binding rather than a
+location.
+
+### Seven states, and only one of them passes
+
+| state | meaning |
+| --- | --- |
+| `passed` | the check ran, exited zero, and its artifact validated |
+| `failed` | the check ran and its artifact did not satisfy the contract |
+| `timed_out` | the check exceeded the runner's own bound |
+| `cancelled` | cancelled before dispatch, so nothing ran |
+| `unavailable` | the runtime could not run it at all |
+| `refused` | the check was not dispatched, for a reason this contract named |
+| `unknown` | the check ran but its evidence is missing, unreadable or inconsistent |
+
+The overall state is the most severe state any check reached, in that order, so
+a failure can never be averaged away by passing neighbours. `evidence_complete`
+is true only when every check passed. Missing, truncated, unreadable or
+unverifiable evidence is visible and non-passing; it is never coerced to
+`passed`.
+
+Every attempt records the isolation facts read out of the **actual dispatched
+argv** — network disabled, root filesystem read-only, non-root user,
+capabilities dropped, no-new-privileges, resources bounded, exactly two mounts
+with only the `/in` one read-only, no Docker socket, `--rm` and `--init`
+present. The mounted source directories and the container name are redacted to
+`<staged>` and `<container>`, because they are fresh, random and absolute and
+carry no review value; the flags, the image and the mount destinations are kept
+verbatim.
+
+### Evidence is append-only
+
+Each attempt is written as its own file named by its content-addressed
+identity, plus one appended index line. Repeats take a new ordinal and therefore
+a new identity: they create new attempts and cannot overwrite, merge into or
+change the ones before them. A file that already holds different bytes under a
+recorded name is refused, and re-reading the store re-derives every identity, so
+a tampered attempt or a deleted one invalidates the whole store rather than
+being quietly skipped.
+
+### What the runtime actually does here
+
+**No Docker daemon is reachable in this environment.** A `docker` client is on
+`PATH`, but it is the Windows shim and it reaches no daemon, so the runner's own
+preflight reports `runtime_unavailable` and every check is `unavailable`. That
+is the honest result, not a skipped test, and no state is invented to fill the
+gap. The pass, fail, timeout and unreadable-artifact cases are exercised against
+a container double that reproduces the in-image wire contract exactly
+(`packaging/runner/runner_main.py` resolves the handler and writes
+`{"result": ...}` or `{"error": ...}`), and the tests say so.
+
+Reading the runner turned up one pre-existing defect worth stating plainly:
+**`subprocess.TimeoutExpired` is not a `TimeoutError`**, so `container_runner`'s
+`except TimeoutError:` clause never fires on a real timeout. The kill and the
+cleanup are skipped with it, so `docker kill`, `docker rm -f` and the staged
+directory removal do not happen, and the `timeout` token is never returned. This
+contract does not repair the runner — that would be a runner policy change, and
+the isolated runner is not this phase's to alter — so it records `timed_out`
+and says in the limitation that the kill and cleanup did not run. The
+distinction is tested both ways: an injected `TimeoutError` is the shape the
+runner handles (the kill runs), a real `TimeoutExpired` is the shape it does
+not.
+
+### No approval, no adoption, no application
+
+`approved`, `adopted` and `applied` are `False` on every attempt and every
+result, and a `mutation_surface` block declares accepted source, candidate, Git
+index, refs, branch, commit, worktree, Twin, Memory, approval, adoption,
+application, provider request, credential, network, remote, protocol action and
+UI all `False`. The validators refuse a record that claims otherwise. A passing
+run is evidence; `tests/test_validation.py` snapshots the accepted repository's
+tracked bytes, its entire Git state and the candidate itself before and after a
+pass, a failure, an unreadable artifact, a refusal and the absent-runtime
+outcome, and requires every one unchanged.
+
+No protocol action was added, so the desktop cannot reach this contract; it is
+offline through `validation_cli.py` only.
+
+### A note on the name
+
+`validation_plan` here is **not** the `validation_plan` field inside a P4.1
+proposal package, which is a list of check descriptions. This is a separate
+P5.5a document with its own generator (`hrca-validation-plan`) and its own
+`plan:` identity.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:
@@ -1674,3 +1810,18 @@ execution, multi-language support, and automated merges.
   the predecessor is read once: a concurrent change to the repository after the
   build is not reflected, which is why the envelope says so as a risk. It has no
   desktop route and no protocol action was added.
+
+- **P5.5a evidence is not correctness.** The checks are the product's own fixed
+  policy, not a test suite derived from the candidate's content: they exercise
+  the accepted runner and its handler family, and a green result says the
+  machinery ran cleanly against this candidate's bound context, not that the
+  candidate's code is right — nothing here executes the candidate. A real
+  container runtime is unavailable in this environment, so every check reports
+  `unavailable`; the passing and failing cases are exercised against a container
+  double, and no state is invented to cover the gap. Cancellation is cooperative
+  and pre-dispatch, since this contract has no way to interrupt a running
+  container. The runner's own timeout path drops the kill and cleanup on a real
+  `TimeoutExpired`, which this contract reports rather than repairs. The
+  evidence store has no retention policy and no signature: it is a local
+  append-only record, and an adversary who can rewrite it can also rewrite the
+  index.
