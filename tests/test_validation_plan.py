@@ -128,10 +128,22 @@ class RequestTests(unittest.TestCase):
             [record["check_id"] for record in plan["checks"]],
         )
 
-    def test_an_empty_request_selects_every_check(self):
+    def test_an_empty_request_selects_the_default_check_set(self):
         plan = _built({})
-        self.assertEqual(list(validation_policy.CHECK_IDS),
+        self.assertEqual(list(validation_policy.DEFAULT_CHECKS),
                          [record["check_id"] for record in plan["checks"]])
+
+    def test_the_candidate_check_can_be_requested_by_name(self):
+        plan = _built({"checks": ["check:candidate_syntax"]})
+        record = plan["checks"][0]
+        self.assertEqual("check:candidate_syntax", record["check_id"])
+        self.assertEqual(
+            validation_policy.KIND_CANDIDATE_SYNTAX, record["kind"]
+        )
+        self.assertEqual(
+            validation_policy.CANDIDATE_IMAGE_DIGEST, record["image_digest"]
+        )
+        self.assertIsNone(validation_plan.validate_plan(plan))
 
     def test_every_named_runtime_override_is_refused_by_name(self):
         corpus = _corpus()

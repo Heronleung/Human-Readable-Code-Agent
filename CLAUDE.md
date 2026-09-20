@@ -106,6 +106,21 @@ execution at scan time.
   removal, the staged-root cleanup and the timeout token (P5.5r1). A real
   timeout must run that lifecycle exactly once, and `timeout` means it
   *completed* — if any substep failed, `runner_failed` is returned instead.
+  `ContainerRunner.run_candidate` is a **second, separate path** (P5.5a-r2) for
+  the candidate check family: exactly three mounts (staged input read-only,
+  staged output, and the candidate root's `files` directory read-only at
+  `/candidate`) and one more literal entrypoint,
+  `CANDIDATE_ENTRYPOINT = python /app/runner_syntax.py …`, which compiles the
+  declared files and never imports or runs them. It mounts the root's `files`
+  directory rather than the root itself, because the root is `0700` and the
+  container is 65534: mounting the root would mean widening its mode, and the
+  candidate must not be mutated at all. It also refuses unless the local image's
+  immutable **ID** equals `RUNNER_IMAGE_DIGEST`, since `hrca-runner:v1` is a
+  mutable tag; the digest is pinned in code *and* in
+  `fixtures/validation/manifest.json`, so a rebuild that is not re-pinned fails
+  the tests. `packaging/runner/Dockerfile` pins its base by manifest digest for
+  the same reason — a floating `python:3.12-slim` tag let a rebuild silently
+  swap the interpreter.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`, and
   `fixtures/intent/manifest.json` the P5.3 hand-authored intent oracle.

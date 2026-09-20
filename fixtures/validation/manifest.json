@@ -8,6 +8,31 @@
     "'timeout_injected' and 'timeout_real' are separate cases because they exercise two different exception provenances through one lifecycle: a literal TimeoutError, and the genuine subprocess.TimeoutExpired that CPython raises for subprocess.run(timeout=...). Since the P5.5r1 repair both reach the runner's kill, removal, staged-root cleanup and bounded token, so both must report timed_out with the runner's own 'timeout' limitation and no leak.",
     "unavailable is the only outcome reachable on a host with no reachable Docker daemon, which is what this environment reports. It is the honest result, not a skipped test."
   ],
+  "candidate_check": {
+    "note": "The candidate-validation check (P5.5a-r2), pinned by the image digest the local hrca-runner:v1 was actually rebuilt to. This file is the fixture a rebuild must re-pin: if the image is rebuilt and these two digests are not updated, the candidate-syntax tests fail rather than a run quietly reporting evidence about an image nobody reviewed.",
+    "image": "hrca-runner:v1",
+    "image_digest": "sha256:0ae0f7f5c31a4378a03f35c158d7c07989bcd3f1fcc64148e914ef363cbf2c48",
+    "entrypoint": "runner_syntax",
+    "candidate_mount": "/candidate",
+    "artifact_schema": "hrca-syntax-check/1",
+    "record": {
+      "check_id": "check:candidate_syntax",
+      "ordinal": 4,
+      "kind": "candidate_syntax",
+      "entrypoint": "runner_syntax",
+      "candidate_mount": "/candidate",
+      "image": "hrca-runner:v1",
+      "image_digest": "sha256:0ae0f7f5c31a4378a03f35c158d7c07989bcd3f1fcc64148e914ef363cbf2c48",
+      "timeout_seconds": 10.0,
+      "resource_profile": "runner_default",
+      "network_policy": "none",
+      "credential_policy": "none",
+      "working_directory": "image_owned",
+      "expected_artifact": "output.json"
+    },
+    "mount_order": ["staged_input_read_only", "staged_output", "candidate_read_only"],
+    "mount_count": 3
+  },
   "policy_version": "1.0.0",
   "plan_schema_version": "1.0.0",
   "attempt_schema_version": "1.0.0",

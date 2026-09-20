@@ -1756,6 +1756,91 @@ proposal package, which is a list of check descriptions. This is a separate
 P5.5a document with its own generator (`hrca-validation-plan`) and its own
 `plan:` identity.
 
+## A real candidate syntax check in a real container (P5.5a-r2)
+
+The P5.5a gate was `mount_policy_missing` — the runner had no candidate mount and
+no entrypoint that could exercise one. That is now closed, additively: a second
+check family, one more read-only mount, one more literal entrypoint, and an
+immutable image digest.
+
+Everything the earlier gate found is still true of the **package** path. The
+candidate path is separate, opt-in, and cannot be turned into it.
+
+### One more mount, and one more literal entrypoint
+
+`ContainerRunner.run_candidate` dispatches with exactly three mounts, in a fixed
+order: the staged input (read-only), the staged output, and the candidate root's
+`files` directory (read-only) at the fixed `/candidate`. The entrypoint is
+`CANDIDATE_ENTRYPOINT`, a module constant — `python /app/runner_syntax.py
+/in/input.json /out/output.json` — so no plan, candidate or prose value reaches
+any element of the argv.
+
+The in-image entrypoint does the least it could: it asks the interpreter whether
+each **explicitly declared** file parses. It never imports or executes candidate
+code (`compile` builds a code object; it does not run one — and `py_compile`
+would *write*, which a read-only rootfs forbids), never discovers files, never
+shells out, and never reports source text: a syntax error contributes its message
+and position, never `exc.text`, so a bounded diagnostic cannot become a way to
+read a file back out of the container.
+
+Two choices there are worth naming.
+
+**What is mounted is the root's `files` directory, not the root.** The candidate
+root is created `0700` and the container runs as 65534, so mounting the root
+would mean widening its mode — a mutation of the thing being validated. `files`
+is already traversable, so the candidate is **not touched at all**, not one byte
+and not one mode bit, and the container never sees the manifest or the review
+envelope sitting beside it. The mount source is still verified as a contained
+subdirectory of the verified candidate root before it becomes a mount.
+
+**The image is bound by digest, not by tag.** `hrca-runner:v1` is a mutable tag;
+content can move under it. Before dispatch the runner reads the local image's
+immutable ID and refuses unless it equals the pinned
+`sha256:0ae0f7f5c31a4378a03f35c158d7c07989bcd3f1fcc64148e914ef363cbf2c48`. A
+tag-only, absent or mismatched digest refuses and nothing is dispatched. The
+digest is pinned in code *and* as fixture data, so a rebuild that is not re-pinned
+fails the tests instead of quietly reporting evidence about a different image.
+
+### The rebuilt image, and how it was built
+
+Rebuilding the reviewed `packaging/runner/Dockerfile` was blocked because its
+base was a **floating tag** and the base image had been removed locally. It now
+pins the base by manifest digest:
+
+```
+FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea
+```
+
+That is the manifest the previous image was actually built from, so the rebuild
+is the same lineage rather than a base substitution — and the base is now
+immutable and reviewable instead of a tag that can move. The rebuild was run with
+`--pull=false` and **fetched nothing**: `load metadata` completed in `0.0s` from
+the local content store, the base layers and the earlier `COPY` layers were all
+`CACHED`, no layer was transferred, and no registry auth session was established.
+
+### What a passing result does and does not mean
+
+`passed` means the pinned files **compiled** under the bound image digest. It is
+not behavioural correctness — nothing imports or runs the candidate — and it is
+not approval, adoption or application. Every attempt records the entrypoint, the
+verified image digest, the three-mount isolation facts read out of the real
+argv, the artifact digest, and `approved`/`adopted`/`applied` all `False`.
+
+A file that genuinely does not compile is `failed`, with a bounded limitation
+naming the file and never the source line. An artifact that does not account for
+exactly the declared files — missing one, answering for another, or with counts
+that disagree with its own outcomes — is `unknown`, never passing.
+
+### The one limit worth stating plainly
+
+A timeout bound **shorter than container creation** can strand a container in the
+`created` state. Killing the client mid-create means the kill and the removal run
+before the container exists, and `--rm` only reaps a container that has run. The
+integration suite asserts the residual is `created` and never *running*, and
+reaps it. At the production bound of 10s a container is created in well under a
+second, so this needs a bound far below anything the contract uses — but it is a
+real reachable race if such a bound were ever set.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:
@@ -1830,3 +1915,13 @@ execution, multi-language support, and automated merges.
   container. The evidence store has no retention policy and no signature: it is
   a local append-only record, and an adversary who can rewrite it can also
   rewrite the index.
+
+- **A syntax pass is the least interesting thing a candidate could pass
+  (P5.5a-r2).** The candidate path compiles the declared files and nothing else:
+  no import, no execution, no discovery, no tests. So a green result says the
+  files parse under the bound image, and says nothing about behaviour, types,
+  dependencies or correctness. The package checks still exercise only the
+  product's own fixed handlers. The candidate path is opt-in, has three mounts
+  where the package path has two, and is bound to an immutable image digest that
+  must be re-pinned after every rebuild. A timeout bound shorter than container
+  creation can strand a `created` container that `--rm` never reaps.

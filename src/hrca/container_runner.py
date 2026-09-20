@@ -28,6 +28,30 @@ Fail-closed: :meth:`preflight` reports unavailable when the ``docker`` client or
 daemon is absent/unreachable (and blocked when the reviewed image is missing),
 and :meth:`run` never falls back to host Python.
 
+The candidate-validation path
+----------------------------
+
+:meth:`ContainerRunner.run_candidate` is a second, separate path. It exists
+because the package path can only call three baked-in business-rule handlers and
+has no way to look at a mount at all. The candidate path adds exactly one
+more bind mount — the candidate root's ``files`` directory, read-only, at the
+fixed ``/candidate`` — and one literal product-owned entrypoint,
+:data:`CANDIDATE_ENTRYPOINT`, which compiles the declared files and never
+imports or runs them.
+
+Two things about it are deliberately stricter than the package path:
+
+* it refuses unless the local image's immutable **ID** equals
+  :data:`RUNNER_IMAGE_DIGEST`. A tag can be moved to different content under the
+  same name, so a run bound only to a tag could report evidence about an image
+  nobody reviewed;
+* it mounts the candidate root's ``files`` directory rather than the root
+  itself. The root is created ``0700`` and the container runs as 65534, so
+  mounting the root would mean widening its mode — a mutation of the thing being
+  validated. ``files`` is already traversable, so the candidate is not touched
+  at all, and the container never sees the manifest or the review envelope
+  beside it.
+
 The timeout lifecycle
 ---------------------
 
@@ -79,6 +103,59 @@ _OUTPUT_FILENAME = "output.json"
 _INPUT_DIR = "/in"
 _OUTPUT_DIR = "/out"
 _ENTRYPOINT = ["python", "/app/runner_main.py", "/in/input.json", "/out/output.json"]
+
+# -- the candidate-validation path (P5.5a-r2) ------------------------------
+#
+# A second, separate path. It exists so that a P5.4 candidate can be exercised
+# *without* the product-package handler registry, which can only ever call the
+# three baked-in business-rule handlers and has no way to look at a mount.
+#
+# The image reference below is pinned by the manifest digest the image was
+# actually built from, not by the floating ``hrca-runner:v1`` tag. A tag can be
+# moved to different content under the same name, which would let a run report
+# evidence about an image nobody reviewed; ``run_candidate`` reads the local
+# image's immutable ID and refuses unless it equals this value exactly.
+RUNNER_IMAGE_DIGEST = "sha256:0ae0f7f5c31a4378a03f35c158d7c07989bcd3f1fcc64148e914ef363cbf2c48"
+
+# The one fixed in-image location a candidate root is mounted at, read-only.
+_CANDIDATE_DIR = "/candidate"
+CANDIDATE_ENTRYPOINT_ID = "runner_syntax"
+CANDIDATE_ENTRYPOINT = [
+    "python",
+    "/app/runner_syntax.py",
+    "/in/input.json",
+    "/out/output.json",
+]
+CANDIDATE_INPUT_KEY = "files"
+_MAX_DECLARED_FILES = 64
+
+# The P5.4 candidate-root shape, restated here as literals rather than imported:
+# the runner is a low-level adapter and must not depend on the candidate
+# contract. A root that does not have this exact shape is refused before any
+# host path becomes a mount.
+_MANIFEST_NAME = "candidate.json"
+_FILES_DIR = "files"
+_CANDIDATE_ROOT_PREFIX = "candidate-"
+
+# What is mounted is the candidate root's ``files`` directory — the exact
+# directory the P5.4 manifest enumerates — not the root itself.
+#
+# The root is created 0700 by ``tempfile.mkdtemp`` and the container runs as
+# 65534, so mounting the root would require widening its mode: a mutation of the
+# candidate. ``files`` and everything below it are already traversable, so
+# mounting it needs no change to the candidate at all — not one byte, not one
+# bit — and it exposes strictly less: the container sees the candidate's content
+# and never the manifest or the review envelope beside it. The mount source is
+# still *restricted to* a verified candidate root and is checked for
+# containment before it becomes a mount.
+CANDIDATE_CONTENT_DIR = "files"
+
+# Bounded refusal tokens for the candidate path. They are distinct from the
+# package path's result tokens because they are refusals to dispatch at all.
+REASON_DIGEST_ABSENT = "image_digest_absent"
+REASON_DIGEST_MISMATCH = "image_digest_mismatch"
+REASON_CANDIDATE_ROOT_INVALID = "candidate_root_invalid"
+REASON_DECLARED_FILES_INVALID = "declared_files_invalid"
 
 # Bounded preflight reasons.
 PREFLIGHT_AVAILABLE = "available"
@@ -285,6 +362,210 @@ class ContainerRunner:
             if cleaned is None:
                 self._cleanup(input_dir, output_dir)
 
+    # -- the candidate-validation path -----------------------------------
+
+    def image_digest(self) -> Optional[str]:
+        """Return the local image's immutable ID, or ``None`` if unreadable.
+
+        The ID is content-addressed, so it is the same value however the tag
+        moves. ``None`` covers a missing client, a hung client, a non-zero exit
+        and an image that is not in the local store — all of which must refuse
+        rather than dispatch.
+        """
+        docker = self._which("docker") or "docker"
+        try:
+            proc = self._spawn(
+                [docker, "image", "inspect", self._image, "--format", "{{.Id}}"],
+                capture_output=True,
+                timeout=5.0,
+            )
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
+            return None
+        if getattr(proc, "returncode", 1) != 0:
+            return None
+        raw = getattr(proc, "stdout", b"") or b""
+        if not isinstance(raw, (bytes, bytearray)):
+            raw = str(raw).encode("utf-8", "replace")
+        text = bytes(raw).decode("utf-8", "replace").strip()
+        return text or None
+
+    def build_candidate_command(
+        self,
+        *,
+        container_name: str,
+        input_dir: str,
+        output_dir: str,
+        candidate_dir: str,
+    ) -> List[str]:
+        """Return the hardened ``docker run`` argv for one candidate syntax check.
+
+        Exactly three mounts, in a fixed order: the staged input (read-only),
+        the staged output, and the candidate root (read-only). Nothing else is
+        mounted, and the entrypoint is a module constant rather than a handler
+        name — no plan, candidate or prose value reaches any element here.
+        """
+        docker = self._which("docker") or "docker"
+        return [
+            docker,
+            "run",
+            "--name", container_name,
+            "--rm",
+            "--init",
+            "--network", RUNNER_NETWORK,
+            "--user", RUNNER_USER,
+            "--security-opt", "no-new-privileges",
+            "--cap-drop", "ALL",
+            "--read-only",
+            "--memory", RUNNER_MEMORY,
+            "--memory-swap", RUNNER_MEMORY,
+            "--cpus", RUNNER_CPUS,
+            "--pids-limit", RUNNER_PIDS_LIMIT,
+            "--tmpfs", RUNNER_TMPFS,
+            "--stop-timeout", RUNNER_STOP_TIMEOUT,
+            "-e", "PYTHONDONTWRITEBYTECODE=1",
+            "-e", "HOME=/tmp",
+            "--mount", f"type=bind,src={input_dir},dst={_INPUT_DIR},readonly",
+            "--mount", f"type=bind,src={output_dir},dst={_OUTPUT_DIR}",
+            "--mount", f"type=bind,src={candidate_dir},dst={_CANDIDATE_DIR},readonly",
+            self._image,
+            *CANDIDATE_ENTRYPOINT,
+        ]
+
+    @staticmethod
+    def _candidate_mount_source(candidate_dir: Any) -> Optional[str]:
+        """Return the host directory to mount, or ``None`` to refuse.
+
+        The structural check is deliberately narrow: an absolute directory that
+        is not a link, named as a P5.4 candidate root, holding the manifest and
+        the ``files`` directory and nothing else at the top level, with that
+        ``files`` directory resolving inside it. The full identity check is the
+        caller's, against the manifest and the review envelope; this is the last
+        line before a host path becomes a mount.
+        """
+        if not isinstance(candidate_dir, str) or not candidate_dir:
+            return None
+        if not os.path.isabs(candidate_dir) or os.path.islink(candidate_dir):
+            return None
+        if os.path.realpath(candidate_dir) != candidate_dir:
+            return None
+        if not os.path.isdir(candidate_dir):
+            return None
+        if not os.path.basename(candidate_dir).startswith(_CANDIDATE_ROOT_PREFIX):
+            return None
+        try:
+            entries = sorted(os.listdir(candidate_dir))
+        except OSError:
+            return None
+        if entries != sorted([_MANIFEST_NAME, _FILES_DIR]):
+            return None
+
+        content = os.path.join(candidate_dir, _FILES_DIR)
+        real = os.path.realpath(content)
+        if os.path.islink(content) or not os.path.isdir(content):
+            return None
+        # Containment, checked on the resolved paths: the mount source must be
+        # inside the root that was verified, never a link out of it.
+        if not real.startswith(candidate_dir.rstrip(os.sep) + os.sep):
+            return None
+        return content
+
+    @staticmethod
+    def _declared_files_usable(declared_files: Any) -> bool:
+        """Return whether every declared path is a safe relative source path."""
+        if not isinstance(declared_files, list) or not declared_files:
+            return False
+        if len(declared_files) > _MAX_DECLARED_FILES:
+            return False
+        for item in declared_files:
+            if not isinstance(item, str) or not item or len(item) > 512:
+                return False
+            if item.startswith("/") or "\\" in item or ":" in item:
+                return False
+            if any(ord(char) < 32 or ord(char) == 127 for char in item):
+                return False
+            if any(part in ("", ".", "..") for part in item.split("/")):
+                return False
+        return True
+
+    def run_candidate(
+        self,
+        *,
+        candidate_dir: Any,
+        declared_files: Any,
+        expected_digest: Any,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Syntax-check the declared candidate files inside the container.
+
+        Returns ``(result, error)`` with exactly one ``None``, the same shape as
+        :meth:`run`. ``error`` is either an existing run token (timeout /
+        runner_failed / output_invalid / input_invalid) or one of the bounded
+        candidate-path refusals, which mean nothing was dispatched.
+
+        The candidate root is only ever read, and it is never passed to
+        :meth:`_cleanup`: this method stages its own two directories and cleans
+        up exactly those.
+        """
+        mount_source = self._candidate_mount_source(candidate_dir)
+        if mount_source is None:
+            return None, REASON_CANDIDATE_ROOT_INVALID
+        if not self._declared_files_usable(declared_files):
+            return None, REASON_DECLARED_FILES_INVALID
+        if not isinstance(expected_digest, str) or not expected_digest:
+            return None, REASON_DIGEST_ABSENT
+        actual = self.image_digest()
+        if not actual:
+            return None, REASON_DIGEST_ABSENT
+        if actual != expected_digest:
+            return None, REASON_DIGEST_MISMATCH
+
+        input_dir = tempfile.mkdtemp(prefix="hrca-in-")
+        output_dir = tempfile.mkdtemp(prefix="hrca-out-")
+        container_name = "hrca-run-" + uuid.uuid4().hex
+        cleaned: Optional[bool] = None
+        try:
+            self._stage_input(
+                input_dir,
+                CANDIDATE_ENTRYPOINT_ID,
+                {CANDIDATE_INPUT_KEY: sorted(set(declared_files))},
+            )
+            # Only the two directories this call made, and only enough for the
+            # non-root container user to traverse them. The candidate is not
+            # touched at all: the mount source is already traversable.
+            os.chmod(input_dir, 0o755)
+            os.chmod(output_dir, 0o777)
+            argv = self.build_candidate_command(
+                container_name=container_name,
+                input_dir=input_dir,
+                output_dir=output_dir,
+                candidate_dir=mount_source,
+            )
+            try:
+                proc = self._spawn(argv, capture_output=True, timeout=self._timeout)
+            except (TimeoutError, subprocess.TimeoutExpired):
+                killed = self._kill(container_name)
+                cleaned = self._cleanup(input_dir, output_dir)
+                if killed and cleaned:
+                    return None, app_package.STATE_TIMEOUT
+                return None, app_package.STATE_RUNNER_FAILED
+            except OSError:
+                return None, app_package.STATE_RUNNER_FAILED
+
+            if getattr(proc, "returncode", 1) != 0:
+                return None, app_package.STATE_RUNNER_FAILED
+
+            output = self._read_output(output_dir)
+            if output is None:
+                return None, app_package.STATE_OUTPUT_INVALID
+            if "error" in output and "result" not in output:
+                return None, app_package.STATE_INPUT_INVALID
+            result = output.get("result")
+            if not isinstance(result, dict):
+                return None, app_package.STATE_OUTPUT_INVALID
+            return result, None
+        finally:
+            if cleaned is None:
+                self._cleanup(input_dir, output_dir)
+
     # -- helpers ---------------------------------------------------------
 
     def _stage_input(
@@ -357,6 +638,7 @@ class ContainerRunner:
 
 __all__ = [
     "RUNNER_IMAGE",
+    "RUNNER_IMAGE_DIGEST",
     "RUNNER_USER",
     "RUNNER_NETWORK",
     "RUNNER_MEMORY",
@@ -364,6 +646,14 @@ __all__ = [
     "RUNNER_PIDS_LIMIT",
     "RUNNER_TIMEOUT_SECONDS",
     "RUNNER_MAX_OUTPUT_BYTES",
+    "CANDIDATE_ENTRYPOINT",
+    "CANDIDATE_ENTRYPOINT_ID",
+    "CANDIDATE_INPUT_KEY",
+
+    "REASON_DIGEST_ABSENT",
+    "REASON_DIGEST_MISMATCH",
+    "REASON_CANDIDATE_ROOT_INVALID",
+    "REASON_DECLARED_FILES_INVALID",
     "PREFLIGHT_AVAILABLE",
     "PREFLIGHT_RUNTIME_UNAVAILABLE",
     "PREFLIGHT_RUNTIME_BLOCKED",

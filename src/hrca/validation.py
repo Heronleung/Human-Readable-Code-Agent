@@ -128,6 +128,28 @@ _RUNNER_ERROR_STATES = {
     app_package.STATE_OUTPUT_INVALID: STATE_UNKNOWN,
 }
 
+# The candidate path shares the runner's run tokens and adds its own refusals:
+# a digest that is absent or does not match, a candidate root that is not the
+# verified shape, and a declaration that is not safe. All of them mean nothing
+# was dispatched, so all of them are ``refused``.
+_CANDIDATE_ERROR_STATES = {
+    app_package.STATE_TIMEOUT: STATE_TIMED_OUT,
+    app_package.STATE_RUNNER_FAILED: STATE_FAILED,
+    app_package.STATE_OUTPUT_INVALID: STATE_UNKNOWN,
+    app_package.STATE_INPUT_INVALID: STATE_REFUSED,
+    container_runner.REASON_DIGEST_ABSENT: STATE_REFUSED,
+    container_runner.REASON_DIGEST_MISMATCH: STATE_REFUSED,
+    container_runner.REASON_CANDIDATE_ROOT_INVALID: STATE_REFUSED,
+    container_runner.REASON_DECLARED_FILES_INVALID: STATE_REFUSED,
+}
+
+# The artifact the in-image syntax entrypoint returns, and the contract it must
+# satisfy before any outcome can be called passing.
+SYNTAX_ARTIFACT_SCHEMA = "hrca-syntax-check/1"
+
+REASON_NO_CANDIDATE_ROOT = "the plan names no candidate root to check"
+REASON_SYNTAX_ARTIFACT_INVALID = "the syntax artifact does not satisfy its contract"
+
 # Bounded refusals.
 REASON_PLAN_INVALID = "validation plan is not valid"
 REASON_CANDIDATE_MISSING = "the candidate root could not be read"
@@ -545,7 +567,11 @@ def _attempt(
         "candidate_id": plan["candidate"]["candidate_id"],
         "policy_version": plan["policy_version"],
         "check_id": check["check_id"],
-        "package_id": check["package_id"],
+        "package_id": check.get("package_id"),
+        # Which entrypoint ran, and the image digest it was required to observe
+        # before it could run. Both are ``None`` for a package check.
+        "entrypoint": check.get("entrypoint"),
+        "image_digest": check.get("image_digest"),
         "state": state,
         "argv": reviewable,
         "argv_sha256": sha256_hex(dumps(reviewable).encode("utf-8")) if reviewable else None,
@@ -567,22 +593,154 @@ def _attempt(
     return attempt
 
 
+def _validate_syntax_artifact(result: Any, declared: List[str]) -> Optional[str]:
+    """Return a reason when the syntax artifact does not satisfy its contract.
+
+    The artifact must answer for **exactly** the declared files — no more, no
+    fewer, none twice — and its counts must agree with its own outcomes. An
+    artifact that cannot be checked this way is ``unknown``, never passing.
+    """
+    if not isinstance(result, dict):
+        return REASON_SYNTAX_ARTIFACT_INVALID
+    if result.get("schema") != SYNTAX_ARTIFACT_SCHEMA:
+        return REASON_SYNTAX_ARTIFACT_INVALID
+    checked = result.get("checked")
+    if not isinstance(checked, list) or not checked:
+        return REASON_SYNTAX_ARTIFACT_INVALID
+    paths: List[str] = []
+    for entry in checked:
+        if not isinstance(entry, dict):
+            return REASON_SYNTAX_ARTIFACT_INVALID
+        if not isinstance(entry.get("path"), str) or not isinstance(entry.get("ok"), bool):
+            return REASON_SYNTAX_ARTIFACT_INVALID
+        paths.append(entry["path"])
+    if sorted(paths) != sorted(set(declared)):
+        return REASON_SYNTAX_ARTIFACT_INVALID
+    compiled, failed = result.get("compiled"), result.get("failed")
+    for value in (compiled, failed):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return REASON_SYNTAX_ARTIFACT_INVALID
+    if compiled + failed != len(checked):
+        return REASON_SYNTAX_ARTIFACT_INVALID
+    if compiled != sum(1 for entry in checked if entry["ok"]):
+        return REASON_SYNTAX_ARTIFACT_INVALID
+    return None
+
+
+def _run_candidate_check(
+    plan: Dict[str, Any],
+    check: Dict[str, Any],
+    ordinal: int,
+    candidate_root: Any,
+    spawn: Callable[..., Any],
+    which: Optional[Callable[[str], Optional[str]]],
+    cancelled: Optional[Callable[[], bool]],
+) -> Dict[str, Any]:
+    """Run the candidate syntax check and return its attempt record.
+
+    The gates are the accepted ones, in the accepted order: the plan's binding
+    supplied the declared files, the runner preflights, the runner refuses
+    unless the local image's immutable ID equals the declared digest, the
+    entrypoint compiles exactly those files, and the artifact is checked before
+    any outcome is called passing.
+    """
+    if cancelled is not None and cancelled():
+        return _attempt(
+            plan, check, ordinal, STATE_CANCELLED,
+            limitation="cancelled before dispatch",
+        )
+    if not isinstance(candidate_root, str) or not candidate_root:
+        return _attempt(
+            plan, check, ordinal, STATE_REFUSED,
+            limitation=REASON_NO_CANDIDATE_ROOT,
+        )
+    declared = [entry["path"] for entry in plan["candidate"]["files"]]
+
+    recorder = _Recorder(spawn)
+    runner = (
+        container_runner.ContainerRunner(spawn=recorder, which=which)
+        if which is not None
+        else container_runner.ContainerRunner(spawn=recorder)
+    )
+    preflight = runner.preflight()
+    if not preflight.get("available"):
+        return _attempt(
+            plan, check, ordinal, STATE_UNAVAILABLE,
+            limitation=preflight.get("reason") or "runtime unavailable",
+        )
+
+    try:
+        result, error = runner.run_candidate(
+            candidate_dir=candidate_root,
+            declared_files=declared,
+            expected_digest=check["image_digest"],
+        )
+    except subprocess.TimeoutExpired:
+        return _attempt(
+            plan, check, ordinal, STATE_TIMED_OUT,
+            limitation=(
+                "the runner raised a timeout outside its own lifecycle: its kill "
+                "and cleanup did not run, so the container and the staged "
+                "directories may remain"
+            ),
+            dispatch=recorder.last_dispatch(),
+        )
+    dispatch = recorder.last_dispatch()
+
+    if error is not None:
+        return _attempt(
+            plan, check, ordinal,
+            _CANDIDATE_ERROR_STATES.get(error, STATE_UNKNOWN),
+            limitation=_bounded(error, 80),
+            dispatch=dispatch,
+        )
+    reason = _validate_syntax_artifact(result, declared)
+    if reason is not None:
+        return _attempt(
+            plan, check, ordinal, STATE_UNKNOWN,
+            limitation=reason, dispatch=dispatch,
+        )
+
+    compiled = {
+        "artifact": {
+            "name": check["expected_artifact"],
+            "sha256": sha256_hex(dumps(result).encode("utf-8")),
+            "bytes": len(dumps(result)),
+        }
+    }
+    if result["failed"]:
+        failing = sorted(
+            entry["path"] for entry in result["checked"] if not entry["ok"]
+        )
+        return _attempt(
+            plan, check, ordinal, STATE_FAILED,
+            limitation="a declared file did not compile: " + ", ".join(failing)[:80],
+            dispatch=dispatch, **compiled
+        )
+    return _attempt(plan, check, ordinal, STATE_PASSED, dispatch=dispatch, **compiled)
+
+
 def run_check(
     plan: Dict[str, Any],
     check: Dict[str, Any],
     ordinal: int,
     *,
+    candidate_root: Any = None,
     spawn: Callable[..., Any] = subprocess.run,
     which: Callable[[str], Optional[str]] = None,
     cancelled: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Run one plan check and return its attempt record.
 
-    The gates are the accepted ones, in the accepted order: the check's own
-    package validates its input, the runner preflights, the runner dispatches,
-    and the package validates the result. Nothing here is a new gate and nothing
-    here can skip one.
+    A package check and a candidate check are separate paths with separate
+    gates; what they share is the attempt vocabulary and the append-only store,
+    which is why one result can hold both and still be read as one document.
     """
+    if check.get("kind") == validation_policy.KIND_CANDIDATE_SYNTAX:
+        return _run_candidate_check(
+            plan, check, ordinal, candidate_root, spawn, which, cancelled
+        )
+
     package = validation_policy.package_for(check["check_id"])
     if package is None:  # pragma: no cover - the plan validator refuses these
         return _attempt(plan, check, ordinal, STATE_REFUSED,
@@ -718,7 +876,9 @@ def run_plan(
 
     attempts = [
         run_check(
-            plan, check, ordinal, spawn=spawn, which=which, cancelled=cancelled
+            plan, check, ordinal,
+            candidate_root=candidate_root,
+            spawn=spawn, which=which, cancelled=cancelled,
         )
         for check in plan["checks"]
     ]
@@ -1019,6 +1179,9 @@ __all__ = [
     "REASON_EVIDENCE_UNUSABLE",
     "REASON_EVIDENCE_TAMPERED",
     "REASON_SHELL_STRING",
+    "SYNTAX_ARTIFACT_SCHEMA",
+    "REASON_NO_CANDIDATE_ROOT",
+    "REASON_SYNTAX_ARTIFACT_INVALID",
     "dumps",
     "verify_candidate",
     "isolation_facts",

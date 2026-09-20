@@ -439,32 +439,58 @@ class ScenarioTests(_Fixture, unittest.TestCase):
                 self.assertIsNone(attempt["argv"])
 
 
-class RealRuntimeTests(_Fixture, unittest.TestCase):
-    """What this host can actually do, reported as it is."""
+class UnavailableRuntimeTests(_Fixture, unittest.TestCase):
+    """The unavailable-runtime outcome, with nothing dispatched.
 
-    def test_the_real_runtime_is_reported_as_unavailable_or_passes_honestly(self):
-        result, error = validation.run_plan(self.plan, self.root, self.review)
-        self.assertIsNone(error)
-        self.assertIn(result["state"], {"unavailable", "passed"})
-        if result["state"] == "unavailable":
-            self.assertIs(False, result["evidence_complete"])
-            for attempt in result["attempts"]:
-                with self.subTest(check=attempt["check_id"]):
-                    self.assertEqual("unavailable", attempt["state"])
-                    self.assertIsNone(attempt["argv"])
-                    self.assertIsNone(attempt["artifact"])
+    This class is live-Docker safe by construction: every runner it builds has
+    an injected ``which`` or ``spawn``, so no real container can start. Real
+    dispatch lives in ``tests/test_candidate_syntax_integration.py``, which is
+    dedicated to it and skip-guarded; a unit module must not begin executing
+    containers simply because a daemon appeared on the host.
+    """
 
-    def test_the_container_runtime_is_not_reachable_on_this_host(self):
-        # A `docker` client is on PATH in this environment, but it is the
-        # Windows shim and it reaches no daemon, so the preflight is
-        # unavailable. That is the fact the previous test relies on: if a real
-        # runtime appears, this fails and that one starts exercising a pass.
-        preflight = container_runner.ContainerRunner().preflight()
-        self.assertIs(False, preflight["available"])
-        self.assertEqual(
-            container_runner.PREFLIGHT_RUNTIME_UNAVAILABLE, preflight["reason"]
+    def test_an_absent_client_makes_every_check_unavailable(self):
+        modes = {check_id: "ok" for check_id in self.corpus["check_order"]}
+        docker = FakeDocker(modes)
+        result, error = validation.run_plan(
+            self.plan, self.root, self.review,
+            spawn=docker, which=lambda name: None,
         )
-        self.assertIs(False, preflight["checks"]["daemon"])
+        self.assertIsNone(error)
+        self.assertEqual("unavailable", result["state"])
+        self.assertIs(False, result["evidence_complete"])
+        self.assertEqual([], docker.runs)
+        for attempt in result["attempts"]:
+            with self.subTest(check=attempt["check_id"]):
+                self.assertEqual("unavailable", attempt["state"])
+                self.assertIsNone(attempt["argv"])
+                self.assertIsNone(attempt["artifact"])
+                self.assertEqual(
+                    [container_runner.PREFLIGHT_RUNTIME_UNAVAILABLE],
+                    attempt["limitations"],
+                )
+
+    def test_the_preflight_report_is_internally_consistent_whatever_the_host(self):
+        # Availability is not asserted, because it is an environment fact and
+        # asserting it either way would break on the other kind of host. What is
+        # asserted is that the three checks agree with the verdict.
+        preflight = container_runner.ContainerRunner().preflight()
+        checks = preflight["checks"]
+        self.assertEqual({"docker", "daemon", "image"}, set(checks))
+        if preflight["available"]:
+            self.assertIsNone(preflight["reason"])
+            self.assertTrue(all(checks.values()))
+        else:
+            self.assertIn(
+                preflight["reason"],
+                {
+                    container_runner.PREFLIGHT_RUNTIME_UNAVAILABLE,
+                    container_runner.PREFLIGHT_RUNTIME_BLOCKED,
+                },
+            )
+            self.assertFalse(all(checks.values()))
+            if preflight["reason"] == container_runner.PREFLIGHT_RUNTIME_UNAVAILABLE:
+                self.assertFalse(checks["daemon"])
 
 
 # -- candidate binding ------------------------------------------------------
@@ -1191,6 +1217,26 @@ class PrivacyTests(_Fixture, unittest.TestCase):
 
 
 class CliTests(_Fixture, unittest.TestCase):
+    """The CLI, exercised with no runtime.
+
+    The CLI builds a real runner, so on a host with a live daemon these tests
+    would really dispatch containers. They therefore assume the unavailable
+    runtime explicitly: a unit module must not begin executing containers
+    because a daemon appeared. Real dispatch belongs to the dedicated,
+    skip-guarded integration module.
+    """
+
+    def _no_runtime(self):
+        return mock.patch.object(
+            container_runner.ContainerRunner,
+            "preflight",
+            return_value={
+                "available": False,
+                "reason": container_runner.PREFLIGHT_RUNTIME_UNAVAILABLE,
+                "checks": {"docker": False, "daemon": False, "image": False},
+            },
+        )
+
     def _files(self, sandbox: str):
         review_path = os.path.join(sandbox, "review.json")
         with open(review_path, "w", encoding="utf-8") as fh:
@@ -1213,16 +1259,17 @@ class CliTests(_Fixture, unittest.TestCase):
             [record["check_id"] for record in plan["checks"]],
         )
 
-    def test_run_appends_the_evidence_and_reports_non_passing_on_this_host(self):
+    def test_run_appends_the_evidence_and_reports_non_passing_without_a_runtime(self):
         with tempfile.TemporaryDirectory() as sandbox:
             review = self._files(sandbox)
             base = os.path.join(sandbox, "evidence")
             out, err = io.StringIO(), io.StringIO()
-            with redirect_stdout(out), redirect_stderr(err):
-                code = validation_cli.main(
-                    ["run", "--candidate", self.root, "--review", review,
-                     "--evidence-base", base]
-                )
+            with self._no_runtime():
+                with redirect_stdout(out), redirect_stderr(err):
+                    code = validation_cli.main(
+                        ["run", "--candidate", self.root, "--review", review,
+                         "--evidence-base", base]
+                    )
             self.assertEqual(validation_cli.EXIT_NOT_PASSING, code)
             result = json.loads(out.getvalue())
             self.assertEqual("unavailable", result["state"])
@@ -1238,11 +1285,12 @@ class CliTests(_Fixture, unittest.TestCase):
             review = self._files(sandbox)
             base = os.path.join(sandbox, "evidence")
             out = io.StringIO()
-            with redirect_stdout(out), redirect_stderr(io.StringIO()):
-                validation_cli.main(
-                    ["run", "--candidate", self.root, "--review", review,
-                     "--evidence-base", base]
-                )
+            with self._no_runtime():
+                with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                    validation_cli.main(
+                        ["run", "--candidate", self.root, "--review", review,
+                         "--evidence-base", base]
+                    )
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
                 code = validation_cli.main(["verify", "--evidence-base", base])
@@ -1278,7 +1326,7 @@ class CliTests(_Fixture, unittest.TestCase):
             with open(plan_path, "w", encoding="utf-8") as fh:
                 json.dump(self.plan, fh)
             out, err = io.StringIO(), io.StringIO()
-            with redirect_stdout(out), redirect_stderr(err):
+            with self._no_runtime(), redirect_stdout(out), redirect_stderr(err):
                 code = validation_cli.main(
                     ["run", "--candidate", self.root, "--review", review,
                      "--evidence-base", os.path.join(sandbox, "ev"),

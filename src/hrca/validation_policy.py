@@ -5,6 +5,20 @@ The single place that decides **which** checks a validation plan may contain and
 invocation of the accepted isolated runner; nothing about that invocation is
 reachable from a plan, a candidate, a fixture or prose.
 
+Two check families
+------------------
+
+* **package** — a fixed form payload through one of the baked-in business-rule
+  handlers. Three of these, and they are the default set.
+* **candidate_syntax** — the candidate the plan is bound to, syntax-compiled
+  through a separate literal entrypoint over a separate read-only mount. Opt-in:
+  it needs a candidate root and an exact image digest that this registry cannot
+  supply on its own.
+
+They share the plan, attempt and result vocabulary and nothing else. Neither can
+be turned into the other: a candidate check carries no package, no handler and no
+form input, and a package check carries no mount and no digest.
+
 Why a check is not a command
 ----------------------------
 
@@ -52,6 +66,46 @@ POLICY_VERSION = "1.0.0"
 CHECK_QUOTATION_REFERENCE = "check:quotation_reference"
 CHECK_QUOTATION_ALTERNATE = "check:quotation_alternate"
 CHECK_LATE_RETURN_FEE = "check:late_return_fee"
+
+# The second check family. A package check runs one of the baked-in business-rule
+# handlers over a fixed form payload; a candidate check syntax-compiles the
+# candidate the plan is bound to, through a separate literal entrypoint and a
+# separate read-only mount. They share the plan, attempt and result vocabulary
+# and nothing else.
+KIND_PACKAGE = "package"
+KIND_CANDIDATE_SYNTAX = "candidate_syntax"
+CHECK_CANDIDATE_SYNTAX = "check:candidate_syntax"
+
+# The candidate check is opt-in: it is not in the default set, because it needs
+# a candidate root and an exact image digest and the package checks do not.
+CANDIDATE_CHECK_FIELDS = (
+    "ordinal",
+    "kind",
+    "entrypoint",
+    "candidate_mount",
+    "image",
+    "image_digest",
+    "timeout_seconds",
+    "resource_profile",
+    "network_policy",
+    "credential_policy",
+    "working_directory",
+    "expected_artifact",
+)
+
+# Code-owned operational tokens for the candidate check. They are literals here
+# and are asserted equal to the runner's own constants by the tests, so a drift
+# between what a plan declares and what the runner does is a failing test rather
+# than a quiet disagreement.
+CANDIDATE_ENTRYPOINT_ID = "runner_syntax"
+CANDIDATE_MOUNT = "/candidate"
+CANDIDATE_IMAGE = "hrca-runner:v1"
+# The immutable image the candidate path is bound to. A tag can be moved to
+# different content, so the tag alone proves nothing; this digest is what a run
+# is required to observe before it dispatches.
+CANDIDATE_IMAGE_DIGEST = (
+    "sha256:0ae0f7f5c31a4378a03f35c158d7c07989bcd3f1fcc64148e914ef363cbf2c48"
+)
 
 # The bounded value vocabularies a check may declare. Each is a fixed token from
 # *this* module; none of them is a setting a caller can reach, because a caller
@@ -170,9 +224,34 @@ POLICY: Dict[str, Dict[str, Any]] = {
         "working_directory": WORKING_DIRECTORY_IMAGE_OWNED,
         "expected_artifact": RESULT_ARTIFACT_FILENAME,
     },
+    CHECK_CANDIDATE_SYNTAX: {
+        "ordinal": 4,
+        "kind": KIND_CANDIDATE_SYNTAX,
+        "entrypoint": CANDIDATE_ENTRYPOINT_ID,
+        "candidate_mount": CANDIDATE_MOUNT,
+        "image": CANDIDATE_IMAGE,
+        "image_digest": CANDIDATE_IMAGE_DIGEST,
+        "timeout_seconds": 10.0,
+        "resource_profile": RESOURCE_PROFILE_DEFAULT,
+        "network_policy": NETWORK_POLICY_NONE,
+        "credential_policy": CREDENTIAL_POLICY_NONE,
+        "working_directory": WORKING_DIRECTORY_IMAGE_OWNED,
+        "expected_artifact": RESULT_ARTIFACT_FILENAME,
+    },
 }
 
 CHECK_IDS = tuple(sorted(POLICY))
+
+# What an unqualified plan gets: the package checks only. The candidate check is
+# requested by name, because it needs a candidate root and an exact image digest
+# that this registry cannot supply on its own.
+DEFAULT_CHECKS = tuple(
+    sorted(
+        check_id
+        for check_id, entry in POLICY.items()
+        if entry.get("kind", KIND_PACKAGE) == KIND_PACKAGE
+    )
+)
 
 # The fixed fields a check record carries, in canonical order. A plan is
 # validated against exactly this set, so a check cannot smuggle an extra setting.
@@ -198,7 +277,7 @@ def resolve_checks(requested: Any) -> Tuple[Optional[List[str]], Optional[str]]:
     bounded reason. The returned list is always in canonical order.
     """
     if requested is None:
-        return [check_id for check_id in CHECK_IDS], None
+        return list(DEFAULT_CHECKS), None
     if not isinstance(requested, list):
         return None, REASON_BAD_CHECK_LIST
     if not requested:
@@ -216,12 +295,20 @@ def resolve_checks(requested: Any) -> Tuple[Optional[List[str]], Optional[str]]:
 
 
 def check_record(check_id: str) -> Dict[str, Any]:
-    """Return the canonical, self-contained record for one policy check."""
+    """Return the canonical, self-contained record for one policy check.
+
+    A candidate check carries a different field set from a package check: it
+    names an entrypoint, a mount and an image digest instead of a package and a
+    form input. Both are still the code-owned record, so a plan that alters any
+    element of either is refused by exact comparison.
+    """
     entry = POLICY[check_id]
-    return {
-        "check_id": check_id,
-        **{field: entry[field] for field in CHECK_FIELDS},
-    }
+    fields = (
+        CANDIDATE_CHECK_FIELDS
+        if entry.get("kind", KIND_PACKAGE) == KIND_CANDIDATE_SYNTAX
+        else CHECK_FIELDS
+    )
+    return {"check_id": check_id, **{field: entry[field] for field in fields}}
 
 
 def package_for(check_id: str) -> Optional[Dict[str, Any]]:
@@ -232,6 +319,10 @@ def package_for(check_id: str) -> Optional[Dict[str, Any]]:
     """
     entry = POLICY.get(check_id)
     if entry is None:
+        return None
+    if entry.get("kind", KIND_PACKAGE) == KIND_CANDIDATE_SYNTAX:
+        # A candidate check has no package: it runs a separate entrypoint over a
+        # mounted candidate rather than a product handler over a form payload.
         return None
     package_id = entry["package_id"]
     if package_id == "quotation-rules":
@@ -251,6 +342,16 @@ def validate_policy() -> Optional[str]:
     start-up-visible failure rather than a dispatch-time surprise.
     """
     for check_id, entry in sorted(POLICY.items()):
+        if entry.get("kind", KIND_PACKAGE) == KIND_CANDIDATE_SYNTAX:
+            # The candidate check has no package to agree with; what it must
+            # agree with is the runner, and that is asserted by the tests.
+            for field in ("entrypoint", "candidate_mount", "image", "image_digest"):
+                value = entry.get(field)
+                if not isinstance(value, str) or not value or len(value) > 128:
+                    return "a candidate check declares an unusable %s" % field
+            if not entry["image_digest"].startswith("sha256:"):
+                return "a candidate check declares a digest that is not a digest"
+            continue
         if entry["package_id"] not in app_package.ALLOWED_PACKAGE_IDS:
             return "a check names an unsupported package_id"
         package = package_for(check_id)
@@ -272,6 +373,15 @@ __all__ = [
     "CHECK_QUOTATION_REFERENCE",
     "CHECK_QUOTATION_ALTERNATE",
     "CHECK_LATE_RETURN_FEE",
+    "CHECK_CANDIDATE_SYNTAX",
+    "KIND_PACKAGE",
+    "KIND_CANDIDATE_SYNTAX",
+    "CANDIDATE_CHECK_FIELDS",
+    "CANDIDATE_ENTRYPOINT_ID",
+    "CANDIDATE_MOUNT",
+    "CANDIDATE_IMAGE",
+    "CANDIDATE_IMAGE_DIGEST",
+    "DEFAULT_CHECKS",
     "RESOURCE_PROFILE_DEFAULT",
     "NETWORK_POLICY_NONE",
     "CREDENTIAL_POLICY_NONE",

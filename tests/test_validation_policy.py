@@ -31,9 +31,10 @@ class RegistryTests(unittest.TestCase):
     def test_the_policy_version(self):
         self.assertEqual("1.0.0", validation_policy.POLICY_VERSION)
 
-    def test_the_check_set_is_exactly_the_three_reviewed_checks(self):
+    def test_the_check_set_is_exactly_the_reviewed_checks(self):
         self.assertEqual(
             [
+                "check:candidate_syntax",
                 "check:late_return_fee",
                 "check:quotation_alternate",
                 "check:quotation_reference",
@@ -44,16 +45,43 @@ class RegistryTests(unittest.TestCase):
             validation_policy.CHECK_IDS, tuple(sorted(validation_policy.POLICY))
         )
 
+    def test_the_default_set_is_the_package_checks_only(self):
+        # The candidate check is requested by name: it needs a candidate root
+        # and an exact image digest, which the registry cannot supply alone.
+        self.assertEqual(
+            (
+                "check:late_return_fee",
+                "check:quotation_alternate",
+                "check:quotation_reference",
+            ),
+            validation_policy.DEFAULT_CHECKS,
+        )
+        self.assertNotIn(
+            validation_policy.CHECK_CANDIDATE_SYNTAX, validation_policy.DEFAULT_CHECKS
+        )
+
     def test_every_check_record_is_complete_and_canonical(self):
         for check_id in validation_policy.CHECK_IDS:
             with self.subTest(check=check_id):
                 record = validation_policy.check_record(check_id)
-                self.assertEqual({"check_id"} | set(validation_policy.CHECK_FIELDS),
-                                 set(record))
+                fields = (
+                    validation_policy.CANDIDATE_CHECK_FIELDS
+                    if record.get("kind") == validation_policy.KIND_CANDIDATE_SYNTAX
+                    else validation_policy.CHECK_FIELDS
+                )
+                self.assertEqual({"check_id"} | set(fields), set(record))
                 self.assertEqual(check_id, record["check_id"])
 
-    def test_every_check_names_an_accepted_package_and_handler(self):
-        for check_id in validation_policy.CHECK_IDS:
+    def _package_checks(self):
+        return [
+            check_id
+            for check_id in validation_policy.CHECK_IDS
+            if validation_policy.POLICY[check_id].get("kind", validation_policy.KIND_PACKAGE)
+            == validation_policy.KIND_PACKAGE
+        ]
+
+    def test_every_package_check_names_an_accepted_package_and_handler(self):
+        for check_id in self._package_checks():
             with self.subTest(check=check_id):
                 package = validation_policy.package_for(check_id)
                 self.assertIsNotNone(package)
@@ -62,8 +90,19 @@ class RegistryTests(unittest.TestCase):
                 )
                 self.assertIn(package["handler"], app_package.ALLOWED_HANDLERS)
 
-    def test_every_check_input_satisfies_its_own_package_form(self):
-        for check_id in validation_policy.CHECK_IDS:
+    def test_the_candidate_check_names_no_package_at_all(self):
+        # It is a separate family: no package, no handler, no form input, so
+        # there is nothing a product handler registry could be asked to run.
+        record = validation_policy.check_record(validation_policy.CHECK_CANDIDATE_SYNTAX)
+        for absent in ("package_id", "form_input", "parameters", "handler"):
+            with self.subTest(absent=absent):
+                self.assertNotIn(absent, record)
+        self.assertIsNone(
+            validation_policy.package_for(validation_policy.CHECK_CANDIDATE_SYNTAX)
+        )
+
+    def test_every_package_check_input_satisfies_its_own_package_form(self):
+        for check_id in self._package_checks():
             with self.subTest(check=check_id):
                 package = validation_policy.package_for(check_id)
                 record = validation_policy.check_record(check_id)
@@ -153,17 +192,62 @@ class RunnerAgreementTests(unittest.TestCase):
         self.assertNotIn("--workdir", argv)
         self.assertNotIn("-w", argv)
 
-    def test_no_check_carries_parameters(self):
-        for check_id in validation_policy.CHECK_IDS:
+    def test_no_package_check_carries_parameters(self):
+        for check_id in validation_policy.DEFAULT_CHECKS:
             with self.subTest(check=check_id):
                 self.assertIsNone(validation_policy.POLICY[check_id]["parameters"])
 
+    def test_the_candidate_check_agrees_with_the_runner_exactly(self):
+        # A plan declares these tokens; the runner uses its own constants. If
+        # the two ever drift, this fails rather than the plan lying quietly.
+        record = validation_policy.check_record(validation_policy.CHECK_CANDIDATE_SYNTAX)
+        self.assertEqual(container_runner.CANDIDATE_ENTRYPOINT_ID, record["entrypoint"])
+        self.assertEqual(container_runner.RUNNER_IMAGE, record["image"])
+        self.assertEqual(container_runner.RUNNER_IMAGE_DIGEST, record["image_digest"])
+        self.assertEqual(container_runner._CANDIDATE_DIR, record["candidate_mount"])
+        self.assertEqual(
+            container_runner._OUTPUT_FILENAME, record["expected_artifact"]
+        )
+        self.assertEqual(
+            container_runner.RUNNER_TIMEOUT_SECONDS, record["timeout_seconds"]
+        )
+        self.assertEqual(container_runner.RUNNER_NETWORK, record["network_policy"])
+
+    def test_the_candidate_entrypoint_is_a_literal_runner_constant(self):
+        # The command a candidate run dispatches is a module constant, not
+        # anything a plan, a candidate or prose can reach.
+        self.assertEqual(
+            [
+                "python",
+                "/app/runner_syntax.py",
+                "/in/input.json",
+                "/out/output.json",
+            ],
+            container_runner.CANDIDATE_ENTRYPOINT,
+        )
+
+    def test_the_candidate_image_digest_is_a_digest_not_a_tag(self):
+        self.assertTrue(
+            validation_policy.CANDIDATE_IMAGE_DIGEST.startswith("sha256:")
+        )
+        self.assertEqual(71, len(validation_policy.CANDIDATE_IMAGE_DIGEST))
+        self.assertNotEqual(
+            validation_policy.CANDIDATE_IMAGE, validation_policy.CANDIDATE_IMAGE_DIGEST
+        )
+
 
 class ResolveChecksTests(unittest.TestCase):
-    def test_none_selects_every_check(self):
+    def test_none_selects_the_default_check_set(self):
         check_ids, reason = validation_policy.resolve_checks(None)
         self.assertIsNone(reason)
-        self.assertEqual(list(validation_policy.CHECK_IDS), check_ids)
+        self.assertEqual(list(validation_policy.DEFAULT_CHECKS), check_ids)
+
+    def test_the_candidate_check_can_be_selected_by_name(self):
+        check_ids, reason = validation_policy.resolve_checks(
+            [validation_policy.CHECK_CANDIDATE_SYNTAX]
+        )
+        self.assertIsNone(reason)
+        self.assertEqual([validation_policy.CHECK_CANDIDATE_SYNTAX], check_ids)
 
     def test_a_subset_is_accepted_and_ordered_canonically(self):
         check_ids, reason = validation_policy.resolve_checks(
