@@ -1337,6 +1337,127 @@ persisted; and a confirmation establishes nothing about whether the source still
 holds. This workflow adds no store, no index, no durable artefact and no new
 action: it consumes the two v2b reads and the existing `get_twin` read.
 
+## A typed developer intent and a deterministic impact proposal (P5.3)
+
+Two modules turn an explicitly supplied developer intent into a reviewable
+statement of what it would affect — *before* any candidate, diff or patch
+exists. `intent_delta.py` records what a developer asked for;
+`impact_proposal.py` binds that record to exact read-side evidence and reports
+the impact. `intent_cli.py` is the offline operator tool.
+
+```
+uv run python -m hrca.intent_cli verify intents/service-version.json
+uv run python -m hrca.intent_cli propose --intent intents/service-version.json \
+    --scanner scan.json --twin twin.json
+```
+
+### Why this is not the P4.1 Intent Delta
+
+`codemap_draft.generate_intent_delta` already produces something called an
+"Intent Delta" — but that one is *derived from typed Code Map block edits*, and
+every field in it, including its acceptance criterion, is computed by the tool.
+P5.3 is the other thing: a record of developer intent whose required facts are
+**supplied**. Sharing the name would be misleading, so this contract declares
+its own generator (`hrca-developer-intent`) and its own schema, and neither new
+module imports `codemap_draft` or `proposal`.
+
+### Explicit facts, never inferred ones
+
+Every section must be **present**: `origin`, `baseline`, `requested_outcome`,
+`scope`, `constraints`, `acceptance_criteria`, `assumptions` and
+`unresolved_questions`. An absent section is refused even when the surrounding
+text plainly implies it.
+
+The distinction is between *absent* and *explicitly empty*. `constraints`,
+`assumptions` and `unresolved_questions` accept `[]` — "I know of none" is a
+real answer. `requested_outcome`, the scope, `acceptance_criteria` and
+`origin.evidence` must name at least one entry, because an intent with no
+outcome, no target, no acceptance criterion or no evidence reference is not a
+bounded intent.
+
+A scope may name entities, exact artifact ids, or both. The artifact-id route
+matters: an entity reference can be ambiguous when one id denotes two artifacts,
+and the exact artifact id is then the only way to say which one is meant.
+
+`prose` is carried as data with a fixed `authority: "input_data_only"`. It is
+never parsed, searched or substituted for a missing fact — an intent that
+states its acceptance criteria in prose but omits the field is refused — and it
+is never re-published by a proposal, which records only `prose_present`.
+
+### Refusal is not a state
+
+They answer different questions, and the contract keeps them apart.
+
+A **refusal** is `(None, reason)`: the binding could not be established at all,
+so nothing is proposed. The evidence belongs to another workspace; the scan
+generation or baseline fingerprint moved; the scanner schema or grammar context
+differs from the one the intent was authored against; a scope reference binds to
+more than one artifact; an origin evidence reference does not resolve to exactly
+one identity; an evidence document is malformed or newer than this build.
+
+When the binding holds, the impact itself is reported as a terminal `state`,
+because "we could not determine the impact" is a result a reviewer must see
+rather than an error that hides it:
+
+| state | meaning |
+| --- | --- |
+| `unsupported` | no evidence holds that identity; the architecture cannot represent it |
+| `unavailable` | the Twin knows the target, the scanner evidence for it is absent |
+| `unknown` | the source exists but did not parse, so the facts inside it are not known |
+| `ambiguous` | every identity bound, but the evidence contradicts itself about a scoped id |
+| `no_impact` | everything read; the bound evidence records no fact inside the scope |
+| `bound` | everything read; the affected facts below are what it records |
+
+Precedence is fixed and documented in that order. `no_impact` is a positive
+finding about the evidence supplied — never a place to put unknown impact, and
+never rendered as empty success: it carries its own risk entry saying exactly
+that.
+
+### Binding is exact, and a changed context invalidates it
+
+Every identity in the output is one the evidence publishes verbatim: a Twin
+artifact `id`, a scanner symbol `id`, a scanner relation `id`, a
+workspace-relative scanner file `path`. The scope resolves by exact equality
+only — no name, path, prefix, positional or prose matching exists in either
+module, and a bare name like `Service` resolves to nothing rather than to
+`app.service.Service`.
+
+Facts are reached structurally, not by name. A bound class artifact contributes
+the symbols whose `parent_id` is its locator; a bound file artifact contributes
+the symbols and relations whose `file` is its path. A fact is only established
+when the source that declares it is readable — when the scanner recorded a parse
+error, the facts inside are omitted rather than asserted, so the `unknown`
+state and the fact list never contradict each other. Relation `target` values
+are the scanner's literal source names and are reported with `resolved: false`.
+
+Reverse impact — facts that *depend on* a scoped entity — is deliberately not
+computed: the scanner records relation targets as literal names and never
+resolves them, so a dependent set could only be reached by name matching. The
+proposal says so as an unresolved question instead of guessing.
+
+### Advisory only, and provably so
+
+`executable` and `applied` are always `False`, and every proposal carries a
+`mutation_surface` block declaring each boundary the contract names — candidate,
+diff, branch, commit, source file, Git index, runner job, provider request,
+credential, package state, recovery state, Twin state, Memory — as `False`.
+`tests/test_impact_proposal.py` asserts that block directly, audits both modules
+for imports of any write-side or network seam, and builds a proposal inside an
+empty temporary directory to show it creates no file. The protocol action set is
+asserted unchanged: P5.3 adds no route, so nothing was widened.
+
+### Fixtures
+
+`fixtures/intent/manifest.json` states, by hand and independently of the
+renderer, what the contract must answer for a supported case and for every named
+negative case: missing and invalid intent fields, prose that must not fill one,
+an oversized value, empty versus unknown impact, an exact source/Twin binding, a
+stale revision, an artifact mismatch, an ambiguous reference and an ambiguous
+impact, a cross-workspace reference, a changed baseline and a changed grammar
+context, and a malformed or absent evidence document. Each supported expectation
+says *why* the fact or suggested test is present, so the oracle is a statement
+about the contract rather than a recording of the implementation.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:
@@ -1375,3 +1496,16 @@ Determinism and no-fabrication are the core guarantees:
 
 Out of scope entirely: LLM providers, semantic editing, UI, remote code
 execution, multi-language support, and automated merges.
+
+- **The P5.3 impact proposal is advisory and statically bounded (P5.3).** It
+  reports what the *supplied* evidence records inside an intent's scope and
+  nothing beyond it: reverse impact is not computed (relation targets are
+  literal names and are never resolved), no runtime or provider evidence
+  verifies the affected set, and `no_impact` is a finding about the evidence
+  rather than a safety claim. It is a pure function of two documents — no
+  candidate, diff, branch, commit, runner job, provider request, package state,
+  Twin write or Memory write is reachable from it — and it deliberately has no
+  desktop route: the accepted read-only actions derive a proposal from a Code
+  Map *draft*, which is a different input with different authority, so none fits
+  this contract and none was invented. Reaching it requires a new protocol
+  action, which is a separate decision and not part of this work.

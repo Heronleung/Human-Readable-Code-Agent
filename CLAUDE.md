@@ -46,9 +46,23 @@ execution at scan time.
   reach no network, process or credential primitive. A `backup` is built from
   one verified cross-run snapshot (`capture_stores` / `verify_capture`) and
   carries its identity in the manifest, which staged recovery re-derives from
-  the staged bytes before an active store is in scope.
+  the staged bytes before an active store is in scope. The P5.3 typed developer
+  intent is `intent_delta.py` and its deterministic advisory impact proposal is
+  `impact_proposal.py`, with the offline operator CLI `intent_cli.py`. They are
+  pure: no filesystem, no network, no provider, no credential, no command, no
+  Git and no store of their own, and they import neither `codemap_draft` nor
+  `proposal` — the P4.1 "Intent Delta" is *derived* from typed Code Map block
+  edits, whereas this one records facts a developer *supplied*, so the two share
+  a name and nothing else. A proposal binds by **exact identity only** (a Twin
+  artifact id, a scanner symbol/relation id, a workspace-relative scanner file
+  path) and refuses rather than falling back to a name, a path, an order or
+  prose; a changed workspace, scan generation, baseline fingerprint or scanner
+  schema/grammar context invalidates the binding instead of silently re-binding
+  it. Neither module is reachable from the desktop and no protocol action was
+  added, so the desktop's authority is unchanged.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
-  holds the M4.1 session/store corpus with its `manifest.json`.
+  holds the M4.1 session/store corpus with its `manifest.json`, and
+  `fixtures/intent/manifest.json` the P5.3 hand-authored intent oracle.
 - `evidence/m4.2/` — the bounded record of the two authorized capture sessions
   plus offline controlled cases; see its `README.md`.
 - `tests/` — stdlib `unittest` tests (no third-party test deps).
@@ -66,6 +80,7 @@ uv run python -m hrca fixtures                  # scan the corpus, JSON to stdou
 uv run python -m hrca.memory_cli verify fixtures/memory  # replay the M4.1 corpus
 uv run python -m hrca.hook_capture report --spool evidence/m4.2/live/session-1  # M4.2 capture
 uv run python -m hrca.memory_cli project --base <store-dir>  # M4.3 documents
+uv run python -m hrca.intent_cli propose --intent <f> --scanner <f> --twin <f>  # P5.3 proposal
 ```
 
 ## Contract (Phase 1)

@@ -1,0 +1,710 @@
+{
+  "corpus": "intent",
+  "notes": [
+    "Every expectation in this file was written by hand against the P5.3 contract, not produced by running the renderer. A case says what the contract must answer; the test then holds the implementation to it.",
+    "The accepted evidence is the frozen fixtures/ corpus: the scanner document from hrca.scanner.scan_directory and the Twin store from hrca.twin.build_store over it. A case never re-derives its own expected output from the implementation; it names the exact identities it expects to be bound.",
+    "An intent is authored against the evidence it is given, so a case leaves the baseline out and the test fills it from the evidence. That keeps this file portable across interpreters: the grammar context is whatever the accepted scan recorded, never a literal here.",
+    "Mutations exist to make a refusal or a degraded state reachable without weakening the accepted corpus. Each mutation is a named, bounded edit of a copy; the accepted corpus is never modified.",
+    "merge: a case's 'intent' is merged over 'intent_base' one level deep, so 'scope' and 'origin' are replaced wholesale, and 'drop' removes named top-level keys after the merge.",
+    "sentinels: the literal \"OVERSIZED\" stands for a value one character past the contract's bounded limit; the test expands it rather than this file carrying two thousand characters of filler."
+  ],
+  "intent_base": {
+    "origin": {
+      "kind": "developer_authored",
+      "evidence": [
+        {"kind": "scanner_file", "id": "app/service.py"},
+        {"kind": "twin_artifact", "id": "artifact:class:app.service.Service"}
+      ]
+    },
+    "requested_outcome": "Record that the service reports version 2 rather than version 1.",
+    "scope": {"entities": ["app.service.Service"], "artifacts": []},
+    "constraints": ["public method names stay unchanged"],
+    "acceptance_criteria": ["the recorded version is 2"],
+    "assumptions": ["callers reach the service through start()"],
+    "unresolved_questions": ["is the version read at import time?"],
+    "prose": "MARKER-P53-PROSE-MUST-NEVER-BE-RE-EMITTED"
+  },
+  "cases": [
+    {
+      "case": "supported_class_scope",
+      "purpose": "The exact supported case: a scope that binds to one class artifact, whose contained method symbols are the affected facts.",
+      "intent": {},
+      "baseline": "evidence",
+      "evidence": "accepted",
+      "expect": {
+        "result": "proposal",
+        "state": "bound",
+        "reason_code": "impact_found",
+        "confidence": "high",
+        "prose_present": true,
+        "target_artifact_ids": ["artifact:class:app.service.Service"],
+        "unresolved_references": [],
+        "affected_facts": [
+          {
+            "fact_kind": "scanner_symbol",
+            "id": "app.service.Service.__init__",
+            "role": "contained_symbol",
+            "twin_artifact_id": "artifact:method:app.service.Service.__init__",
+            "why": "the scanner records this method's parent_id as the bound artifact's locator app.service.Service, and its file as the bound artifact's path"
+          },
+          {
+            "fact_kind": "scanner_symbol",
+            "id": "app.service.Service.fail",
+            "role": "contained_symbol",
+            "twin_artifact_id": "artifact:method:app.service.Service.fail",
+            "why": "same parent_id and file binding as __init__; present because the scope names the class, not one method"
+          },
+          {
+            "fact_kind": "scanner_symbol",
+            "id": "app.service.Service.handle",
+            "role": "contained_symbol",
+            "twin_artifact_id": "artifact:method:app.service.Service.handle",
+            "why": "same parent_id and file binding; present because the scope names the class"
+          },
+          {
+            "fact_kind": "scanner_symbol",
+            "id": "app.service.Service.start",
+            "role": "contained_symbol",
+            "twin_artifact_id": "artifact:method:app.service.Service.start",
+            "why": "same parent_id and file binding; present because the scope names the class"
+          },
+          {
+            "fact_kind": "scanner_symbol",
+            "id": "app.service.Service.version",
+            "role": "contained_symbol",
+            "twin_artifact_id": "artifact:method:app.service.Service.version",
+            "why": "same parent_id and file binding; the requested outcome concerns this method, but the proposal binds it by identity rather than by reading the outcome text"
+          }
+        ],
+        "risks": ["risk:impact_not_verified"],
+        "suggested_tests": [
+          {
+            "test_id": "test:baseline_fingerprint_unchanged",
+            "why": "always present: the whole binding is invalidated by a changed baseline fingerprint"
+          },
+          {
+            "test_id": "test:identity_still_resolves:artifact:class:app.service.Service",
+            "why": "one per resolved target: the class is in scope by exact identity and the proposal asserts nothing once that identity moves"
+          },
+          {
+            "test_id": "test:rescan_is_byte_identical",
+            "why": "always present: the binding is to a scanner schema and grammar context"
+          }
+        ],
+        "unchanged_constraints": {"fixed": 2, "intent_delta": 1},
+        "unresolved_questions": {"fixed": 2, "intent_delta": 1},
+        "evidence_bindings": [
+          {"kind": "origin_evidence", "id": "scanner_file:app/service.py"},
+          {"kind": "origin_evidence", "id": "twin_artifact:artifact:class:app.service.Service"},
+          {"kind": "scanner_file", "id": "app/service.py"},
+          {"kind": "scanner_symbol", "id": "app.service.Service.__init__"},
+          {"kind": "scanner_symbol", "id": "app.service.Service.fail"},
+          {"kind": "scanner_symbol", "id": "app.service.Service.handle"},
+          {"kind": "scanner_symbol", "id": "app.service.Service.start"},
+          {"kind": "scanner_symbol", "id": "app.service.Service.version"},
+          {"kind": "twin_artifact", "id": "artifact:class:app.service.Service"}
+        ]
+      }
+    },
+    {
+      "case": "supported_module_scope",
+      "purpose": "A file artifact scope: the affected facts are every symbol and every relation the scanner recorded against that exact file path.",
+      "intent": {
+        "origin": {"kind": "developer_authored", "evidence": [{"kind": "scanner_file", "id": "app/dynamic.py"}]},
+        "scope": {"entities": ["app.dynamic"], "artifacts": []},
+        "requested_outcome": "Record that the loader keeps its dynamic import explicit and unresolved.",
+        "acceptance_criteria": ["the unresolved import stays explicit"],
+        "constraints": [],
+        "assumptions": [],
+        "unresolved_questions": [],
+        "prose": null
+      },
+      "baseline": "evidence",
+      "evidence": "accepted",
+      "expect": {
+        "result": "proposal",
+        "state": "bound",
+        "reason_code": "impact_found",
+        "confidence": "high",
+        "prose_present": false,
+        "target_artifact_ids": ["artifact:file:app/dynamic.py"],
+        "unresolved_references": [],
+        "affected_facts": [
+          {
+            "fact_kind": "scanner_relation",
+            "id": "calls:app.dynamic.load_module->importlib.import_module@7:11",
+            "role": "relation_from_scope",
+            "target": "importlib.import_module",
+            "why": "the scanner recorded this relation with file equal to the bound file artifact's path; the target is a literal source name and is never resolved"
+          },
+          {
+            "fact_kind": "scanner_relation",
+            "id": "imports:app.dynamic->importlib@3:0",
+            "role": "relation_from_scope",
+            "target": "importlib",
+            "why": "recorded against the bound file's exact path"
+          },
+          {
+            "fact_kind": "scanner_relation",
+            "id": "imports:app.dynamic.load_module-><unresolved>@7:11",
+            "role": "relation_from_scope",
+            "target": null,
+            "why": "the dynamic import the contract requires to stay explicitly unresolved; it is reported as evidence with resolved=false, never as a definition"
+          },
+          {
+            "fact_kind": "scanner_relation",
+            "id": "returns:app.dynamic.load_module->importlib.import_module(module_name)@7:4",
+            "role": "relation_from_scope",
+            "target": "importlib.import_module(module_name)",
+            "why": "recorded against the bound file's exact path"
+          },
+          {
+            "fact_kind": "scanner_symbol",
+            "id": "app.dynamic",
+            "role": "contained_symbol",
+            "twin_artifact_id": null,
+            "why": "the module symbol declares file app/dynamic.py; the Twin models no artifact for a module symbol, so the link is null rather than invented"
+          },
+          {
+            "fact_kind": "scanner_symbol",
+            "id": "app.dynamic.load_module",
+            "role": "contained_symbol",
+            "twin_artifact_id": "artifact:function:app.dynamic.load_module",
+            "why": "declares the bound file's path and the Twin holds an exact function artifact for its locator"
+          },
+          {
+            "fact_kind": "scanner_symbol",
+            "id": "app.dynamic.load_module.module_name",
+            "role": "contained_symbol",
+            "twin_artifact_id": null,
+            "why": "declares the bound file's path; the Twin models no artifact for a parameter"
+          }
+        ],
+        "risks": [
+          "risk:impact_not_verified",
+          "risk:module_scope_breadth",
+          "risk:unresolved_literal_relations"
+        ],
+        "suggested_tests": [
+          {
+            "test_id": "test:baseline_fingerprint_unchanged",
+            "why": "always present"
+          },
+          {
+            "test_id": "test:identity_still_resolves:artifact:file:app/dynamic.py",
+            "why": "one per resolved target"
+          },
+          {
+            "test_id": "test:rescan_is_byte_identical",
+            "why": "always present"
+          },
+          {
+            "test_id": "test:unresolved_relations_unchanged",
+            "why": "the bound scope contains an unresolved import, which is a place where a static impact claim cannot be made"
+          }
+        ],
+        "unchanged_constraints": {"fixed": 2, "intent_delta": 0},
+        "unresolved_questions": {"fixed": 2, "intent_delta": 0},
+        "evidence_bindings": [
+          {"kind": "origin_evidence", "id": "scanner_file:app/dynamic.py"},
+          {"kind": "scanner_file", "id": "app/dynamic.py"},
+          {"kind": "scanner_relation", "id": "calls:app.dynamic.load_module->importlib.import_module@7:11"},
+          {"kind": "scanner_relation", "id": "imports:app.dynamic->importlib@3:0"},
+          {"kind": "scanner_relation", "id": "imports:app.dynamic.load_module-><unresolved>@7:11"},
+          {"kind": "scanner_relation", "id": "returns:app.dynamic.load_module->importlib.import_module(module_name)@7:4"},
+          {"kind": "scanner_symbol", "id": "app.dynamic"},
+          {"kind": "scanner_symbol", "id": "app.dynamic.load_module"},
+          {"kind": "scanner_symbol", "id": "app.dynamic.load_module.module_name"},
+          {"kind": "twin_artifact", "id": "artifact:file:app/dynamic.py"}
+        ]
+      }
+    },
+    {
+      "case": "no_impact_empty_module",
+      "purpose": "Empty versus unknown impact: the scope binds exactly, every file is readable, and the bound evidence records no source fact inside it. This must be reported as no_impact with its own risk, never as an empty success.",
+      "intent": {
+        "origin": {"kind": "developer_authored", "evidence": [{"kind": "scanner_file", "id": "pkg/__init__.py"}]},
+        "scope": {"entities": ["pkg"], "artifacts": []},
+        "requested_outcome": "Record that the package marker stays empty.",
+        "acceptance_criteria": ["the package still imports"],
+        "constraints": [],
+        "assumptions": [],
+        "unresolved_questions": [],
+        "prose": null
+      },
+      "baseline": "evidence",
+      "evidence": {
+        "literal": {
+          "scanner": {
+            "schema_version": "1.1.0",
+            "generator": "hrca-scanner",
+            "grammar": {"implementation": "cpython", "version": "3.11"},
+            "root": "SYNTHETIC",
+            "files": [
+              {
+                "record_type": "file",
+                "path": "pkg/__init__.py",
+                "module": "pkg",
+                "size_bytes": 0,
+                "syntax_status": "ok"
+              }
+            ],
+            "symbols": [],
+            "relations": [],
+            "parse_errors": [],
+            "confidence": []
+          },
+          "twin": {
+            "schema_version": "1.0.0",
+            "generator": "hrca-twin",
+            "workspace_revision": {
+              "workspace_id": "ws:synthetic-empty-module",
+              "scan_generation": 7,
+              "baseline_fingerprint": "bf:synthetic-empty-module",
+              "scan_timestamp": "T0",
+              "sync_state": "synchronized"
+            },
+            "artifacts": [
+              {
+                "record_type": "artifact",
+                "id": "artifact:file:pkg/__init__.py",
+                "kind": "file",
+                "path": "pkg/__init__.py",
+                "name": "__init__.py",
+                "module": "pkg",
+                "source_range": null,
+                "fingerprint": "fp:empty",
+                "syntax_status": "ok",
+                "provenance": "verified",
+                "confidence": "high",
+                "sync_state": "synchronized"
+              }
+            ],
+            "behavior_nodes": [],
+            "correspondences": [],
+            "projections": []
+          }
+        }
+      },
+      "expect": {
+        "result": "proposal",
+        "state": "no_impact",
+        "reason_code": "no_source_fact_inside_bound_scope",
+        "confidence": "high",
+        "prose_present": false,
+        "target_artifact_ids": ["artifact:file:pkg/__init__.py"],
+        "unresolved_references": [],
+        "affected_facts": [],
+        "risks": [
+          "risk:impact_not_verified",
+          "risk:module_scope_breadth",
+          "risk:no_impact_is_not_absence_of_impact"
+        ],
+        "suggested_tests": [
+          {
+            "test_id": "test:baseline_fingerprint_unchanged",
+            "why": "always present"
+          },
+          {
+            "test_id": "test:identity_still_resolves:artifact:file:pkg/__init__.py",
+            "why": "one per resolved target"
+          },
+          {
+            "test_id": "test:rescan_is_byte_identical",
+            "why": "always present"
+          }
+        ],
+        "unchanged_constraints": {"fixed": 2, "intent_delta": 0},
+        "unresolved_questions": {"fixed": 2, "intent_delta": 0},
+        "evidence_bindings": [
+          {"kind": "origin_evidence", "id": "scanner_file:pkg/__init__.py"},
+          {"kind": "scanner_file", "id": "pkg/__init__.py"},
+          {"kind": "twin_artifact", "id": "artifact:file:pkg/__init__.py"}
+        ]
+      }
+    },
+    {
+      "case": "unknown_source_facts",
+      "purpose": "Unknown impact: the target is bound, its file record exists, and the scanner recorded that it did not parse. The facts inside it are not knowable, so none may be asserted.",
+      "intent": {
+        "origin": {"kind": "developer_authored", "evidence": [{"kind": "scanner_file", "id": "broken/syntax_error.py"}]},
+        "scope": {"entities": ["broken.syntax_error"], "artifacts": []},
+        "requested_outcome": "Record that the unparseable module is left alone.",
+        "acceptance_criteria": ["the parse error is still reported"],
+        "constraints": [],
+        "assumptions": [],
+        "unresolved_questions": [],
+        "prose": null
+      },
+      "baseline": "evidence",
+      "evidence": "accepted",
+      "expect": {
+        "result": "proposal",
+        "state": "unknown",
+        "reason_code": "source_facts_are_not_readable",
+        "confidence": "low",
+        "prose_present": false,
+        "target_artifact_ids": ["artifact:file:broken/syntax_error.py"],
+        "unresolved_references": [],
+        "affected_facts": [],
+        "risks": [
+          "risk:impact_not_verified",
+          "risk:module_scope_breadth",
+          "risk:unreadable_source:broken/syntax_error.py"
+        ],
+        "suggested_tests": [
+          {
+            "test_id": "test:baseline_fingerprint_unchanged",
+            "why": "always present"
+          },
+          {
+            "test_id": "test:identity_still_resolves:artifact:file:broken/syntax_error.py",
+            "why": "one per resolved target"
+          },
+          {
+            "test_id": "test:parse_error_cleared:broken/syntax_error.py",
+            "why": "the bound scope contains a file that did not parse, so its impact is unknown"
+          },
+          {
+            "test_id": "test:rescan_is_byte_identical",
+            "why": "always present"
+          }
+        ],
+        "unchanged_constraints": {"fixed": 2, "intent_delta": 0},
+        "unresolved_questions": {"fixed": 3, "intent_delta": 0},
+        "evidence_bindings": [
+          {"kind": "origin_evidence", "id": "scanner_file:broken/syntax_error.py"},
+          {"kind": "scanner_file", "id": "broken/syntax_error.py"},
+          {"kind": "twin_artifact", "id": "artifact:file:broken/syntax_error.py"}
+        ]
+      }
+    },
+    {
+      "case": "unavailable_scanner_evidence",
+      "purpose": "Unavailable evidence: the Twin knows the target and names its path, but the supplied scanner document holds no record of that file. Distinct from unknown, where the record exists and says the file did not parse.",
+      "intent": {
+        "origin": {"kind": "developer_authored", "evidence": [{"kind": "twin_artifact", "id": "artifact:class:app.service.Service"}]},
+        "requested_outcome": "Record that the service reports version 2.",
+        "acceptance_criteria": ["the recorded version is 2"],
+        "constraints": [],
+        "assumptions": [],
+        "unresolved_questions": [],
+        "prose": null
+      },
+      "baseline": "evidence",
+      "evidence": {"mutate": {"scanner": {"remove_file": "app/service.py"}}},
+      "expect": {
+        "result": "proposal",
+        "state": "unavailable",
+        "reason_code": "scanner_evidence_is_absent_for_the_target",
+        "confidence": "low",
+        "prose_present": false,
+        "target_artifact_ids": ["artifact:class:app.service.Service"],
+        "unresolved_references": [],
+        "affected_facts": [],
+        "risks": ["risk:impact_not_verified"],
+        "suggested_tests": [
+          {
+            "test_id": "test:baseline_fingerprint_unchanged",
+            "why": "always present"
+          },
+          {
+            "test_id": "test:identity_still_resolves:artifact:class:app.service.Service",
+            "why": "one per resolved target"
+          },
+          {
+            "test_id": "test:rescan_is_byte_identical",
+            "why": "always present"
+          }
+        ],
+        "unchanged_constraints": {"fixed": 2, "intent_delta": 0},
+        "unresolved_questions": {"fixed": 3, "intent_delta": 0},
+        "evidence_bindings": [
+          {"kind": "origin_evidence", "id": "twin_artifact:artifact:class:app.service.Service"},
+          {"kind": "twin_artifact", "id": "artifact:class:app.service.Service"}
+        ]
+      }
+    },
+    {
+      "case": "unsupported_identity",
+      "purpose": "Unsupported: the scope names an identity the accepted architecture does not hold anywhere, so it cannot represent what the intent names.",
+      "intent": {
+        "origin": {"kind": "developer_authored", "evidence": [{"kind": "scanner_file", "id": "app/service.py"}]},
+        "scope": {"entities": ["app.service.Absent"], "artifacts": []},
+        "requested_outcome": "Record that an entity absent from the architecture changes.",
+        "acceptance_criteria": ["nothing is invented for it"],
+        "constraints": [],
+        "assumptions": [],
+        "unresolved_questions": [],
+        "prose": null
+      },
+      "baseline": "evidence",
+      "evidence": "accepted",
+      "expect": {
+        "result": "proposal",
+        "state": "unsupported",
+        "reason_code": "scope_identity_is_not_held_by_the_evidence",
+        "confidence": "low",
+        "prose_present": false,
+        "target_artifact_ids": [],
+        "unresolved_references": ["app.service.Absent"],
+        "affected_facts": [],
+        "risks": ["risk:impact_not_verified"],
+        "suggested_tests": [
+          {
+            "test_id": "test:baseline_fingerprint_unchanged",
+            "why": "always present"
+          },
+          {
+            "test_id": "test:rescan_is_byte_identical",
+            "why": "always present"
+          }
+        ],
+        "unchanged_constraints": {"fixed": 2, "intent_delta": 0},
+        "unresolved_questions": {"fixed": 3, "intent_delta": 0},
+        "evidence_bindings": [
+          {"kind": "origin_evidence", "id": "scanner_file:app/service.py"}
+        ]
+      }
+    },
+    {
+      "case": "ambiguous_impact",
+      "purpose": "Ambiguous impact: the reference binds, but the supplied evidence carries two records claiming one scoped symbol id with different content, so which fact is affected is not unique. Reported as a state, because the binding itself held.",
+      "intent": {
+        "prose": null
+      },
+      "baseline": "evidence",
+      "evidence": {"mutate": {"scanner": {"duplicate_symbol": "app.service.Service.handle"}}},
+      "expect": {
+        "result": "proposal",
+        "state": "ambiguous",
+        "reason_code": "evidence_contradicts_itself_about_a_scoped_fact",
+        "confidence": "low",
+        "prose_present": false
+      }
+    },
+    {
+      "case": "ambiguous_reference",
+      "purpose": "Ambiguous evidence reference: one entity id binds to two different artifacts, so which one the intent means is not knowable. Refused, with the exact artifact id as the route the intent has to disambiguate.",
+      "intent": {
+        "origin": {"kind": "developer_authored", "evidence": [{"kind": "scanner_file", "id": "app/service.py"}]},
+        "scope": {"entities": ["app.service"], "artifacts": []},
+        "requested_outcome": "Record a change to whichever app.service means.",
+        "acceptance_criteria": ["no guess is made"],
+        "constraints": [],
+        "assumptions": [],
+        "unresolved_questions": [],
+        "prose": null
+      },
+      "baseline": "evidence",
+      "evidence": {
+        "mutate": {
+          "twin": {
+            "add_artifact": {
+              "record_type": "artifact",
+              "id": "artifact:class:app.service",
+              "kind": "class",
+              "path": "app/service.py",
+              "module": "app",
+              "name": "service",
+              "locator": "app.service",
+              "source_range": null,
+              "provenance": "verified",
+              "confidence": "high",
+              "sync_state": "synchronized"
+            }
+          }
+        }
+      },
+      "expect": {
+        "result": "refused",
+        "error": "a scope reference does not bind to exactly one artifact"
+      }
+    },
+    {
+      "case": "stale_scan_generation",
+      "purpose": "Changed source revision: the evidence comes from a later Twin scan generation than the intent was authored against. Refused, never silently re-bound.",
+      "intent": {"prose": null},
+      "baseline": "evidence",
+      "evidence": {"mutate": {"twin": {"set_scan_generation": 2}}},
+      "expect": {
+        "result": "refused",
+        "error": "evidence baseline does not match the intent baseline"
+      }
+    },
+    {
+      "case": "stale_baseline_fingerprint",
+      "purpose": "Changed Twin fact: the aggregate baseline fingerprint moved, so the facts the intent was authored against are not the facts supplied.",
+      "intent": {"prose": null},
+      "baseline": "evidence",
+      "evidence": {"mutate": {"twin": {"set_baseline_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"}}},
+      "expect": {
+        "result": "refused",
+        "error": "evidence baseline does not match the intent baseline"
+      }
+    },
+    {
+      "case": "cross_workspace_reference",
+      "purpose": "Cross-workspace evidence: the store belongs to another workspace, so no identity in it means what the intent says it means.",
+      "intent": {"prose": null},
+      "baseline": "evidence",
+      "evidence": {"mutate": {"twin": {"set_workspace_id": "ws:somewhere-else"}}},
+      "expect": {
+        "result": "refused",
+        "error": "evidence belongs to a different workspace"
+      }
+    },
+    {
+      "case": "grammar_context_changed",
+      "purpose": "Changed schema context: the grammar that read the source differs from the one the intent baseline records. A record this proposal would read may never have existed, so the binding is invalidated rather than reinterpreted.",
+      "intent": {"prose": null},
+      "baseline": "evidence",
+      "evidence": {"mutate": {"scanner": {"set_grammar_version": "0.0"}}},
+      "expect": {
+        "result": "refused",
+        "error": "the scanner grammar context does not match the intent baseline"
+      }
+    },
+    {
+      "case": "schema_context_changed",
+      "purpose": "Changed schema context: the intent baseline declares a scanner schema version the supplied evidence does not carry.",
+      "intent": {"prose": null},
+      "baseline": {"override": {"scanner_schema_version": "1.0.0"}},
+      "evidence": "accepted",
+      "expect": {
+        "result": "refused",
+        "error": "the scanner schema context does not match the intent baseline"
+      }
+    },
+    {
+      "case": "future_evidence_schema",
+      "purpose": "An evidence document with a version newer than this build is refused by the module that owns the schema; it is never half-read.",
+      "intent": {"prose": null},
+      "baseline": "evidence",
+      "evidence": {"mutate": {"scanner": {"set_schema_version": "9.9.9"}}},
+      "expect": {
+        "result": "refused",
+        "error": "an evidence document is not a supported document"
+      }
+    },
+    {
+      "case": "unbound_origin_evidence",
+      "purpose": "Artifact/entity mismatch: an origin evidence reference does not resolve to exactly one identity, so the proposal refuses instead of falling back to a name, a path or an ordering.",
+      "intent": {
+        "origin": {"kind": "developer_authored", "evidence": [{"kind": "twin_artifact", "id": "artifact:class:app.service.Absent"}]},
+        "prose": null
+      },
+      "baseline": "evidence",
+      "evidence": "accepted",
+      "expect": {
+        "result": "refused",
+        "error": "an origin evidence reference does not resolve exactly"
+      }
+    },
+    {
+      "case": "missing_twin_evidence",
+      "purpose": "A required evidence source is absent from the bundle.",
+      "intent": {"prose": null},
+      "baseline": "evidence",
+      "evidence": {"drop": "twin"},
+      "expect": {
+        "result": "refused",
+        "error": "twin evidence is missing"
+      }
+    },
+    {
+      "case": "missing_scanner_evidence",
+      "purpose": "A required evidence source is absent from the bundle.",
+      "intent": {"prose": null},
+      "baseline": "evidence",
+      "evidence": {"drop": "scanner"},
+      "expect": {
+        "result": "refused",
+        "error": "scanner evidence is missing"
+      }
+    },
+    {
+      "case": "evidence_not_a_mapping",
+      "purpose": "The evidence bundle itself is malformed.",
+      "intent": {"prose": null},
+      "baseline": "evidence",
+      "evidence": "not_a_mapping",
+      "expect": {
+        "result": "refused",
+        "error": "evidence is not a mapping"
+      }
+    },
+    {
+      "case": "missing_required_intent_field",
+      "purpose": "Required facts must be supplied explicitly: an intent with no acceptance criteria is not a bounded intent, even when everything else is present.",
+      "intent": {"drop": ["acceptance_criteria"]},
+      "baseline": "evidence",
+      "evidence": "accepted",
+      "expect": {
+        "result": "delta_refused",
+        "error": "missing required section acceptance_criteria"
+      }
+    },
+    {
+      "case": "prose_cannot_fill_a_required_field",
+      "purpose": "Prose is input data and never authority: with the acceptance criteria absent, a request that states them in prose is still refused. The prose must not be parsed, searched or substituted.",
+      "intent": {
+        "drop": ["acceptance_criteria"],
+        "prose": "the acceptance criteria are: the recorded version is 2, and the public names stay put"
+      },
+      "baseline": "evidence",
+      "evidence": "accepted",
+      "expect": {
+        "result": "delta_refused",
+        "error": "missing required section acceptance_criteria"
+      }
+    },
+    {
+      "case": "oversized_requested_outcome",
+      "purpose": "Oversized field: a bounded limit is a refusal, never a truncation. A silently shortened value is a value the developer did not write.",
+      "intent": {"requested_outcome": "OVERSIZED", "prose": null},
+      "baseline": "evidence",
+      "evidence": "accepted",
+      "expect": {
+        "result": "delta_refused",
+        "error": "requested_outcome is oversized"
+      }
+    },
+    {
+      "case": "invalid_scan_generation",
+      "purpose": "Invalid field: the baseline scan generation is a string, not an integer.",
+      "intent": {"prose": null},
+      "baseline": {"override": {"scan_generation": "one"}},
+      "evidence": "accepted",
+      "expect": {
+        "result": "delta_refused",
+        "error": "baseline.scan_generation must be an integer"
+      }
+    },
+    {
+      "case": "empty_scope_entities",
+      "purpose": "A scope that names no entity is not a bounded scope.",
+      "intent": {"scope": {"entities": [], "artifacts": []}, "prose": null},
+      "baseline": "evidence",
+      "evidence": "accepted",
+      "expect": {
+        "result": "delta_refused",
+        "error": "scope must name at least one entity or artifact"
+      }
+    },
+    {
+      "case": "unknown_evidence_reference_kind",
+      "purpose": "The origin evidence vocabulary is bounded; an unknown kind is refused rather than ignored.",
+      "intent": {
+        "origin": {"kind": "developer_authored", "evidence": [{"kind": "screenshot", "id": "x"}]},
+        "prose": null
+      },
+      "baseline": "evidence",
+      "evidence": "accepted",
+      "expect": {
+        "result": "delta_refused",
+        "error": "an origin.evidence entry names an unknown kind"
+      }
+    }
+  ]
+}
