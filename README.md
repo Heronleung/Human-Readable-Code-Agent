@@ -1458,6 +1458,161 @@ context, and a malformed or absent evidence document. Each supported expectation
 says *why* the fact or suggested test is present, so the oracle is a statement
 about the contract rather than a recording of the implementation.
 
+## An isolated content-addressed candidate and its exact diff (P5.4)
+
+Four modules turn an explicit typed edit into an immutable candidate *outside*
+the accepted repository, plus a review envelope describing exactly what
+changed. `candidate_edit.py` is the typed request, `candidate_diff.py` the
+canonical diff, `candidate.py` the materializer (the only module in this
+contract that touches a filesystem), and `candidate_cli.py` the offline
+operator tool.
+
+```
+uv run python -m hrca.candidate_cli derive --intent i.json --scanner s.json --twin t.json
+uv run python -m hrca.candidate_cli review --edit e.json --intent i.json \
+    --scanner s.json --twin t.json --repo <dir>
+uv run python -m hrca.candidate_cli build  --edit e.json --intent i.json \
+    --scanner s.json --twin t.json --repo <dir> --output-base <dir>
+```
+
+Materializing a candidate is **not validation, approval or adoption**. The
+envelope carries `validated`, `approved` and `adopted` all `False`, and the
+accepted repository is untouched by construction: the only writes are under a
+fresh output root this contract creates, outside the repository and outside Git
+metadata.
+
+### The narrowest grammar that can still express a change
+
+One operation: **exact whole-file replacement of an existing UTF-8 Python
+source file**, naming one exact repository-relative path, the SHA-256 the file
+is expected to have now, and the complete text it should have instead.
+
+Everything else is refused *by name*, so a caller learns which capability is
+missing rather than guessing at a validation error:
+
+- **Creation is unsupported**, not merely unimplemented. A new file has no
+  predecessor artifact, so it has no exact identity to bind a scope, a
+  fingerprint or an evidence reference to. Authorizing one would mean inventing
+  the scope this contract is built to avoid inventing.
+- **Deletion, rename, move, copy and mode changes are unsupported.** A
+  withdrawal or a relocation is not a replacement; representing one as the other
+  would misdescribe what happened.
+- **Symlinks, hardlinks and submodules are unsupported.** They make a path name
+  something other than the bytes it appears to contain.
+- **Patch and unified-diff input is unsupported.** An arbitrary patch parser is
+  a second, unbounded input language. Accepting complete content only means the
+  desired bytes are fully known before anything is written.
+- **Binary content is unsupported.** A payload that is not decodable UTF-8 is a
+  refusal; a decodable payload carrying a NUL byte or a byte-order mark is the
+  `unsupported_content` *state*.
+
+A path is accepted only in one exact spelling — forward slashes, no leading or
+trailing separator, no empty/`.`/`..` component, no drive or UNC prefix, no
+control character, no padded component, no reserved device name, at most 32
+components, already in Unicode NFC. Two operations differing only by case are
+refused: on a case-insensitive filesystem they name one file twice.
+
+### Authorization is evidence, never prose
+
+A path may be replaced only when the bound proposal puts it in scope **and**
+carries it as evidence: it must appear as a target path in
+`target_scope.targets`, and as either a `scanner_file` binding or a governed
+fact's `file`. There is no basename, suffix, case-folding, entity-name, prose,
+path-order or nearest-match route — an intent whose prose asks for a
+neighbouring file authorizes nothing, and the edit that follows the prose is
+refused.
+
+Two further exact identities gate every operation. The proposal must be in its
+`bound` state — `no_impact`, `unknown`, `unavailable`, `unsupported` and
+`ambiguous` all mean the affected facts were **not** established, and an edit
+that changed a file anyway would be changing facts nobody bound. And the edit's
+`expected_sha256` must equal the Twin's own recorded fingerprint for that exact
+file artifact, so the predecessor is pinned by two independent sources before a
+byte is read.
+
+The proposal supplied is never trusted either: the build re-derives it from the
+delta and the evidence and requires the identity to match. A changed baseline,
+scan generation, grammar or schema therefore refuses in one exact test rather
+than in a checklist of comparisons.
+
+### Refusal versus state
+
+`(None, reason)` means the request or its binding cannot be *read*: an invalid
+edit, delta or proposal; evidence the proposal does not re-derive from; an edit
+whose declared delta, proposal, binding fingerprint or baseline is not the one
+supplied; a request past an accepted bound.
+
+An **envelope** with a terminal `state` means the request *is* read and the
+answer is a determination about content: `candidate_ready`, `no_change`,
+`unsupported_content`, `oversized` and `refused`, with the fixed precedence
+`refused` > `oversized` > `unsupported_content` > `no_change` >
+`candidate_ready`. A replacement identical to its predecessor is `no_change`
+and never becomes `candidate_ready`.
+
+### Isolation, atomicity and cleanup
+
+The candidate root is created by `tempfile.mkdtemp` under the validated output
+base — the pattern `memory_package.stage_package` already uses to refuse reuse.
+Content and manifest are written, `fsync`-ed, and verified against their own
+recorded hashes; only then is the final name claimed with `os.mkdir` (which
+fails rather than overwrites) and the staging tree renamed onto it with
+`os.rename`, the atomic-rename contract `memory_store` and `library_store`
+already rely on. The final name is derived from the candidate identity, so a
+second build of the same candidate is refused.
+
+Every predecessor is read under a checked identity: each path component is
+checked for a link, the resolved target must stay inside the accepted root, and
+the file must be a regular file with exactly one hard link. A failure at any
+point removes only the directory this build created, and only after checking
+that its parent is the base this call validated and that its name carries this
+module's staging prefix — so cleanup can never reach an unrelated output root,
+another candidate, the repository, or the untracked bundle.
+
+### Identity
+
+`candidate_id` is content-addressed over a manifest that records **logical
+content only**: no path, no root name, no timestamp. The root name is derived
+from the identity rather than the other way round, so identical inputs produce
+an identical id, an identical manifest and an identical review envelope — and
+the same candidate cannot be written twice into one base.
+
+The manifest is written as its own canonical serialization, so its bytes are the
+digest's preimage. `tests/test_candidate.py` proves the whole chain
+independently: it applies the recorded replacement to the frozen baseline with
+the standard library alone, recomputes every hash and the identity with
+`hashlib`, and requires byte equality with what is on disk. Neither the
+materializer nor the diff renderer is consulted to compute an expected value.
+
+The frozen fixture's hashes and byte counts were pinned from `sha256sum` and
+`wc -c`, not from the package. The miniature repository lives in its own root,
+`candidate_fixtures/`, beside `grammar_fixtures/` and `codemap_fixtures/`: the
+Phase 1 scanner tests measure `fixtures/` by exact file, symbol and relation
+counts, so a new Python file inside it would change those numbers and quietly
+rewrite what the baseline asserts. One input is pinned deliberately: the Twin
+workspace identity. A workspace is derived from a canonical root, so a copy of
+the tree in a temporary directory is a *different* workspace — the same bytes in
+a different checkout are a different candidate, which is the accepted
+architecture's own rule rather than a nondeterminism here.
+
+### Boundaries
+
+`tests/test_candidate.py` asserts the whole mutation surface — accepted source,
+Git index, refs, branch, commit, worktree, runner job, provider request,
+credential, network, remote, Twin, Memory, validation, approval, adoption,
+protocol action, UI, package state, recovery state — as `False` on every
+produced envelope. It audits all four modules for imports of any write-side or
+network seam, and snapshots the accepted repository's bytes and its entire Git
+state — HEAD, refs, index, status, stash, config, hooks — before and after a
+success, a refusal, an oversized request, an injected mid-build failure and the
+read-only cancellation path, requiring every one to be unchanged. The untracked
+bundle is compared by size and modification time only, never read.
+
+No protocol action was added: the accepted candidate-named actions carry no edit
+grammar and no output root, so nothing fitted and nothing was invented. The
+contract is reached offline through `candidate_cli.py` only. No repository test
+or build is executed as candidate validation, and the controlled runner is never
+invoked — candidate-driven validation is a later phase.
+
 ## Scope and limitations
 
 Determinism and no-fabrication are the core guarantees:
@@ -1509,3 +1664,13 @@ execution, multi-language support, and automated merges.
   Map *draft*, which is a different input with different authority, so none fits
   this contract and none was invented. Reaching it requires a new protocol
   action, which is a separate decision and not part of this work.
+
+- **A P5.4 candidate is bytes, never an outcome.** It is materialized outside the
+  accepted repository and is not validated, approved or adopted; nothing applies
+  it, and no check that would make it *correct* exists yet. It represents
+  whole-file replacement of UTF-8 Python source only, so deletion, creation,
+  rename, mode changes, links and binary content are refused rather than
+  approximated. The diff is a line-level rendering, not a byte-level proof, and
+  the predecessor is read once: a concurrent change to the repository after the
+  build is not reflected, which is why the envelope says so as a risk. It has no
+  desktop route and no protocol action was added.

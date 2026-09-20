@@ -59,10 +59,32 @@ execution at scan time.
   prose; a changed workspace, scan generation, baseline fingerprint or scanner
   schema/grammar context invalidates the binding instead of silently re-binding
   it. Neither module is reachable from the desktop and no protocol action was
-  added, so the desktop's authority is unchanged.
+  added, so the desktop's authority is unchanged. The P5.4 typed edit request is
+  `candidate_edit.py`, the canonical diff is `candidate_diff.py`, and the
+  isolated content-addressed candidate is `candidate.py` with the offline
+  operator CLI `candidate_cli.py`. `candidate.py` is the **only** module in this
+  package allowed to write anything, and what it may write is exactly one fresh
+  directory it creates itself beneath a caller-supplied output base *outside*
+  the accepted repository and outside Git metadata. The grammar is one
+  operation — exact whole-file replacement of an existing UTF-8 Python source
+  file — because creation has no predecessor identity to bind and deletion,
+  rename, mode changes, links, binary content and arbitrary patch input are all
+  refused by name. A path is authorized only when the bound P5.3 proposal both
+  scopes it and carries it as evidence, and the edit's `expected_sha256` must
+  equal the Twin's own recorded fingerprint for that file artifact, so the
+  predecessor is pinned by two independent sources before a byte is read.
+  Materializing a candidate is not validating, approving or adopting one:
+  `candidate_edit`, `candidate_diff` and `candidate` import no provider,
+  credential, runner, contract, workspace or store seam, and no repository test
+  or build is ever executed as candidate validation.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`, and
   `fixtures/intent/manifest.json` the P5.3 hand-authored intent oracle.
+  `candidate_fixtures/` holds the P5.4 frozen miniature repository with its
+  oracle. It is a **separate root**, like `grammar_fixtures/` and
+  `codemap_fixtures/`, because the Phase 1 scanner tests measure `fixtures/` by
+  exact file, symbol and relation counts: a new Python file inside it would
+  change those numbers and quietly rewrite what the baseline asserts.
 - `evidence/m4.2/` — the bounded record of the two authorized capture sessions
   plus offline controlled cases; see its `README.md`.
 - `tests/` — stdlib `unittest` tests (no third-party test deps).
@@ -81,6 +103,7 @@ uv run python -m hrca.memory_cli verify fixtures/memory  # replay the M4.1 corpu
 uv run python -m hrca.hook_capture report --spool evidence/m4.2/live/session-1  # M4.2 capture
 uv run python -m hrca.memory_cli project --base <store-dir>  # M4.3 documents
 uv run python -m hrca.intent_cli propose --intent <f> --scanner <f> --twin <f>  # P5.3 proposal
+uv run python -m hrca.candidate_cli review --edit <f> --intent <f> --scanner <f> --twin <f> --repo <dir>  # P5.4 diff
 ```
 
 ## Contract (Phase 1)

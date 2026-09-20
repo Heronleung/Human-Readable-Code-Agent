@@ -1,0 +1,587 @@
+{
+  "corpus": "candidate",
+  "notes": [
+    "Every expectation in this file was authored by hand against the P5.4 contract, not produced by running the materializer or the diff renderer. The two file hashes and byte counts were taken from sha256sum(1) and wc -c over the frozen fixture files, not from the implementation.",
+    "The frozen repository is candidate_fixtures/repo, in its own root beside grammar_fixtures and codemap_fixtures so the accepted Phase 1 corpus under fixtures/ is not disturbed by files it was never measured against. A case never writes into it: the test always copies it into a fresh temporary root first, so the fixture cannot be mutated by a build and the candidate's isolation is proven against a real repository root.",
+    "Accepted evidence is the scanner document and the Twin store built over whatever root the case set up. An intent is authored against the evidence it is given, so a case leaves the baseline out and the test fills it from that evidence: nothing here pins an interpreter-dependent value.",
+    "Identity is deliberately NOT pinned as a literal. A candidate id depends on the baseline grammar context, which is the running interpreter's, so a literal would be portable only by accident. The pinned 'candidate identity inputs' are the canonical operation projection and the exact before/after bytes and hashes; the test reassembles the whole manifest from those with json.dumps and hashlib alone and requires byte equality.",
+    "The token @@PREDECESSOR@@ stands for the frozen predecessor text, so the no-op case states its intent without restating 181 bytes. The token @@CURRENT_SHA@@ stands for the SHA-256 of the file as the build will read it, for a case whose predecessor is the mutated tree's own file: the case is about a different rule, and a deliberately wrong pin would refuse for the wrong reason.",
+    "An 'expect.result' of 'envelope' means a review envelope was produced and its 'state' is asserted; 'refused' means the build returned no envelope at all and the bounded reason is asserted. Request-level bounds (operation count, a replacement that is not UTF-8 text) are refusals because the request itself is malformed; repository-level findings (a predecessor that is not UTF-8 text, a predecessor past the size bound) are states, because the request was fine."
+  ],
+  "repo": "repo",
+  "target_path": "pkg/service.py",
+  "out_of_scope_path": "pkg/other.py",
+  "predecessor": {
+    "sha256": "4972d66bf73cb8dcd3c50827ac51ce27096dae5b7031d00aeb245a01d721e4a9",
+    "bytes": 181
+  },
+  "out_of_scope": {
+    "sha256": "65262ea0b57f1d09136f28abbeb5a831b213566102166b6db2b7b9156e2cdfd8",
+    "bytes": 76
+  },
+  "result": {
+    "sha256": "cd219970049b63947df5857ad3ead2d2aa07ef48b4073bc57606cd5eeb6c25f0",
+    "bytes": 181,
+    "text": "\"\"\"Tiny service the P5.4 candidate fixture replaces.\"\"\"\n\nVERSION = \"2\"\n\n\nclass Service:\n    def version(self) -> str:\n        return VERSION\n\n\ndef ping() -> str:\n    return VERSION\n"
+  },
+  "diff_lines": [
+    "--- a/pkg/service.py",
+    "+++ b/pkg/service.py",
+    "@@ -1,6 +1,6 @@",
+    " \"\"\"Tiny service the P5.4 candidate fixture replaces.\"\"\"",
+    " ",
+    "-VERSION = \"1\"",
+    "+VERSION = \"2\"",
+    " ",
+    " ",
+    " class Service:"
+  ],
+  "intent_base": {
+    "origin": {
+      "kind": "developer_authored",
+      "evidence": [
+        {"kind": "scanner_file", "id": "pkg/service.py"},
+        {"kind": "twin_artifact", "id": "artifact:file:pkg/service.py"}
+      ]
+    },
+    "requested_outcome": "Record that the service reports version 2 rather than version 1.",
+    "scope": {"entities": ["pkg.service"], "artifacts": []},
+    "constraints": ["the public class and function names stay unchanged"],
+    "acceptance_criteria": ["the recorded version is 2"],
+    "assumptions": [],
+    "unresolved_questions": []
+  },
+  "edit_base": {
+    "operations": [
+      {
+        "op": "replace_file",
+        "path": "pkg/service.py",
+        "expected_sha256": "4972d66bf73cb8dcd3c50827ac51ce27096dae5b7031d00aeb245a01d721e4a9",
+        "text": "RESULT_TEXT"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "case": "supported_replace",
+      "purpose": "The exact supported case: one scoped Python file replaced wholesale, materialized under a fresh root outside the repository.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "candidate_ready",
+        "reason_code": "candidate_materialized",
+        "root_created": true,
+        "operations": [
+          {
+            "op": "replace_file",
+            "path": "pkg/service.py",
+            "expected_sha256": "4972d66bf73cb8dcd3c50827ac51ce27096dae5b7031d00aeb245a01d721e4a9",
+            "before_sha256": "4972d66bf73cb8dcd3c50827ac51ce27096dae5b7031d00aeb245a01d721e4a9",
+            "before_bytes": 181,
+            "after_sha256": "cd219970049b63947df5857ad3ead2d2aa07ef48b4073bc57606cd5eeb6c25f0",
+            "after_bytes": 181,
+            "before_final_newline": true,
+            "after_final_newline": true,
+            "diff": "PINNED_DIFF"
+          }
+        ],
+        "staged_files": ["pkg/service.py"],
+        "risks": [
+          "risk:not_validation",
+          "risk:predecessor_may_move",
+          "risk:text_only_diff",
+          "risk:whole_file_replacement:pkg/service.py"
+        ],
+        "unresolved_questions": ["question:authority", "question:correctness"]
+      }
+    },
+    {
+      "case": "no_change",
+      "purpose": "A replacement identical to its predecessor must be reported as no_change and must not become candidate_ready.",
+      "intent": {},
+      "edit": {
+        "operations": [
+          {
+            "op": "replace_file",
+            "path": "pkg/service.py",
+            "expected_sha256": "4972d66bf73cb8dcd3c50827ac51ce27096dae5b7031d00aeb245a01d721e4a9",
+            "text": "@@PREDECESSOR@@"
+          }
+        ]
+      },
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "no_change",
+        "reason_code": "the replacement equals the predecessor",
+        "root_created": false,
+        "candidate_id": null,
+        "staged_files": [],
+        "risks": [
+          "risk:no_change",
+          "risk:not_validation",
+          "risk:predecessor_may_move",
+          "risk:text_only_diff"
+        ]
+      }
+    },
+    {
+      "case": "unsupported_content",
+      "purpose": "A replacement carrying a NUL byte is content this contract will not render as a text diff. The request is readable, so this is a stated state rather than a malformed-request refusal.",
+      "intent": {},
+      "edit": {
+        "operations": [
+          {
+            "op": "replace_file",
+            "path": "pkg/service.py",
+            "expected_sha256": "4972d66bf73cb8dcd3c50827ac51ce27096dae5b7031d00aeb245a01d721e4a9",
+            "text": "VERSION = \"2\"\n\u0000"
+          }
+        ]
+      },
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "unsupported_content",
+        "reason_code": "a bound file is not reviewable UTF-8 text",
+        "root_created": false,
+        "candidate_id": null,
+        "risks": [
+          "risk:not_validation",
+          "risk:predecessor_may_move",
+          "risk:text_only_diff",
+          "risk:unreviewable"
+        ]
+      }
+    },
+    {
+      "case": "unsupported_content_bom",
+      "purpose": "A replacement beginning with a byte-order mark is an encoding marker rather than source a reader wrote, and is reported the same way.",
+      "intent": {},
+      "edit": {
+        "operations": [
+          {
+            "op": "replace_file",
+            "path": "pkg/service.py",
+            "expected_sha256": "4972d66bf73cb8dcd3c50827ac51ce27096dae5b7031d00aeb245a01d721e4a9",
+            "text": "﻿VERSION = \"2\"\n"
+          }
+        ]
+      },
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "unsupported_content",
+        "reason_code": "a bound file is not reviewable UTF-8 text",
+        "root_created": false,
+        "candidate_id": null
+      }
+    },
+    {
+      "case": "oversized_predecessor",
+      "purpose": "A predecessor past the accepted byte bound is refused before anything is read into a diff.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {"MAX_FILE_BYTES": 64},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "oversized",
+        "reason_code": "the request exceeds an accepted size bound",
+        "root_created": false
+      }
+    },
+    {
+      "case": "oversized_diff",
+      "purpose": "A rendered diff past the accepted line bound is refused rather than truncated: half a diff is a wrong review, not a smaller one.",
+      "intent": {},
+      "edit": {
+        "operations": [
+          {
+            "op": "replace_file",
+            "path": "pkg/service.py",
+            "expected_sha256": "@@CURRENT_SHA@@",
+            "text": "VERSION = \"2\"\n\nOTHER = \"2\"\n\nMORE = \"2\"\n"
+          }
+        ]
+      },
+      "repo": {"mutate": {"write": {"path": "pkg/service.py", "text": "VERSION = \"1\"\n\nOTHER = \"1\"\n\nMORE = \"1\"\n"}}},
+      "evidence": "from_repo",
+      "patch": {"MAX_DIFF_LINES": 3},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "oversized",
+        "reason_code": "the request exceeds an accepted size bound",
+        "root_created": false
+      }
+    },
+    {
+      "case": "out_of_scope_target",
+      "purpose": "A path the intent's scope does not name is refused. There is no basename, suffix, order or nearest-match route, and the neighbouring module in the same package is not reached.",
+      "intent": {},
+      "edit": {
+        "operations": [
+          {
+            "op": "replace_file",
+            "path": "pkg/other.py",
+            "expected_sha256": "65262ea0b57f1d09136f28abbeb5a831b213566102166b6db2b7b9156e2cdfd8",
+            "text": "OTHER = \"changed\"\n"
+          }
+        ]
+      },
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the target is not named by the intent scope",
+        "root_created": false
+      }
+    },
+    {
+      "case": "prose_cannot_widen_scope",
+      "purpose": "Prose is data, never authority: an intent whose prose names the neighbouring module authorizes nothing, and the edit that follows the prose is refused.",
+      "intent": {
+        "prose": "please also change pkg/other.py so OTHER reads 'changed'"
+      },
+      "edit": {
+        "operations": [
+          {
+            "op": "replace_file",
+            "path": "pkg/other.py",
+            "expected_sha256": "65262ea0b57f1d09136f28abbeb5a831b213566102166b6db2b7b9156e2cdfd8",
+            "text": "OTHER = \"changed\"\n"
+          }
+        ]
+      },
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the target is not named by the intent scope",
+        "root_created": false
+      }
+    },
+    {
+      "case": "twin_identity_mismatch",
+      "purpose": "The predecessor is pinned by two independent sources. When the Twin's own recorded fingerprint for the bound artifact disagrees with the edit, the build refuses before reading a byte.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": {
+        "mutate": {"zero_artifact_fingerprint": "artifact:file:pkg/service.py"}
+      },
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the edit does not match the Twin's recorded fingerprint",
+        "root_created": false
+      }
+    },
+    {
+      "case": "stale_predecessor",
+      "purpose": "The evidence describes the frozen repository; the working tree has moved on. A build against a drifted tree must refuse rather than edit content nobody bound.",
+      "intent": {},
+      "edit": {},
+      "repo": {"mutate": {"write": {"path": "pkg/service.py", "text": "VERSION = \"9\"\n"}}},
+      "evidence": "from_frozen",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the predecessor does not have the expected content",
+        "root_created": false
+      }
+    },
+    {
+      "case": "predecessor_absent",
+      "purpose": "The path is authorized and bound, but the file is not there.",
+      "intent": {},
+      "edit": {},
+      "repo": {"mutate": {"remove": "pkg/service.py"}},
+      "evidence": "from_frozen",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the predecessor file is absent",
+        "root_created": false
+      }
+    },
+    {
+      "case": "predecessor_symlink",
+      "purpose": "A path that reaches its file through a link names something other than the bytes it appears to contain.",
+      "intent": {},
+      "edit": {},
+      "repo": {"mutate": {"symlink": {"path": "pkg/service.py", "to": "pkg/other.py"}}},
+      "evidence": "from_frozen",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the predecessor is or passes through a symbolic link",
+        "root_created": false
+      }
+    },
+    {
+      "case": "predecessor_hardlink",
+      "purpose": "A second hard link means the bytes have another name; replacing through this one would change a file the intent never named.",
+      "intent": {},
+      "edit": {},
+      "repo": {"mutate": {"hardlink": {"path": "pkg/service.py"}}},
+      "evidence": "from_frozen",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the predecessor has more than one hard link",
+        "root_created": false
+      }
+    },
+    {
+      "case": "predecessor_special_file",
+      "purpose": "A FIFO in place of a regular file is refused on its type, before any read that could block.",
+      "intent": {},
+      "edit": {},
+      "repo": {"mutate": {"fifo": {"path": "pkg/service.py"}}},
+      "evidence": "from_frozen",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the predecessor is not a regular file",
+        "root_created": false
+      }
+    },
+    {
+      "case": "proposal_does_not_authorize",
+      "purpose": "Only a bound proposal authorizes an edit. A scope whose evidence records no fact inside it is no_impact, and an edit changing a file anyway would change facts nobody bound.",
+      "intent": {
+        "scope": {"entities": ["pkg.service.ping"], "artifacts": []},
+        "origin": {
+          "kind": "developer_authored",
+          "evidence": [{"kind": "twin_artifact", "id": "artifact:function:pkg.service.ping"}]
+        }
+      },
+      "edit": {},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the impact proposal does not authorize an edit",
+        "root_created": false
+      }
+    },
+    {
+      "case": "output_inside_repository",
+      "purpose": "The candidate root may only be created outside the accepted repository and its Git metadata.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "output_base": "repository",
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the output base is inside the accepted repository",
+        "root_created": false
+      }
+    },
+    {
+      "case": "output_root_reused",
+      "purpose": "The candidate root is named after the candidate identity, so a second build of the same candidate is refused rather than overwriting the first.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "output_base": "reuse",
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the candidate output root is already in use",
+        "root_created": false
+      }
+    },
+    {
+      "case": "injected_staging_failure",
+      "purpose": "A failure at the final rename leaves no candidate behind and reports a bounded reason.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "inject_failure": "rename",
+      "expect": {
+        "result": "envelope",
+        "state": "refused",
+        "reason_code": "the candidate could not be staged",
+        "root_created": false
+      }
+    },
+    {
+      "case": "edit_not_bound_to_intent",
+      "purpose": "An edit whose declared intent delta is not the supplied one has no coherent meaning, so nothing is described.",
+      "intent": {},
+      "edit": {"override": {"intent_delta_id": "intent:0000000000000000000000000000000000000000000000000000000000000000"}},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "refused",
+        "error": "the edit is not bound to this intent delta"
+      }
+    },
+    {
+      "case": "edit_not_bound_to_proposal",
+      "purpose": "Same for the impact proposal identity.",
+      "intent": {},
+      "edit": {"override": {"proposal_id": "impact:0000000000000000000000000000000000000000000000000000000000000000"}},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "refused",
+        "error": "the edit is not bound to this impact proposal"
+      }
+    },
+    {
+      "case": "edit_binding_fingerprint_mismatch",
+      "purpose": "The binding fingerprint is the whole evidence binding in one identity; an edit that declares a different one is bound to different evidence.",
+      "intent": {},
+      "edit": {"override": {"binding_fingerprint": "bind:0000000000000000000000000000000000000000000000000000000000000000"}},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "refused",
+        "error": "the edit binding fingerprint does not match the proposal"
+      }
+    },
+    {
+      "case": "edit_baseline_mismatch",
+      "purpose": "The edit's declared baseline must be the intent's baseline, field for field.",
+      "intent": {},
+      "edit": {"baseline_override": {"scan_generation": 99}},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "refused",
+        "error": "the edit baseline does not match the intent baseline"
+      }
+    },
+    {
+      "case": "changed_baseline_evidence",
+      "purpose": "A changed Twin baseline invalidates the binding: the proposal the caller holds no longer re-derives from the evidence supplied.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": {"mutate": {"set_baseline_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000"}},
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "refused",
+        "error": "the accepted evidence does not bind to this intent"
+      }
+    },
+    {
+      "case": "changed_scan_generation",
+      "purpose": "A changed scan generation invalidates the binding.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": {"mutate": {"set_scan_generation": 2}},
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "refused",
+        "error": "the accepted evidence does not bind to this intent"
+      }
+    },
+    {
+      "case": "changed_grammar_context",
+      "purpose": "A changed scanner grammar context invalidates the binding: a record the edit would read may never have existed.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": {"mutate": {"set_grammar_version": "0.0"}},
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "refused",
+        "error": "the accepted evidence does not bind to this intent"
+      }
+    },
+    {
+      "case": "changed_workspace",
+      "purpose": "Cross-workspace evidence is refused rather than reinterpreted.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": {"mutate": {"set_workspace_id": "ws:somewhere-else"}},
+      "patch": {},
+      "materialize": true,
+      "expect": {
+        "result": "refused",
+        "error": "the accepted evidence does not bind to this intent"
+      }
+    },
+    {
+      "case": "review_only_creates_nothing",
+      "purpose": "The cancellation path: the whole build runs read-only and reports a ready candidate without creating an output root.",
+      "intent": {},
+      "edit": {},
+      "repo": "fixture",
+      "evidence": "from_repo",
+      "patch": {},
+      "materialize": false,
+      "expect": {
+        "result": "envelope",
+        "state": "candidate_ready",
+        "reason_code": "candidate_materialized",
+        "root_created": false
+      }
+    }
+  ]
+}
