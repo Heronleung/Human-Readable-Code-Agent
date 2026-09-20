@@ -122,6 +122,12 @@ class FakeDocker:
         argv = list(argv)
         if argv[1:2] == ["info"] or argv[1:3] == ["image", "inspect"]:
             return subprocess.CompletedProcess(argv, 0, b"", b"")
+        if argv[1:3] == ["container", "inspect"]:
+            # The timeout reconciliation asks whether the exact container name
+            # still resolves. "No such container" is what lets it conclude; a
+            # double that did not answer would leave the query unknown, which is
+            # deliberately not the same as absent.
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
         if argv[1:2] in (["kill"], ["rm"]):
             # The runner's own timeout path kills and removes the container; a
             # double that did not answer these would hide whether that path ran.

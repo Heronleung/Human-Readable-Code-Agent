@@ -128,7 +128,8 @@ class FakeCandidateDocker:
     """
 
     def __init__(self, artifact=None, digest=None, exit_code=0, raises=None,
-                 error_body=None, image_available=True, digest_readable=True):
+                 error_body=None, image_available=True, digest_readable=True,
+                 container_states=None, daemon_reachable=True):
         self.artifact = artifact
         self.digest = digest or container_runner.RUNNER_IMAGE_DIGEST
         self.exit_code = exit_code
@@ -136,9 +137,20 @@ class FakeCandidateDocker:
         self.error_body = error_body
         self.image_available = image_available
         self.digest_readable = digest_readable
+        # What the reconciliation's ``container inspect`` answers, consumed one
+        # per query; the last value repeats once the list runs out.
+        self.container_states = list(container_states or ["absent"])
+        self.daemon_reachable = daemon_reachable
         self.calls = []
         self.staged_inputs = []
         self.staged_outputs = []
+        self.queried_names = []
+        self.removed_names = []
+
+    def _next_container_state(self) -> str:
+        if len(self.container_states) > 1:
+            return self.container_states.pop(0)
+        return self.container_states[0] if self.container_states else "absent"
 
     def __call__(self, argv, **kwargs):
         argv = list(argv)
@@ -157,7 +169,24 @@ class FakeCandidateDocker:
             return subprocess.CompletedProcess(
                 argv, 0, self.digest.encode() + b"\n", b""
             )
-        if argv[1:2] in (["info"], ["kill"], ["rm"]):
+        if argv[1:3] == ["container", "inspect"]:
+            # The timeout reconciliation asks whether the exact container name
+            # still resolves. The default double answers "no such container",
+            # which is what lets a timeout lifecycle conclude.
+            self.queried_names.append(argv[3] if len(argv) > 3 else None)
+            state = self._next_container_state()
+            return subprocess.CompletedProcess(
+                argv, 0 if state == "present" else 1, b"", b""
+            )
+        if argv[1:2] == ["info"]:
+            # The reconciliation asks the daemon to confirm it is reachable
+            # before an absence may be believed.
+            return subprocess.CompletedProcess(
+                argv, 0 if self.daemon_reachable else 1, b"", b""
+            )
+        if argv[1:2] in (["kill"], ["rm"]):
+            if argv[1:2] == ["rm"]:
+                self.removed_names.append(argv[-1])
             return subprocess.CompletedProcess(argv, 0, b"", b"")
         input_dir = output_dir = None
         for mount in _mounts(argv):

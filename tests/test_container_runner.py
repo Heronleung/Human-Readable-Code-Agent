@@ -10,6 +10,7 @@ collection.
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import shutil
 import subprocess
@@ -161,6 +162,10 @@ class RunTests(unittest.TestCase):
             calls.append(argv)
             if argv[:2] == ["docker", "run"]:
                 raise TimeoutError()
+            if argv[1:3] == ["container", "inspect"]:
+                # No such container: the reconciliation confirms the absence the
+                # token depends on.
+                return _Result(returncode=1)
             return _Result(returncode=0)
 
         runner = container_runner.ContainerRunner(
@@ -173,6 +178,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(error, app_package.STATE_TIMEOUT)
         self.assertTrue(any(a[:2] == ["docker", "kill"] for a in calls))
         self.assertTrue(any(a[:2] == ["docker", "rm"] for a in calls))
+        self.assertTrue(any(a[1:3] == ["container", "inspect"] for a in calls))
 
     def test_nonzero_exit_returns_runner_failed(self):
         def spawn(argv, **kw):
@@ -330,14 +336,36 @@ class _RealClientSpawn:
     constructed to look like one, and not a hand-built ``TimeoutExpired``.
     """
 
-    def __init__(self):
+    def __init__(self, container_states=None):
         self.calls = []
         self.raised = None
+        # What the reconciliation's ``container inspect`` answers, consumed one
+        # per query; the last value repeats. ``absent`` by default, because a
+        # double that did not answer would leave the query unknown — which is
+        # deliberately not the same as absent.
+        self.container_states = list(container_states or ["absent"])
+        self.queried = []
+        self.removed = []
+        self.kills = []
+
+    def _next_state(self):
+        if len(self.container_states) > 1:
+            return self.container_states.pop(0)
+        return self.container_states[0] if self.container_states else "absent"
 
     def __call__(self, argv, **kwargs):
         argv = list(argv)
         self.calls.append(argv)
-        if argv[1:2] in (["info"], ["image"], ["kill"], ["rm"]):
+        if argv[1:3] == ["container", "inspect"]:
+            self.queried.append(argv[-1])
+            return _Result(returncode=0 if self._next_state() == "present" else 1)
+        if argv[1:2] == ["rm"]:
+            self.removed.append(argv[-1])
+            return _Result(returncode=0)
+        if argv[1:2] == ["kill"]:
+            self.kills.append(argv[-1])
+            return _Result(returncode=0)
+        if argv[1:2] in (["info"], ["image"]):
             return _Result(returncode=0)
         try:
             return subprocess.run(
@@ -427,44 +455,140 @@ class RealTimeoutLifecycleTests(unittest.TestCase):
         self.assertFalse(os.path.exists(input_dir))
         self.assertFalse(os.path.exists(output_dir))
 
-    def test_a_kill_failure_is_not_reported_as_a_clean_timeout(self):
+    def _run_with_failure(self, failing_step):
+        """Run once with one client step failing, returning ``(error, spawn)``."""
         spawn = _RealClientSpawn()
         real = spawn.__call__
 
-        def failing_kill(argv, **kwargs):
-            if argv[1:2] == ["kill"]:
+        def failing(argv, **kwargs):
+            if argv[1:2] == [failing_step]:
                 spawn.calls.append(list(argv))
-                raise OSError("kill failed")
-            return real(argv, **kwargs)
-
-        result, error = self._run(failing_kill)
-        self.assertIsNone(result)
-        self.assertEqual(app_package.STATE_RUNNER_FAILED, error)
-        # The removal was still attempted, and the staged roots are still gone.
-        self.assertEqual(1, len(spawn.commands("rm")))
-        input_dir, output_dir = _staged_dirs_from_argv(spawn.commands("run")[0])
-        self.assertFalse(os.path.exists(input_dir))
-        self.assertFalse(os.path.exists(output_dir))
-
-    def test_a_removal_failure_is_not_reported_as_a_clean_timeout(self):
-        spawn = _RealClientSpawn()
-        real = spawn.__call__
-
-        def failing_removal(argv, **kwargs):
-            if argv[1:2] == ["rm"]:
-                spawn.calls.append(list(argv))
-                # A real client timeout on the removal is the same class of
-                # failure as the one this repair is about.
+                if failing_step == "kill":
+                    raise OSError("kill failed")
                 raise subprocess.TimeoutExpired(list(argv), 5.0)
             return real(argv, **kwargs)
 
-        result, error = self._run(failing_removal)
+        result, error = self._run(failing)
+        self.assertIsNone(result)
+        return error, spawn
+
+    def test_a_kill_failure_does_not_by_itself_decide_the_token(self):
+        # The kill raising is not the question any more. The question is whether
+        # the exact container is gone — and here the reconciliation confirms it
+        # is, so the honest answer is still a clean timeout. The old proxy (did
+        # the kill answer?) could not tell "removed" from "never existed".
+        error, spawn = self._run_with_failure("kill")
+        self.assertEqual(app_package.STATE_TIMEOUT, error)
+        # The removal still ran, and the reconciliation still asked.
+        self.assertEqual(1, len(spawn.removed))
+        self.assertTrue(spawn.queried)
+
+    def test_a_removal_failure_does_not_by_itself_decide_the_token(self):
+        error, spawn = self._run_with_failure("rm")
+        self.assertEqual(app_package.STATE_TIMEOUT, error)
+        self.assertEqual(1, len(spawn.commands("kill")))
+
+    def test_a_late_created_container_is_removed_and_confirmed_absent(self):
+        # The race this repair is about: the first query finds it — the daemon
+        # finished creating it after the client died — so it is force-removed by
+        # exactly that name and the next query confirms it is gone.
+        spawn = _RealClientSpawn(container_states=["present", "absent"])
+        result, error = self._run(spawn)
+        self.assertIsNone(result)
+        self.assertEqual(app_package.STATE_TIMEOUT, error)
+        # One query finds it, the next confirms it gone.
+        self.assertEqual(2, len(spawn.queried))
+        # Two removals name it: the initial kill/removal, and the one the
+        # reconciliation issues when the query says it is still there.
+        self.assertEqual(2, len(spawn.removed))
+        self.assertEqual({spawn.queried[0]}, set(spawn.removed))
+
+    def test_only_the_one_product_owned_name_is_ever_touched(self):
+        spawn = _RealClientSpawn(container_states=["present", "present", "absent"])
+        self._run(spawn)
+        touched = set(spawn.queried) | set(spawn.removed) | set(spawn.kills)
+        self.assertEqual(1, len(touched), sorted(touched))
+        name = touched.pop()
+        self.assertTrue(name.startswith("hrca-run-"), name)
+        # Nothing was ever enumerated: every client call is either a daemon
+        # probe, a dispatch, or an operation naming that one container.
+        for argv in spawn.calls:
+            with self.subTest(argv=argv[:3]):
+                self.assertIn(
+                    argv[1],
+                    {"run", "info", "image", "kill", "rm", "container"},
+                )
+                self.assertNotIn("ps", argv)
+                self.assertNotIn("ls", argv)
+
+    def test_the_reconciliation_bounds_are_exact(self):
+        # Present on every query: the loop must stop at the fixed attempt count
+        # rather than spinning, and must ask exactly one more time than it
+        # removes.
+        spawn = _RealClientSpawn(container_states=["present"])
+        self._run(spawn)
+        # One query per attempt, plus the final confirmation.
+        self.assertEqual(container_runner.RECONCILE_ATTEMPTS + 1, len(spawn.queried))
+        # One removal per present round, plus the initial kill/removal.
+        self.assertEqual(container_runner.RECONCILE_ATTEMPTS + 1, len(spawn.removed))
+        self.assertEqual({spawn.queried[0]}, set(spawn.removed))
+
+    def test_the_bounds_are_fixed_constants_not_settings(self):
+        self.assertEqual(5, container_runner.RECONCILE_ATTEMPTS)
+        self.assertEqual(0.25, container_runner.RECONCILE_INTERVAL_SECONDS)
+        self.assertGreater(container_runner.RECONCILE_QUERY_TIMEOUT, 0)
+        self.assertGreater(container_runner.RECONCILE_REMOVE_TIMEOUT, 0)
+
+    def test_no_caller_can_tune_the_reconciliation_bounds(self):
+        # The bounds are module constants. Nothing on the constructor, and
+        # nothing a plan or candidate carries, can reach them.
+        parameters = set(
+            inspect.signature(container_runner.ContainerRunner.__init__).parameters
+        )
+        for forbidden in (
+            "attempts", "reconcile_attempts", "retries", "retry",
+            "interval", "backoff", "deadline", "reconcile", "timeout_seconds",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, parameters)
+        self.assertIn("timeout", parameters)  # the dispatch bound, and only it
+
+    def test_a_container_that_will_not_go_away_is_not_a_clean_timeout(self):
+        # The honest negative: the exact name keeps resolving, so the container
+        # is still there and the token must say so.
+        spawn = _RealClientSpawn(container_states=["present"])
+        result, error = self._run(spawn)
         self.assertIsNone(result)
         self.assertEqual(app_package.STATE_RUNNER_FAILED, error)
-        self.assertEqual(1, len(spawn.commands("kill")))
-        input_dir, output_dir = _staged_dirs_from_argv(spawn.commands("run")[0])
-        self.assertFalse(os.path.exists(input_dir))
-        self.assertFalse(os.path.exists(output_dir))
+        self.assertGreaterEqual(len(spawn.queried), container_runner.RECONCILE_ATTEMPTS)
+
+    def test_an_unanswerable_daemon_is_not_absence(self):
+        spawn = _RealClientSpawn()
+
+        def unreachable(argv, **kwargs):
+            if argv[1:2] == ["info"]:
+                spawn.calls.append(list(argv))
+                return _Result(returncode=1)
+            return spawn(argv, **kwargs)
+
+        result, error = self._run(unreachable)
+        self.assertIsNone(result)
+        self.assertEqual(app_package.STATE_RUNNER_FAILED, error)
+        # It never claimed to know the container was gone.
+        self.assertEqual([], spawn.queried)
+
+    def test_a_real_timeout_during_reconciliation_is_not_absence(self):
+        spawn = _RealClientSpawn()
+
+        def hanging_query(argv, **kwargs):
+            if argv[1:3] == ["container", "inspect"]:
+                spawn.calls.append(list(argv))
+                raise subprocess.TimeoutExpired(list(argv), 2.0)
+            return spawn(argv, **kwargs)
+
+        result, error = self._run(hanging_query)
+        self.assertIsNone(result)
+        self.assertEqual(app_package.STATE_RUNNER_FAILED, error)
 
     def test_a_cleanup_failure_is_not_reported_as_a_clean_timeout(self):
         spawn = _RealClientSpawn()

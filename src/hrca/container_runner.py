@@ -65,13 +65,38 @@ killed or removed, the staged input directory — which holds the staged payload
 was left on disk, and the caller saw an exception instead of a bounded outcome.
 
 A real timeout now runs the whole lifecycle exactly once: the bounded timeout
-token, one kill/removal attempt, one staged-root cleanup. The token reports
-whether that lifecycle *completed*: ``timeout`` when the kill, the removal and
-the cleanup all ran, and ``runner_failed`` when any of them did not, so a
-half-finished cleanup is never reported as a clean timeout. A client that
-answers non-zero without raising counts as answered, because a container that
-has already exited is a benign outcome and this bounded repair cannot tell it
-apart from a refusal.
+token, one kill/removal attempt, one staged-root cleanup. A client that answers
+non-zero without raising counts as answered, because a container that has already
+exited is a benign outcome.
+
+Reconciliation, and why absence is the only proof
+-------------------------------------------------
+
+Killing the docker *client* is not the same as stopping the container. A timeout
+can fire while the daemon is still creating the named container: the kill and the
+removal then run *before it exists*, and it afterwards appears in ``created``
+state — where ``--rm`` never reaps it, because ``--rm`` only removes a container
+that has run. The old lifecycle reported a clean timeout for that, because the
+removal had "answered".
+
+So ``timeout`` no longer rests on what the client said. After the initial
+kill/removal, :meth:`ContainerRunner._reconcile_after_timeout` asks a bounded
+number of times whether **the exact product-owned name** still resolves, and
+force-removes it if it does. ``timeout`` is returned only when the container is
+conclusively absent *and* the staged roots are gone; anything else — a container
+that will not go away, a daemon that cannot be asked, a cleanup that failed — is
+``runner_failed``.
+
+Three rules make that honest rather than optimistic:
+
+* **the daemon is asked to confirm it is reachable before an absence is
+  believed.** A failed query is ``unknown``, never absent;
+* **nothing is enumerated.** Only the one generated name is ever inspected or
+  removed — never a list, never a pattern, never another container;
+* **the bounds are fixed module constants**, not settings: at most
+  :data:`RECONCILE_ATTEMPTS` removal rounds and one more query than that, with
+  fixed waits between them. No caller, plan, candidate or prose value can tune
+  them or reach them.
 """
 
 from __future__ import annotations
@@ -81,6 +106,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -97,6 +123,29 @@ RUNNER_TMPFS = "/tmp:rw,size=16m,mode=1777"
 RUNNER_STOP_TIMEOUT = "2"
 RUNNER_TIMEOUT_SECONDS = 10.0
 RUNNER_MAX_OUTPUT_BYTES = 64 * 1024
+
+# -- timeout reconciliation (P5.5r2) ---------------------------------------
+#
+# A Docker-client timeout can fire while the daemon is still creating the named
+# container. Killing the client at that moment means the kill and the removal run
+# *before the container exists*, and it then appears in ``created`` state — where
+# ``--rm`` never reaps it, because ``--rm`` only removes a container that has
+# run. The container is therefore left behind by a cleanup that reported success.
+#
+# Reconciliation closes that window by asking, a bounded number of times,
+# whether the exact product-owned name still resolves. Nothing is ever listed,
+# matched or removed except that one name.
+RECONCILE_ATTEMPTS = 5
+RECONCILE_INTERVAL_SECONDS = 0.25
+RECONCILE_QUERY_TIMEOUT = 2.0
+RECONCILE_REMOVE_TIMEOUT = 2.0
+
+# The conclusive answers a reconciliation query can give. ``unknown`` is not
+# absence: a daemon that cannot be asked cannot confirm anything, so it must
+# never be read as a successful cleanup.
+STATE_ABSENT = "absent"
+STATE_PRESENT = "present"
+STATE_UNKNOWN = "unknown"
 
 _INPUT_FILENAME = "input.json"
 _OUTPUT_FILENAME = "output.json"
@@ -333,13 +382,14 @@ class ContainerRunner:
             try:
                 proc = self._spawn(argv, capture_output=True, timeout=self._timeout)
             except (TimeoutError, subprocess.TimeoutExpired):
-                killed = self._kill(container_name)
+                reconciled = self._reconcile_after_timeout(container_name)
                 cleaned = self._cleanup(input_dir, output_dir)
-                if killed and cleaned:
+                if reconciled and cleaned:
                     return None, app_package.STATE_TIMEOUT
-                # The timeout fired, but the lifecycle did not finish. Saying
-                # ``timeout`` here would report a clean stop that did not
-                # happen, so the louder existing token is returned instead.
+                # The timeout fired, but the lifecycle did not finish — the
+                # container is still there, or could not be confirmed gone, or
+                # the staged roots survived. Saying ``timeout`` here would
+                # report a clean stop that did not happen.
                 return None, app_package.STATE_RUNNER_FAILED
             except OSError:
                 return None, app_package.STATE_RUNNER_FAILED
@@ -542,9 +592,9 @@ class ContainerRunner:
             try:
                 proc = self._spawn(argv, capture_output=True, timeout=self._timeout)
             except (TimeoutError, subprocess.TimeoutExpired):
-                killed = self._kill(container_name)
+                reconciled = self._reconcile_after_timeout(container_name)
                 cleaned = self._cleanup(input_dir, output_dir)
-                if killed and cleaned:
+                if reconciled and cleaned:
                     return None, app_package.STATE_TIMEOUT
                 return None, app_package.STATE_RUNNER_FAILED
             except OSError:
@@ -617,6 +667,79 @@ class ContainerRunner:
         except (OSError, TimeoutError, subprocess.TimeoutExpired):
             answered = False
         return answered
+
+    def _container_state(self, container_name: str) -> str:
+        """Return ``absent``, ``present`` or ``unknown`` for one exact name.
+
+        Only the name it is given is ever resolved — nothing is listed and no
+        other container is inspected. A query that cannot be answered is
+        ``unknown``: the daemon is asked to confirm it is reachable *first*, so
+        a dead daemon can never be mistaken for a removed container.
+        """
+        docker = self._which("docker") or "docker"
+        try:
+            info = self._spawn(
+                [docker, "info"], capture_output=True, timeout=RECONCILE_QUERY_TIMEOUT
+            )
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
+            return STATE_UNKNOWN
+        if getattr(info, "returncode", 1) != 0:
+            return STATE_UNKNOWN
+        try:
+            inspect = self._spawn(
+                [docker, "container", "inspect", container_name],
+                capture_output=True,
+                timeout=RECONCILE_QUERY_TIMEOUT,
+            )
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
+            return STATE_UNKNOWN
+        # The daemon answered, so a name it does not resolve is genuinely
+        # absent; a name it does resolve is present whatever its status.
+        return STATE_PRESENT if getattr(inspect, "returncode", 1) == 0 else STATE_ABSENT
+
+    def _force_remove(self, container_name: str) -> None:
+        """Force-remove one exact name. Failure is reported by the re-check."""
+        docker = self._which("docker") or "docker"
+        try:
+            self._spawn(
+                [docker, "rm", "-f", container_name],
+                capture_output=True,
+                timeout=RECONCILE_REMOVE_TIMEOUT,
+            )
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
+            pass
+
+    def _reconcile_after_timeout(self, container_name: str) -> bool:
+        """Return ``True`` only when the exact container is conclusively absent.
+
+        One graceful kill/removal first — the fast path, and the only thing that
+        helps when the container already exists — then a bounded reconciliation
+        for the case where the daemon was still creating it when the client
+        died.
+
+        The bounds are fixed and exact: at most ``RECONCILE_ATTEMPTS`` removal
+        rounds, ``RECONCILE_ATTEMPTS + 1`` queries and ``RECONCILE_ATTEMPTS - 1``
+        waits, so the whole reconciliation is bounded by
+        ``(ATTEMPTS - 1) * INTERVAL`` of waiting plus the client call timeouts —
+        no wall-clock deadline is read, and the count is the same on every run.
+
+        ``False`` covers every way this cannot be concluded: the container will
+        not go away, or the daemon cannot be asked. ``unknown`` is never
+        rounded up to success.
+        """
+        self._kill(container_name)
+        for attempt in range(RECONCILE_ATTEMPTS):
+            state = self._container_state(container_name)
+            if state == STATE_ABSENT:
+                return True
+            if state == STATE_UNKNOWN:
+                return False
+            # It appeared — created, running or exited — so remove exactly this
+            # name and ask again.
+            self._force_remove(container_name)
+            if attempt + 1 < RECONCILE_ATTEMPTS:
+                time.sleep(RECONCILE_INTERVAL_SECONDS)
+        return self._container_state(container_name) == STATE_ABSENT
 
     def _cleanup(self, input_dir: str, output_dir: str) -> bool:
         """Remove the two staged roots; return whether both are gone.

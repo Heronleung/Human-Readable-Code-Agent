@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from unittest import mock
 
 from hrca import (
@@ -204,10 +205,20 @@ class LiveCandidateSyntaxTests(unittest.TestCase):
         self.assertIn("did not compile", attempt["limitations"][0])
         self.assertIsNotNone(attempt["artifact"])
 
-    def test_a_real_timeout_runs_the_lifecycle(self):
-        # A bound far below container creation time on purpose: the client is
-        # killed while the create is still in flight, which is the hardest case
-        # this lifecycle can face.
+    def test_a_creation_race_leaves_no_container_without_manual_reaping(self):
+        """The race this repair is about, on the real daemon.
+
+        The bound is far below container creation time on purpose: the client is
+        killed while the create is still in flight, the container then appears in
+        ``created`` state where ``--rm`` never reaps it, and only the bounded
+        exact-name reconciliation can find and remove it.
+
+        Nothing here reaps anything. If production cleanup did not do the work,
+        this test fails — the previous version of it did the reaping itself,
+        which is not a cleanup path.
+        """
+        self.assertEqual([], _residual_containers(), "started with a stray container")
+
         recorder = _Recorder(subprocess.run)
         runner = container_runner.ContainerRunner(spawn=recorder, timeout=0.05)
         result, error = runner.run_candidate(
@@ -216,29 +227,133 @@ class LiveCandidateSyntaxTests(unittest.TestCase):
             expected_digest=container_runner.RUNNER_IMAGE_DIGEST,
         )
         self.assertIsNone(result)
+        # ``timeout`` is only returned once the exact container is conclusively
+        # absent, so this token is itself the absence claim.
         self.assertEqual("timeout", error)
 
-        # The lifecycle really ran against a real client, exactly once.
-        self.assertEqual(1, len([a for a in recorder.calls if a[1:2] == ["kill"]]))
-        self.assertEqual(1, len([a for a in recorder.calls if a[1:2] == ["rm"]]))
+        # ...and it is true: no reaping by the test, just an observation.
+        self.assertEqual([], _residual_containers())
         self.assertEqual([], _staged_leftovers())
 
-        # A bound shorter than container creation can strand a container in the
-        # ``created`` state, which ``--rm`` never reaps: the kill and the removal
-        # ran before the container existed, and the daemon finished creating it
-        # afterwards. That is a documented limit of killing by name after the
-        # client dies, not a hidden one — but a *running* container left behind
-        # would be a different and worse thing, so it is asserted against.
-        for name in _residual_containers():
-            status = subprocess.run(
-                ["docker", "inspect", name, "--format", "{{.State.Status}}"],
+        # Only the one product-owned name was ever named.
+        named = {
+            argv[-1]
+            for argv in recorder.calls
+            if argv[1:2] in (["kill"], ["rm"]) or argv[1:3] == ["container", "inspect"]
+        }
+        self.assertEqual(1, len(named), sorted(named))
+        self.assertTrue(named.pop().startswith("hrca-run-"))
+
+    def test_a_container_in_the_product_name_is_removed_by_the_reconciliation(self):
+        """The late-appearance branch, made deterministic on the real daemon.
+
+        The timing race itself is narrow — the client must die *after* sending
+        the create and *before* the daemon finishes it — so rather than hope it
+        fires, this pins the random part of the product-owned name, puts a real
+        container in exactly that name's place in the ``created`` state the race
+        produces, and disables the initial kill so the **reconciliation is the
+        only thing that can remove it**.
+
+        If the reconciliation did not find and force-remove it, the run could
+        not report ``timeout`` — and a direct query below confirms the container
+        is gone.
+        """
+        fixed = uuid.uuid4().hex
+        name = "hrca-run-" + fixed
+        # A stale container from an earlier failure would make the token
+        # meaningless, so start from a state this test owns.
+        self.assertEqual([], _residual_containers(), "started with a stray container")
+
+        class _Uuid:
+            hex = fixed
+
+        created = subprocess.run(
+            ["docker", "create", "--name", name, container_runner.RUNNER_IMAGE, "true"],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(0, created.returncode, created.stderr)
+        try:
+            recorder = _Recorder(subprocess.run)
+            with mock.patch.object(
+                container_runner.uuid, "uuid4", return_value=_Uuid()
+            ), mock.patch.object(
+                container_runner.ContainerRunner, "_kill", lambda self, name: True
+            ):
+                runner = container_runner.ContainerRunner(spawn=recorder, timeout=0.05)
+                result, error = runner.run_candidate(
+                    candidate_dir=self.root,
+                    declared_files=self.declared,
+                    expected_digest=container_runner.RUNNER_IMAGE_DIGEST,
+                )
+            # ``timeout`` is returned only once the container is conclusively
+            # absent, and the initial kill was disabled — so this token is the
+            # reconciliation's own claim.
+            self.assertIsNone(result)
+            self.assertEqual("timeout", error)
+
+            inspect = subprocess.run(
+                ["docker", "container", "inspect", name],
                 capture_output=True, text=True, timeout=60,
-            ).stdout.strip()
-            self.assertEqual("created", status, "a %r container was left behind" % status)
-            subprocess.run(
-                ["docker", "rm", "-f", name], capture_output=True, text=True, timeout=60
             )
-        self.assertEqual([], _residual_containers())
+            self.assertNotEqual(0, inspect.returncode, "the late container survived")
+            self.assertEqual([], _residual_containers())
+
+            # It asked about, and removed, exactly that name.
+            self.assertIn(name, recorder.calls[-1])
+            named = {
+                argv[-1]
+                for argv in recorder.calls
+                if argv[1:2] == ["rm"] or argv[1:3] == ["container", "inspect"]
+            }
+            self.assertEqual({name}, named)
+        finally:
+            subprocess.run(
+                ["docker", "rm", "-f", name], capture_output=True, timeout=60
+            )
+
+    def test_an_unrelated_container_is_never_touched(self):
+        """A different name, left in the same state the race produces.
+
+        Created from the reviewed image and left in ``created`` state, so it
+        looks as much like the raced container as a bystander can. Nothing the
+        timeout lifecycle does may touch it.
+        """
+        probe = "hrca-unrelated-" + uuid.uuid4().hex
+        created = subprocess.run(
+            ["docker", "create", "--name", probe, container_runner.RUNNER_IMAGE, "true"],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(0, created.returncode, created.stderr)
+        try:
+            recorder = _Recorder(subprocess.run)
+            runner = container_runner.ContainerRunner(spawn=recorder, timeout=0.05)
+            _result, error = runner.run_candidate(
+                candidate_dir=self.root,
+                declared_files=self.declared,
+                expected_digest=container_runner.RUNNER_IMAGE_DIGEST,
+            )
+            self.assertEqual("timeout", error)
+
+            named = {
+                argv[-1]
+                for argv in recorder.calls
+                if argv[1:2] in (["kill"], ["rm"])
+                or argv[1:3] == ["container", "inspect"]
+            }
+            self.assertNotIn(probe, named)
+            self.assertEqual(1, len(named), sorted(named))
+
+            # The bystander is still exactly as it was.
+            inspect = subprocess.run(
+                ["docker", "container", "inspect", probe, "--format", "{{.State.Status}}"],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(0, inspect.returncode)
+            self.assertEqual("created", inspect.stdout.strip())
+        finally:
+            subprocess.run(
+                ["docker", "rm", "-f", probe], capture_output=True, text=True, timeout=60
+            )
 
     def test_a_mismatched_digest_refuses_before_dispatch(self):
         recorder = _Recorder(subprocess.run)

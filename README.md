@@ -1831,15 +1831,38 @@ naming the file and never the source line. An artifact that does not account for
 exactly the declared files — missing one, answering for another, or with counts
 that disagree with its own outcomes — is `unknown`, never passing.
 
-### The one limit worth stating plainly
+### A late-created container is reconciled, not stranded
 
-A timeout bound **shorter than container creation** can strand a container in the
-`created` state. Killing the client mid-create means the kill and the removal run
-before the container exists, and `--rm` only reaps a container that has run. The
-integration suite asserts the residual is `created` and never *running*, and
-reaps it. At the production bound of 10s a container is created in well under a
-second, so this needs a bound far below anything the contract uses — but it is a
-real reachable race if such a bound were ever set.
+Killing the docker *client* is not the same as stopping the container. A timeout
+can fire while the daemon is still creating the named container: the kill and the
+removal then run **before it exists**, and it afterwards appears in `created`
+state — where `--rm` never reaps it, because `--rm` only removes a container that
+has run. The lifecycle used to report a clean timeout for that, because the
+removal had "answered".
+
+`timeout` no longer rests on what the client said. After the initial
+kill/removal, the runner asks a bounded number of times whether **the exact
+product-owned name** still resolves, and force-removes it if it does. `timeout`
+is returned only when the container is conclusively absent *and* the staged roots
+are gone; a container that will not go away, a daemon that cannot be asked, a
+failed removal and a failed staged cleanup all remain `runner_failed`.
+
+Three rules keep that honest:
+
+- **the daemon must confirm it is reachable before an absence is believed** — a
+  failed query is `unknown`, never absent;
+- **nothing is enumerated**: only the one generated name is ever inspected or
+  removed, never a list, a pattern or another container;
+- **the bounds are fixed module constants**, not settings — at most five removal
+  rounds and one more query than that, with fixed waits. No caller, plan,
+  candidate or prose can tune them.
+
+The live integration suite proves it on a real daemon: a bound far below
+container creation time is used deliberately, and the test does **no reaping of
+its own** — if production cleanup did not remove the late container, the test
+fails. A companion live test creates a bystander container from the same image,
+left in the same `created` state under a different name, and asserts the
+lifecycle never touches it.
 
 ## Scope and limitations
 
@@ -1923,5 +1946,7 @@ execution, multi-language support, and automated merges.
   dependencies or correctness. The package checks still exercise only the
   product's own fixed handlers. The candidate path is opt-in, has three mounts
   where the package path has two, and is bound to an immutable image digest that
-  must be re-pinned after every rebuild. A timeout bound shorter than container
-  creation can strand a `created` container that `--rm` never reaps.
+  must be re-pinned after every rebuild. A dispatch timeout returns `timeout`
+  only after the exact product-owned container is conclusively absent and the
+  staged roots are gone; every other outcome — including a daemon that cannot be
+  asked — is `runner_failed`.

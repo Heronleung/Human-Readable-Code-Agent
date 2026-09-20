@@ -106,6 +106,15 @@ execution at scan time.
   removal, the staged-root cleanup and the timeout token (P5.5r1). A real
   timeout must run that lifecycle exactly once, and `timeout` means it
   *completed* — if any substep failed, `runner_failed` is returned instead.
+  Killing the docker *client* is not stopping the container: a timeout can fire
+  while the daemon is still creating it, so the kill and removal run before it
+  exists and it then appears in `created` state, where `--rm` never reaps it
+  (P5.5r2). `timeout` is therefore returned only after
+  `_reconcile_after_timeout` has confirmed the **exact product-owned name** is
+  absent — bounded by the fixed `RECONCILE_*` constants, which no caller, plan
+  or candidate can reach or tune. Only that one name is ever inspected or
+  removed; nothing is enumerated. A failed query is `unknown` and is never
+  rounded up to absence.
   `ContainerRunner.run_candidate` is a **second, separate path** (P5.5a-r2) for
   the candidate check family: exactly three mounts (staged input read-only,
   staged output, and the candidate root's `files` directory read-only at
