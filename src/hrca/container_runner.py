@@ -27,6 +27,27 @@ tests):
 Fail-closed: :meth:`preflight` reports unavailable when the ``docker`` client or
 daemon is absent/unreachable (and blocked when the reviewed image is missing),
 and :meth:`run` never falls back to host Python.
+
+The timeout lifecycle
+---------------------
+
+``subprocess.run(timeout=...)`` raises :class:`subprocess.TimeoutExpired`, which
+is a :class:`subprocess.SubprocessError` and **not** a :class:`TimeoutError`.
+Every bounded client call below therefore catches both names. Catching only
+``TimeoutError`` meant a real timeout escaped each of these handlers, and the
+consequences were not merely a missing state token: :meth:`ContainerRunner._kill`
+and the ``finally`` cleanup were skipped with it, so the container was never
+killed or removed, the staged input directory — which holds the staged payload —
+was left on disk, and the caller saw an exception instead of a bounded outcome.
+
+A real timeout now runs the whole lifecycle exactly once: the bounded timeout
+token, one kill/removal attempt, one staged-root cleanup. The token reports
+whether that lifecycle *completed*: ``timeout`` when the kill, the removal and
+the cleanup all ran, and ``runner_failed`` when any of them did not, so a
+half-finished cleanup is never reported as a clean timeout. A client that
+answers non-zero without raising counts as answered, because a container that
+has already exited is a benign outcome and this bounded repair cannot tell it
+apart from a refusal.
 """
 
 from __future__ import annotations
@@ -111,7 +132,10 @@ class ContainerRunner:
         try:
             info = self._spawn([docker, "info"], capture_output=True, timeout=5.0)
             checks["daemon"] = getattr(info, "returncode", None) == 0
-        except (OSError, TimeoutError):
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
+            # A hanging client is an unreachable daemon, not an exception: a
+            # real ``subprocess.run`` timeout raises ``TimeoutExpired``, which
+            # neither ``OSError`` nor ``TimeoutError`` catches.
             checks["daemon"] = False
         if not checks["daemon"]:
             return {
@@ -126,7 +150,7 @@ class ContainerRunner:
                 timeout=5.0,
             )
             checks["image"] = getattr(inspect, "returncode", None) == 0
-        except (OSError, TimeoutError):
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
             checks["image"] = False
         if not checks["image"]:
             return {
@@ -195,6 +219,11 @@ class ContainerRunner:
         the raw ``result`` mapping from the runner output (validated against the
         package result schema by the broker); ``error`` is a normalized state
         token (timeout / output_invalid / input_invalid / runner_failed).
+
+        ``timeout`` means the whole timeout lifecycle ran: the kill, the removal
+        and the staged-root cleanup. If any of those failed, ``runner_failed`` is
+        returned instead, because reporting ``timeout`` would claim a clean stop
+        that did not happen.
         """
         if not isinstance(handler, str) or not handler:
             return None, app_package.STATE_OUTPUT_INVALID
@@ -202,6 +231,10 @@ class ContainerRunner:
         input_dir = tempfile.mkdtemp(prefix="hrca-in-")
         output_dir = tempfile.mkdtemp(prefix="hrca-out-")
         container_name = "hrca-run-" + uuid.uuid4().hex
+        # ``None`` until the timeout path cleans up and observes the result, so
+        # the ``finally`` below can tell whether the staged roots are still its
+        # to remove. Every path cleans up exactly once.
+        cleaned: Optional[bool] = None
         try:
             self._stage_input(input_dir, handler, input_payload, parameters)
             # The staged input directory must be traversable by the container's
@@ -222,9 +255,15 @@ class ContainerRunner:
             )
             try:
                 proc = self._spawn(argv, capture_output=True, timeout=self._timeout)
-            except TimeoutError:
-                self._kill(container_name)
-                return None, app_package.STATE_TIMEOUT
+            except (TimeoutError, subprocess.TimeoutExpired):
+                killed = self._kill(container_name)
+                cleaned = self._cleanup(input_dir, output_dir)
+                if killed and cleaned:
+                    return None, app_package.STATE_TIMEOUT
+                # The timeout fired, but the lifecycle did not finish. Saying
+                # ``timeout`` here would report a clean stop that did not
+                # happen, so the louder existing token is returned instead.
+                return None, app_package.STATE_RUNNER_FAILED
             except OSError:
                 return None, app_package.STATE_RUNNER_FAILED
 
@@ -241,7 +280,10 @@ class ContainerRunner:
                 return None, app_package.STATE_OUTPUT_INVALID
             return result, None
         finally:
-            self._cleanup(input_dir, output_dir)
+            # The timeout path has already cleaned up and observed the result;
+            # every other path reaches this safety net exactly once.
+            if cleaned is None:
+                self._cleanup(input_dir, output_dir)
 
     # -- helpers ---------------------------------------------------------
 
@@ -276,23 +318,41 @@ class ContainerRunner:
             return None
         return value if isinstance(value, dict) else None
 
-    def _kill(self, container_name: str) -> None:
+    def _kill(self, container_name: str) -> bool:
+        """Attempt the kill and the removal; return whether both were answered.
+
+        A client that raises — including a real ``subprocess.TimeoutExpired``,
+        which ``TimeoutError`` alone does not catch — is a failure, and the
+        caller must not report a clean timeout for it.
+        """
         docker = self._which("docker") or "docker"
+        answered = True
         try:
             self._spawn([docker, "kill", container_name], capture_output=True, timeout=5.0)
-        except (OSError, TimeoutError):
-            pass
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
+            answered = False
         try:
             self._spawn([docker, "rm", "-f", container_name], capture_output=True, timeout=5.0)
-        except (OSError, TimeoutError):
-            pass
+        except (OSError, TimeoutError, subprocess.TimeoutExpired):
+            answered = False
+        return answered
 
-    def _cleanup(self, input_dir: str, output_dir: str) -> None:
+    def _cleanup(self, input_dir: str, output_dir: str) -> bool:
+        """Remove the two staged roots; return whether both are gone.
+
+        Only the two directories this call created are ever passed in — no
+        caller-supplied path reaches here — so a failure leaves an unrelated
+        root entirely alone. A root that is already absent counts as removed,
+        which is what makes a repeated call harmless.
+        """
+        removed = True
         for path in (input_dir, output_dir):
             try:
-                shutil.rmtree(path, ignore_errors=True)
+                if os.path.exists(path):
+                    shutil.rmtree(path)
             except OSError:
-                pass
+                removed = False
+        return removed
 
 
 __all__ = [

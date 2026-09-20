@@ -11,8 +11,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from hrca import app_package, container_runner
 
@@ -32,6 +36,22 @@ def _output_dir_from_argv(argv):
                 if part.startswith("src="):
                     return part[4:]
     return None
+
+
+def _staged_dirs_from_argv(argv):
+    """Return ``(input_dir, output_dir)`` from a ``docker run`` argv."""
+    found = {"/in": None, "/out": None}
+    for index, arg in enumerate(argv):
+        if arg != "--mount" or index + 1 >= len(argv):
+            continue
+        mount = argv[index + 1]
+        for part in mount.split(","):
+            if not part.startswith("src="):
+                continue
+            for destination in found:
+                if f"dst={destination}" in mount:
+                    found[destination] = part[4:]
+    return found["/in"], found["/out"]
 
 
 class CommandConstructionTests(unittest.TestCase):
@@ -292,6 +312,289 @@ class OutputBoundsTests(unittest.TestCase):
     def test_malformed_output_returns_none(self):
         self._write(b"not json")
         self.assertIsNone(self.runner._read_output(self._tmp))
+
+
+# A child that outlasts every bound in this module by a wide margin, so a
+# timeout here is deterministic rather than a race against the bound itself.
+_HANG = "import time; time.sleep(60)"
+
+
+class _RealClientSpawn:
+    """A Docker double whose ``run`` really hangs, so CPython raises for real.
+
+    ``info``/``image``/``kill``/``rm`` are answered immediately; the ``run``
+    call is delegated to the **real** :func:`subprocess.run` on a command that
+    really sleeps, with the runner's own configured timeout. The exception the
+    runner receives is therefore the genuine ``subprocess.TimeoutExpired``
+    produced by CPython's own timeout machinery — not a literal ``TimeoutError``
+    constructed to look like one, and not a hand-built ``TimeoutExpired``.
+    """
+
+    def __init__(self):
+        self.calls = []
+        self.raised = None
+
+    def __call__(self, argv, **kwargs):
+        argv = list(argv)
+        self.calls.append(argv)
+        if argv[1:2] in (["info"], ["image"], ["kill"], ["rm"]):
+            return _Result(returncode=0)
+        try:
+            return subprocess.run(
+                [sys.executable, "-c", _HANG],
+                capture_output=True,
+                timeout=kwargs.get("timeout"),
+            )
+        except subprocess.TimeoutExpired as exc:
+            self.raised = exc
+            raise
+
+    def commands(self, prefix):
+        return [argv for argv in self.calls if argv[1:2] == [prefix]]
+
+
+class RealTimeoutLifecycleTests(unittest.TestCase):
+    """A real ``subprocess.TimeoutExpired`` runs the timeout lifecycle once.
+
+    ``subprocess.run(timeout=...)`` raises ``subprocess.TimeoutExpired``, which
+    is a ``SubprocessError`` and **not** a ``TimeoutError``. Catching only
+    ``TimeoutError`` let a real timeout escape the dispatch handler, and with it
+    the kill, the removal, the staged-root cleanup and the bounded token.
+    """
+
+    def _runner(self, spawn, **overrides):
+        settings = dict(which=lambda name: "docker", spawn=spawn, timeout=0.3)
+        settings.update(overrides)
+        return container_runner.ContainerRunner(**settings)
+
+    def _run(self, spawn):
+        return self._runner(spawn).run(
+            handler="quotation_rules.evaluate", input_payload={"subtotal": "1.00"}
+        )
+
+    def test_the_premise_is_true(self):
+        # The whole defect rests on this, so it is machine-checked rather than
+        # asserted in a comment.
+        self.assertFalse(issubclass(subprocess.TimeoutExpired, TimeoutError))
+        self.assertTrue(issubclass(subprocess.TimeoutExpired, subprocess.SubprocessError))
+
+    def test_a_real_timeout_runs_the_whole_lifecycle_exactly_once(self):
+        spawn = _RealClientSpawn()
+        result, error = self._run(spawn)
+
+        # The exception really was CPython's, and really was a real timeout.
+        self.assertIsNotNone(spawn.raised)
+        self.assertIsInstance(spawn.raised, subprocess.TimeoutExpired)
+        self.assertNotIsInstance(spawn.raised, TimeoutError)
+
+        # One bounded token, and the only passing-looking thing about it is
+        # that it is a timeout: it is not a result.
+        self.assertIsNone(result)
+        self.assertEqual(app_package.STATE_TIMEOUT, error)
+
+        # Exactly one kill and exactly one removal.
+        self.assertEqual(1, len(spawn.commands("kill")))
+        self.assertEqual(1, len(spawn.commands("rm")))
+        run_argv = spawn.commands("run")[0]
+        self.assertEqual("hrca-run-" + run_argv[3].split("hrca-run-", 1)[1],
+                         spawn.commands("kill")[0][2])
+        self.assertEqual(spawn.commands("kill")[0][2], spawn.commands("rm")[0][3])
+
+        # The staged roots the run was handed are gone.
+        input_dir, output_dir = _staged_dirs_from_argv(run_argv)
+        self.assertIsNotNone(input_dir)
+        self.assertIsNotNone(output_dir)
+        self.assertFalse(os.path.exists(input_dir))
+        self.assertFalse(os.path.exists(output_dir))
+
+    def test_the_staged_roots_are_removed_on_a_successful_run_too(self):
+        spawn = _RealClientSpawn()
+        spawn.calls = []
+
+        def answering(argv, **kwargs):
+            argv = list(argv)
+            spawn.calls.append(argv)
+            if argv[1:2] == ["run"]:
+                output_dir = _output_dir_from_argv(argv)
+                with open(os.path.join(output_dir, "output.json"), "w") as fh:
+                    fh.write('{"result": {"total": "1.00"}}')
+            return _Result(returncode=0)
+
+        result, error = self._run(answering)
+        self.assertEqual({"total": "1.00"}, result)
+        self.assertIsNone(error)
+        input_dir, output_dir = _staged_dirs_from_argv(spawn.commands("run")[0])
+        self.assertFalse(os.path.exists(input_dir))
+        self.assertFalse(os.path.exists(output_dir))
+
+    def test_a_kill_failure_is_not_reported_as_a_clean_timeout(self):
+        spawn = _RealClientSpawn()
+        real = spawn.__call__
+
+        def failing_kill(argv, **kwargs):
+            if argv[1:2] == ["kill"]:
+                spawn.calls.append(list(argv))
+                raise OSError("kill failed")
+            return real(argv, **kwargs)
+
+        result, error = self._run(failing_kill)
+        self.assertIsNone(result)
+        self.assertEqual(app_package.STATE_RUNNER_FAILED, error)
+        # The removal was still attempted, and the staged roots are still gone.
+        self.assertEqual(1, len(spawn.commands("rm")))
+        input_dir, output_dir = _staged_dirs_from_argv(spawn.commands("run")[0])
+        self.assertFalse(os.path.exists(input_dir))
+        self.assertFalse(os.path.exists(output_dir))
+
+    def test_a_removal_failure_is_not_reported_as_a_clean_timeout(self):
+        spawn = _RealClientSpawn()
+        real = spawn.__call__
+
+        def failing_removal(argv, **kwargs):
+            if argv[1:2] == ["rm"]:
+                spawn.calls.append(list(argv))
+                # A real client timeout on the removal is the same class of
+                # failure as the one this repair is about.
+                raise subprocess.TimeoutExpired(list(argv), 5.0)
+            return real(argv, **kwargs)
+
+        result, error = self._run(failing_removal)
+        self.assertIsNone(result)
+        self.assertEqual(app_package.STATE_RUNNER_FAILED, error)
+        self.assertEqual(1, len(spawn.commands("kill")))
+        input_dir, output_dir = _staged_dirs_from_argv(spawn.commands("run")[0])
+        self.assertFalse(os.path.exists(input_dir))
+        self.assertFalse(os.path.exists(output_dir))
+
+    def test_a_cleanup_failure_is_not_reported_as_a_clean_timeout(self):
+        spawn = _RealClientSpawn()
+        with mock.patch.object(
+            container_runner.shutil, "rmtree", side_effect=OSError("cleanup failed")
+        ):
+            result, error = self._run(spawn)
+        self.assertIsNone(result)
+        self.assertEqual(app_package.STATE_RUNNER_FAILED, error)
+        # The kill and the removal were still attempted exactly once.
+        self.assertEqual(1, len(spawn.commands("kill")))
+        self.assertEqual(1, len(spawn.commands("rm")))
+        # Clean up what the patched rmtree could not, so the suite leaves
+        # nothing behind.
+        input_dir, output_dir = _staged_dirs_from_argv(spawn.commands("run")[0])
+        for path in (input_dir, output_dir):
+            shutil.rmtree(path, ignore_errors=True)
+
+    def test_cleanup_removes_only_the_roots_it_was_given(self):
+        spawn = _RealClientSpawn()
+        result, error = self._run(spawn)
+        self.assertEqual(app_package.STATE_TIMEOUT, error)
+        input_dir, output_dir = _staged_dirs_from_argv(spawn.commands("run")[0])
+        # A sibling root in the same parent directory is none of its business.
+        sibling = tempfile.mkdtemp(prefix="hrca-unrelated-")
+        try:
+            with open(os.path.join(sibling, "keep.txt"), "w") as fh:
+                fh.write("keep")
+            self.assertFalse(os.path.exists(input_dir))
+            self.assertFalse(os.path.exists(output_dir))
+            self.assertTrue(os.path.isdir(sibling))
+            with open(os.path.join(sibling, "keep.txt")) as fh:
+                self.assertEqual("keep", fh.read())
+        finally:
+            shutil.rmtree(sibling, ignore_errors=True)
+
+    def test_an_injected_literal_timeout_still_returns_the_timeout_token(self):
+        # The coverage that existed before the repair is retained unchanged in
+        # spirit: the shape the runner always handled keeps working.
+        spawn = _RealClientSpawn()
+        real = spawn.__call__
+
+        def literal(argv, **kwargs):
+            if argv[1:2] == ["run"]:
+                spawn.calls.append(list(argv))
+                raise TimeoutError()
+            return real(argv, **kwargs)
+
+        result, error = self._run(literal)
+        self.assertIsNone(result)
+        self.assertEqual(app_package.STATE_TIMEOUT, error)
+        self.assertEqual(1, len(spawn.commands("kill")))
+        self.assertEqual(1, len(spawn.commands("rm")))
+
+    def test_an_ordinary_failure_is_unchanged(self):
+        spawn = _RealClientSpawn()
+
+        def failing(argv, **kwargs):
+            argv = list(argv)
+            spawn.calls.append(argv)
+            if argv[1:2] == ["run"]:
+                return _Result(returncode=1)
+            return _Result(returncode=0)
+
+        result, error = self._run(failing)
+        self.assertIsNone(result)
+        self.assertEqual(app_package.STATE_RUNNER_FAILED, error)
+        # No timeout lifecycle ran, but the staged roots are still cleaned.
+        self.assertEqual([], spawn.commands("kill"))
+        self.assertEqual([], spawn.commands("rm"))
+        input_dir, output_dir = _staged_dirs_from_argv(spawn.commands("run")[0])
+        self.assertFalse(os.path.exists(input_dir))
+        self.assertFalse(os.path.exists(output_dir))
+
+    def test_a_non_timeout_exception_is_unchanged(self):
+        spawn = _RealClientSpawn()
+
+        def exploding(argv, **kwargs):
+            if argv[1:2] == ["run"]:
+                spawn.calls.append(list(argv))
+                raise OSError("client exploded")
+            return _Result(returncode=0)
+
+        result, error = self._run(exploding)
+        self.assertIsNone(result)
+        self.assertEqual(app_package.STATE_RUNNER_FAILED, error)
+        self.assertEqual([], spawn.commands("kill"))
+
+    def test_a_real_timeout_during_preflight_is_unavailable_not_an_exception(self):
+        # The same defect lived in preflight: a hanging client must read as an
+        # unreachable daemon, not as an escaping exception. Preflight bounds its
+        # own calls at 5 seconds rather than using the run timeout, so this case
+        # takes that long — the wait *is* the production bound, and shortening
+        # it here would test a bound the runner does not use.
+        def hanging(argv, **kwargs):
+            return subprocess.run(
+                [sys.executable, "-c", _HANG], capture_output=True,
+                timeout=kwargs.get("timeout"),
+            )
+
+        runner = container_runner.ContainerRunner(
+            which=lambda name: "docker", spawn=hanging, timeout=0.2
+        )
+        preflight = runner.preflight()
+        self.assertIs(False, preflight["available"])
+        self.assertEqual(
+            container_runner.PREFLIGHT_RUNTIME_UNAVAILABLE, preflight["reason"]
+        )
+        self.assertIs(False, preflight["checks"]["daemon"])
+
+    def test_a_real_timeout_during_the_image_inspect_is_blocked(self):
+        def spawn(argv, **kwargs):
+            argv = list(argv)
+            if argv[1:2] == ["info"]:
+                return _Result(returncode=0)
+            return subprocess.run(
+                [sys.executable, "-c", _HANG], capture_output=True,
+                timeout=kwargs.get("timeout"),
+            )
+
+        runner = container_runner.ContainerRunner(
+            which=lambda name: "docker", spawn=spawn, timeout=0.2
+        )
+        preflight = runner.preflight()
+        self.assertIs(False, preflight["available"])
+        self.assertEqual(
+            container_runner.PREFLIGHT_RUNTIME_BLOCKED, preflight["reason"]
+        )
+        self.assertIs(True, preflight["checks"]["daemon"])
+        self.assertIs(False, preflight["checks"]["image"])
 
 
 if __name__ == "__main__":

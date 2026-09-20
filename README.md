@@ -389,7 +389,14 @@ form UI, and run only through an isolated container runner.
   `no-new-privileges`, `--cap-drop ALL`, read-only rootfs, bounded
   CPU/memory/PID/wall-time, staged input only, and validated output collection.
   No host home, credential, repository or Docker socket is ever mounted, and
-  there is no host-Python fallback.
+  there is no host-Python fallback. A wall-time expiry runs its whole cleanup
+  lifecycle exactly once — one kill/removal attempt, one staged-root removal,
+  one bounded token — and the token distinguishes a completed stop (`timeout`)
+  from one whose kill, removal or cleanup failed (`runner_failed`), so a
+  half-finished stop is never reported as a clean one. Note that
+  `subprocess.run(timeout=…)` raises `subprocess.TimeoutExpired`, which is a
+  `SubprocessError` and *not* a `TimeoutError`; catching the latter alone is a
+  silent-failure trap this runner no longer has.
 - **Boundary + Builder tab** (`get_package` / `run_package`). The desktop
   renders the fixed form, runs the named package, and shows bounded results or
   an understandable blocked/failed state. A missing runtime reports
@@ -1715,17 +1722,17 @@ a container double that reproduces the in-image wire contract exactly
 (`packaging/runner/runner_main.py` resolves the handler and writes
 `{"result": ...}` or `{"error": ...}`), and the tests say so.
 
-Reading the runner turned up one pre-existing defect worth stating plainly:
-**`subprocess.TimeoutExpired` is not a `TimeoutError`**, so `container_runner`'s
-`except TimeoutError:` clause never fires on a real timeout. The kill and the
-cleanup are skipped with it, so `docker kill`, `docker rm -f` and the staged
-directory removal do not happen, and the `timeout` token is never returned. This
-contract does not repair the runner — that would be a runner policy change, and
-the isolated runner is not this phase's to alter — so it records `timed_out`
-and says in the limitation that the kill and cleanup did not run. The
-distinction is tested both ways: an injected `TimeoutError` is the shape the
-runner handles (the kill runs), a real `TimeoutExpired` is the shape it does
-not.
+Reading the runner turned up a pre-existing defect, since repaired under
+P5.5r1: **`subprocess.TimeoutExpired` is not a `TimeoutError`**, so
+`container_runner`'s `except TimeoutError:` clauses never fired on a real
+timeout — the kill, the removal, the staged-directory cleanup and the bounded
+token were all skipped with it, in the dispatch path and in both preflight
+calls. The runner now catches both names, and a real timeout runs its whole
+lifecycle exactly once. `timeout` means that lifecycle *completed*; if the
+kill, the removal or the cleanup failed, `runner_failed` is returned instead, so
+a half-finished stop is never reported as a clean one. This contract keeps a
+defensive catch of its own so a future regression is still bounded rather than
+escaping, and both exception spellings are tested through to the same outcome.
 
 ### No approval, no adoption, no application
 
@@ -1820,8 +1827,6 @@ execution, multi-language support, and automated merges.
   `unavailable`; the passing and failing cases are exercised against a container
   double, and no state is invented to cover the gap. Cancellation is cooperative
   and pre-dispatch, since this contract has no way to interrupt a running
-  container. The runner's own timeout path drops the kill and cleanup on a real
-  `TimeoutExpired`, which this contract reports rather than repairs. The
-  evidence store has no retention policy and no signature: it is a local
-  append-only record, and an adversary who can rewrite it can also rewrite the
-  index.
+  container. The evidence store has no retention policy and no signature: it is
+  a local append-only record, and an adversary who can rewrite it can also
+  rewrite the index.

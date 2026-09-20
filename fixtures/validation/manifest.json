@@ -5,7 +5,7 @@
     "The plan and the candidate binding are NOT pinned as literals. They depend on the scanner grammar context, which is the running interpreter's, so a literal would be portable only by accident. What is pinned is the plan's *shape*: the ordered check ids, each check's full record, and the policy version.",
     "The simulated container writes exactly what packaging/runner/runner_main.py writes for the same payload: it resolves the handler through the code-owned registry, calls it as (result, error), and emits {\"result\": ...} or {\"error\": ...} as compact JSON. That is why a simulated pass is a faithful reproduction of the in-image wire contract and not a guess at it.",
     "A 'mode' names how the simulated container behaves for one check: 'ok' writes a valid result, 'nonzero' exits 1, 'garbage' writes unparseable output, 'timeout_injected' raises TimeoutError before writing, 'timeout_real' raises subprocess.TimeoutExpired, which is what subprocess.run(timeout=...) actually raises.",
-    "'timeout_injected' and 'timeout_real' are separate cases on purpose: the accepted runner catches TimeoutError but not TimeoutExpired, so only the injected form reaches its kill-and-cleanup path. Both must be reported as timed_out, and only the real form may carry the limitation that the container was left running.",
+    "'timeout_injected' and 'timeout_real' are separate cases because they exercise two different exception provenances through one lifecycle: a literal TimeoutError, and the genuine subprocess.TimeoutExpired that CPython raises for subprocess.run(timeout=...). Since the P5.5r1 repair both reach the runner's kill, removal, staged-root cleanup and bounded token, so both must report timed_out with the runner's own 'timeout' limitation and no leak.",
     "unavailable is the only outcome reachable on a host with no reachable Docker daemon, which is what this environment reports. It is the honest result, not a skipped test."
   ],
   "policy_version": "1.0.0",
@@ -151,13 +151,13 @@
     },
     {
       "case": "timeout_real",
-      "purpose": "subprocess.TimeoutExpired is not a TimeoutError, so the accepted runner does not catch a real timeout: the kill and cleanup are skipped with it. The contract reports timed_out and says what did not happen.",
+      "purpose": "A genuine subprocess.TimeoutExpired, the exception CPython raises for subprocess.run(timeout=...), follows the runner's timeout lifecycle exactly once: kill, removal, staged-root cleanup and the bounded token.",
       "modes": {"check:late_return_fee": "timeout_real", "check:quotation_alternate": "ok", "check:quotation_reference": "ok"},
       "runtime": "available",
       "expect_state": "timed_out",
       "expect_check_states": ["timed_out", "passed", "passed"],
       "evidence_complete": false,
-      "timeout_cleanup_ran": false
+      "timeout_cleanup_ran": true
     },
     {
       "case": "cancelled_before_dispatch",

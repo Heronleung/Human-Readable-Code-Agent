@@ -379,20 +379,35 @@ class ScenarioTests(_Fixture, unittest.TestCase):
         # the clean one.
         self.assertEqual(["kill", "rm"], docker.kills)
 
-    def test_the_real_timeout_says_the_cleanup_did_not_run(self):
-        # subprocess.TimeoutExpired is not a TimeoutError, so the accepted
-        # runner's `except TimeoutError` does not catch it: the kill and the
-        # cleanup are skipped with it. The contract reports that plainly rather
-        # than reporting a clean timeout it did not get.
+    def test_the_real_timeout_also_reaches_the_runner_s_cleanup(self):
+        # A real subprocess.TimeoutExpired now follows the runner's whole
+        # timeout lifecycle, exactly like the injected TimeoutError does: the
+        # kill and the removal run, the staged roots are cleaned, and the
+        # bounded token is returned. Both spellings therefore reach the same
+        # outcome, which is the point of the repair.
         modes = {check_id: "ok" for check_id in self.corpus["check_order"]}
         modes["check:late_return_fee"] = "timeout_real"
         result, _error, docker = self._run({"modes": modes})
         attempt = result["attempts"][0]
         self.assertEqual("timed_out", attempt["state"])
         self.assertIs(True, attempt["timed_out"])
-        self.assertEqual([], docker.kills)
+        self.assertEqual([app_package.STATE_TIMEOUT], attempt["limitations"])
+        self.assertEqual(["kill", "rm"], docker.kills)
+
+    def test_the_validator_guard_still_reports_a_leaked_timeout(self):
+        # The contract keeps its defensive catch so that a regression in the
+        # runner's own handling is still bounded rather than escaping.
+        modes = {check_id: "ok" for check_id in self.corpus["check_order"]}
+        with mock.patch.object(
+            container_runner.ContainerRunner,
+            "run",
+            side_effect=subprocess.TimeoutExpired(["docker", "run"], 10.0),
+        ):
+            result, _error, _docker = self._run({"modes": modes})
+        self.assertEqual("timed_out", result["state"])
+        attempt = result["attempts"][0]
         self.assertEqual(1, len(attempt["limitations"]))
-        self.assertIn("kill and cleanup did not run", attempt["limitations"][0])
+        self.assertIn("outside its own lifecycle", attempt["limitations"][0])
 
     def test_cancellation_dispatches_nothing(self):
         modes = {check_id: "ok" for check_id in self.corpus["check_order"]}

@@ -485,7 +485,7 @@ class _Recorder:
             # raises ``TimeoutExpired`` and that is *not* a ``TimeoutError``
             # (checked, not assumed). Recording the fact is all this does: the
             # exception is re-raised untouched so the runner still sees exactly
-            # what it saw before.
+            # what it saw before, and runs its own timeout lifecycle for it.
             record["timed_out"] = True
             raise
         record["returncode"] = getattr(proc, "returncode", None)
@@ -621,19 +621,19 @@ def run_check(
             parameters=check["parameters"],
         )
     except subprocess.TimeoutExpired:
-        # A real ``subprocess.run(timeout=...)`` timeout escapes the accepted
-        # runner: its ``except TimeoutError`` clause does not catch
-        # ``TimeoutExpired``, which is not a subclass of ``TimeoutError``. The
-        # consequence is not only a missing state token — ``_kill`` and
-        # ``_cleanup`` are skipped with it, so the container is not killed and
-        # the staged directories are left behind. This contract does not repair
-        # the runner (that would be a runner policy change); it records the
-        # honest outcome and says plainly what did not happen.
+        # A guard, not a path. The accepted runner catches ``TimeoutExpired``
+        # itself and runs its whole timeout lifecycle, so a real timeout arrives
+        # here as the ``timeout`` token rather than as an exception. This branch
+        # exists so that a regression in the runner's own handling still yields a
+        # bounded, non-passing state instead of an escaping exception; reaching
+        # it means the runner leaked a timeout, which is why the limitation says
+        # the lifecycle did not run.
         return _attempt(
             plan, check, ordinal, STATE_TIMED_OUT,
             limitation=(
-                "the runner raised an uncaught timeout: its kill and cleanup did "
-                "not run, so the container and the staged directories may remain"
+                "the runner raised a timeout outside its own lifecycle: its kill "
+                "and cleanup did not run, so the container and the staged "
+                "directories may remain"
             ),
             dispatch=recorder.last_dispatch(),
         )

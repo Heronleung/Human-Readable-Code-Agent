@@ -98,7 +98,14 @@ execution at scan time.
   is the only module here that writes, and only beneath that base. Note the name
   collision with the P4.1 proposal package's `validation_plan` *field*, which is
   a list of check descriptions: this is a separate document with its own
-  `hrca-validation-plan` generator and `plan:` identity.
+  `hrca-validation-plan` generator and `plan:` identity. One runner rule is
+  worth stating where a future change would see it: `subprocess.run(timeout=…)`
+  raises `subprocess.TimeoutExpired`, which is a `SubprocessError` and **not** a
+  `TimeoutError`. Every bounded client call in `container_runner.py` therefore
+  catches both names; catching only `TimeoutError` silently skips the kill, the
+  removal, the staged-root cleanup and the timeout token (P5.5r1). A real
+  timeout must run that lifecycle exactly once, and `timeout` means it
+  *completed* — if any substep failed, `runner_failed` is returned instead.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`, and
   `fixtures/intent/manifest.json` the P5.3 hand-authored intent oracle.
