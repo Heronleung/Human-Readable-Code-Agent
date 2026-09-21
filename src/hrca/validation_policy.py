@@ -104,7 +104,7 @@ CANDIDATE_IMAGE = "hrca-runner:v1"
 # different content, so the tag alone proves nothing; this digest is what a run
 # is required to observe before it dispatches.
 CANDIDATE_IMAGE_DIGEST = (
-    "sha256:0ae0f7f5c31a4378a03f35c158d7c07989bcd3f1fcc64148e914ef363cbf2c48"
+    "sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258"
 )
 
 # The bounded value vocabularies a check may declare. Each is a fixed token from

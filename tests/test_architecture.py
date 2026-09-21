@@ -105,6 +105,15 @@ _MEMORY_PRODUCT_MODULES = (
     "memory_revisions",
 )
 
+# The P5.5a-r3c runner-image setup seam. It is the only code that prepares the
+# container image, it reaches the registry to do it, and it is an operator
+# surface: a client must never import it, and it must not be able to reach a
+# container, a candidate or a provider.
+_SETUP_SEAM = frozenset(
+    {"runner_image_setup", "runner_image_setup_cli", "runner_image_policy"}
+)
+_SETUP_MODULES = ("runner_image_setup", "runner_image_setup_cli", "runner_image_policy")
+
 
 def _imported_top_level_names(path: str) -> set:
     with open(path, "r", encoding="utf-8") as fh:
@@ -384,6 +393,65 @@ class ClientArchitectureTests(unittest.TestCase):
             violations,
             "boundary.py imports a transport at module top level "
             f"(lines {violations}); import it lazily inside a function",
+        )
+
+    def test_client_modules_do_not_import_setup_seam(self):
+        # Preparing the runner image reaches the registry and the Docker client.
+        # The desktop shell must not be able to trigger a rebuild, so it cannot
+        # see the setup adapter, its policy or its CLI.
+        for module, path in _CLIENT_MODULES.items():
+            with self.subTest(module=module):
+                imported = _imported_top_level_names(path)
+                self.assertTrue(
+                    imported.isdisjoint(_SETUP_SEAM),
+                    f"{module} imports the runner-image setup seam: "
+                    f"{sorted(imported & _SETUP_SEAM)}",
+                )
+
+    def test_the_setup_module_cannot_reach_a_container_a_candidate_or_a_provider(self):
+        # The setup prepares an image and observes the host. It must not be able
+        # to run a container, dispatch a plan, touch a candidate or reach a
+        # provider: those are separate authorities with their own modules.
+        forbidden = {
+            "container_runner",
+            "validation",
+            "validation_plan",
+            "validation_policy",
+            "candidate",
+            "candidate_cli",
+            "candidate_diff",
+            "candidate_edit",
+            "provider",
+            "deepseek",
+            "boundary",
+            "client",
+            "verifier",
+        }
+        for name in _SETUP_MODULES:
+            with self.subTest(module=name):
+                imported = _imported_top_level_names(os.path.join(_SRC, name + ".py"))
+                self.assertTrue(
+                    imported.isdisjoint(forbidden),
+                    f"hrca.{name} reaches beyond setup: {sorted(imported & forbidden)}",
+                )
+
+    def test_the_setup_policy_is_pure(self):
+        # The policy decides; it never acts. It may not spawn, read the network
+        # or open a file, and it imports nothing from this package at all.
+        path = os.path.join(_SRC, "runner_image_policy.py")
+        imported = _imported_top_level_names(path)
+        self.assertTrue(
+            imported.isdisjoint({"subprocess", "os", "socket", "http", "urllib"}),
+            f"the setup policy is not pure: {sorted(imported)}",
+        )
+        siblings = {
+            os.path.splitext(entry)[0]
+            for entry in os.listdir(_SRC)
+            if entry.endswith(".py") and entry != "__init__.py"
+        }
+        self.assertTrue(
+            imported.isdisjoint(siblings),
+            f"the setup policy imports from this package: {sorted(imported & siblings)}",
         )
 
     def test_client_modules_exist(self):

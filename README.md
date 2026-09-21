@@ -1796,7 +1796,7 @@ subdirectory of the verified candidate root before it becomes a mount.
 **The image is bound by digest, not by tag.** `hrca-runner:v1` is a mutable tag;
 content can move under it. Before dispatch the runner reads the local image's
 immutable ID and refuses unless it equals the pinned
-`sha256:0ae0f7f5c31a4378a03f35c158d7c07989bcd3f1fcc64148e914ef363cbf2c48`. A
+`sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258`. A
 tag-only, absent or mismatched digest refuses and nothing is dispatched. The
 digest is pinned in code *and* as fixture data, so a rebuild that is not re-pinned
 fails the tests instead of quietly reporting evidence about a different image.
@@ -1813,10 +1813,44 @@ FROM python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1
 
 That is the manifest the previous image was actually built from, so the rebuild
 is the same lineage rather than a base substitution — and the base is now
-immutable and reviewable instead of a tag that can move. The rebuild was run with
-`--pull=false` and **fetched nothing**: `load metadata` completed in `0.0s` from
-the local content store, the base layers and the earlier `COPY` layers were all
-`CACHED`, no layer was transferred, and no registry auth session was established.
+immutable and reviewable instead of a tag that can move.
+
+The rebuild is now a **reviewable path** rather than a recollection:
+`hrca.runner_image_policy` holds the pinned base, the pinned runner digest and
+the decisions that bind them, and `hrca.runner_image_setup` carries the path out
+— resolve the base index to one platform manifest and one config, verify the
+Dockerfile builds from exactly that base, run one bounded `docker build`, and
+read back the resulting identity, OnBuild state and layer lineage.
+
+The boundary it works under is the ordinary coding-agent one: a pinned base,
+anonymous access, and the minimum official registry contact the engine needs.
+Every Docker command runs with `DOCKER_CONFIG` pointing at a fresh empty
+directory and with every credential-bearing ambient variable dropped, so the run
+has no stored auth entry and no credential helper to consult; an ambient helper
+is disclosed as a boolean and never read or named. The record states plainly that
+it is **networked setup evidence**: no destination was captured, the endpoint
+classes are declared from the official client's documented behaviour, and no
+domain list is treated as proof of purpose. See
+[`evidence/p5.5a-r3c/`](evidence/p5.5a-r3c/) for the record and its limits.
+
+The P5.5a-r3c rebuild ran `docker build` from that pinned base. `load metadata`
+took `1.9s` on the first of them — the base manifest was revalidated against the
+registry rather than answered from a local cache — while the build itself needed
+no new content: the `FROM` step re-resolved the pinned digest, the `WORKDIR` and
+the three `COPY` steps were all `CACHED`, no layer was acquired, and the export
+produced a manifest list carrying an attestation manifest.
+
+**What a rebuild does and does not reproduce.** Two rebuilds from that base
+produced the same platform manifest (`sha256:0ba2c00a…`), the same config
+(`sha256:89b3c9d9…`) and the same eight layer `diff_ids`, `Created` stamp,
+`Cmd`, `User`, `WorkingDirectory` and OnBuild state — byte-identical to the
+previously reviewed image. They produced a *different attestation manifest* each
+time, so the tag's immutable identity, which `docker image inspect` reports as an
+index digest, moved on every rebuild: `0ae0f7f5…` → `f6b3752c…` → `0809a47a…`.
+The content is reproducible; that index identity is not. The pin therefore has to
+be re-pinned on every rebuild — which is what the fixture note already requires —
+and the candidate path was deliberately **not** exercised against any of these
+identities.
 
 ### What a passing result does and does not mean
 

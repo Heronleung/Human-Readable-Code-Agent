@@ -164,7 +164,7 @@ _ENTRYPOINT = ["python", "/app/runner_main.py", "/in/input.json", "/out/output.j
 # moved to different content under the same name, which would let a run report
 # evidence about an image nobody reviewed; ``run_candidate`` reads the local
 # image's immutable ID and refuses unless it equals this value exactly.
-RUNNER_IMAGE_DIGEST = "sha256:0ae0f7f5c31a4378a03f35c158d7c07989bcd3f1fcc64148e914ef363cbf2c48"
+RUNNER_IMAGE_DIGEST = "sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258"
 
 # The one fixed in-image location a candidate root is mounted at, read-only.
 _CANDIDATE_DIR = "/candidate"

@@ -1,0 +1,492 @@
+{
+  "base": {
+    "client": {
+      "architecture": "amd64",
+      "builder": "default",
+      "builder_driver": "docker",
+      "buildkit_version": "v0.24.0",
+      "buildx_version": "v0.28.0-desktop.1",
+      "client_version": "28.4.0",
+      "engine_architecture": "amd64",
+      "engine_os": "linux",
+      "server_platform": "Docker Desktop 4.46.0 (204649)",
+      "server_version": "28.4.0"
+    },
+    "config_digest": "sha256:ec7d6c95cd3692a2e2d228a8b1ca74e4025b54121fcc4c5da6f09cfa473315ad",
+    "index_digest": "sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+    "layer_count": 4,
+    "layer_diff_ids": [
+      "sha256:411a86676185cb54d695a805b238194a64e9b77e0c723f3802fbb87d333ea0b3",
+      "sha256:3070bb8623db07ca38569112f9b296043371a00bfb3ee4d9f8f63ddfd2f2efca",
+      "sha256:3d664d274420a79749a26f9e5115b2120d46037264011773ca4c52e22780b2ca",
+      "sha256:24257af4ce5bde01d3c7ebd6d366ec4a298ed27c794bbd6832ef5ce934a66170"
+    ],
+    "onbuild_reason": null,
+    "platform": {
+      "architecture": "amd64",
+      "engine_architecture": "amd64",
+      "os": "linux"
+    },
+    "platform_manifest_digest": "sha256:2fe5997d249a808b8eeea52c58a1dbffbba28754dc11699ef5c029f2d818ce79",
+    "platform_manifest_reference": "docker.io/library/python:3.12-slim@sha256:2fe5997d249a808b8eeea52c58a1dbffbba28754dc11699ef5c029f2d818ce79",
+    "requested_canonical": "docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+    "requested_reference": "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea"
+  },
+  "build": {
+    "acquired_steps": [],
+    "cache_state": "cache_hit",
+    "cached_steps": [
+      "#6 CACHED",
+      "#7 CACHED",
+      "#8 CACHED",
+      "#9 CACHED"
+    ],
+    "context_steps": [
+      "#1 [internal] load build definition from Dockerfile",
+      "#1 transferring dockerfile: 1.33kB 0.0s done",
+      "#3 [internal] load .dockerignore",
+      "#3 transferring context: 2B done",
+      "#4 [internal] load build context",
+      "#4 transferring context: 18.08kB 0.0s done"
+    ],
+    "dispatched": true,
+    "dockerfile": "packaging/runner/Dockerfile",
+    "events": [
+      "#0 building with \"default\" instance using docker driver",
+      "#1 [internal] load build definition from Dockerfile",
+      "#1 transferring dockerfile: 1.33kB 0.0s done",
+      "#1 DONE 0.1s",
+      "#2 [internal] load metadata for docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+      "#2 DONE 1.5s",
+      "#3 [internal] load .dockerignore",
+      "#3 transferring context: 2B done",
+      "#3 DONE 0.0s",
+      "#4 [internal] load build context",
+      "#4 transferring context: 18.08kB 0.0s done",
+      "#4 DONE 0.1s",
+      "#5 [1/5] FROM docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+      "#5 resolve docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea 0.0s done",
+      "#5 DONE 0.1s",
+      "#6 [3/5] COPY src/hrca/runtime_handlers.py /app/runtime_handlers.py",
+      "#6 CACHED",
+      "#7 [4/5] COPY packaging/runner/runner_main.py /app/runner_main.py",
+      "#7 CACHED",
+      "#8 [2/5] WORKDIR /app",
+      "#8 CACHED",
+      "#9 [5/5] COPY packaging/runner/runner_syntax.py /app/runner_syntax.py",
+      "#9 CACHED",
+      "#10 exporting to image",
+      "#10 exporting layers done",
+      "#10 exporting manifest sha256:0ba2c00a7ae4d9a97eca78f93d2fd0eec6967e09c2dc3b381a0c62e778860121 done",
+      "#10 exporting config sha256:89b3c9d9950a475e6f7f9ec0cd0b84a203ae67646c88b75b8306c3828008fd0c done",
+      "#10 exporting attestation manifest sha256:15407aadddead6cbd55e72a14676b9e9341e28b0f9a1f245f7c54da1c7a9656b 0.0s done",
+      "#10 exporting manifest list sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258",
+      "#10 exporting manifest list sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258 0.0s done",
+      "#10 naming to docker.io/library/hrca-runner:v1 done",
+      "#10 unpacking to docker.io/library/hrca-runner:v1 0.0s done",
+      "#10 DONE 0.2s"
+    ],
+    "exit_status": 0,
+    "hosts_named_in_output": [
+      "docker.io"
+    ],
+    "log_lines": 33,
+    "reference": "hrca-runner:v1",
+    "resolution_steps": [
+      "#2 [internal] load metadata for docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+      "#5 resolve docker.io/library/python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea 0.0s done"
+    ],
+    "succeeded": true
+  },
+  "claim": {
+    "adopted": false,
+    "applied": false,
+    "approved": false,
+    "attempt_created": false,
+    "candidate_executed": false,
+    "candidate_mounted": false,
+    "candidate_validation_success": false,
+    "exact_purpose_proof": false,
+    "networked_setup_evidence": true,
+    "plan_created": false,
+    "remote_pushed": false,
+    "result_created": false,
+    "source_modified": false,
+    "zero_egress_proof": false
+  },
+  "contact": {
+    "declared_endpoint_classes": [
+      "the Docker Hub registry manifest API for the pinned base index, its platform manifest and its config blob",
+      "the Docker Hub token endpoint the official client uses to obtain an anonymous pull token",
+      "the Docker Hub content endpoints that serve manifest and blob bytes, including the redirect target the registry names for blob delivery"
+    ],
+    "dispatched_operations": [
+      "build",
+      "buildx imagetools inspect",
+      "buildx ls",
+      "buildx version",
+      "image inspect",
+      "images",
+      "ps",
+      "version"
+    ],
+    "host_names_observed": true,
+    "hosts_named_in_build_output": [
+      "docker.io"
+    ],
+    "observed_classes": [
+      "base index manifest resolution",
+      "base platform manifest resolution",
+      "base image config resolution",
+      "base layer cache lookup at build time"
+    ],
+    "unexpected_hits": [],
+    "unobserved": [
+      "request destinations, ports, paths, query strings and payloads",
+      "whether any request carried a token, and whether the client consulted a credential helper",
+      "which declared endpoint class served any individual artifact",
+      "whether the engine also contacted an endpoint outside the declared classes"
+    ]
+  },
+  "credentials": {
+    "ambient_configs": [
+      {
+        "auths_entries": 1,
+        "credential_keys_present": [
+          "auths",
+          "credsStore"
+        ],
+        "creds_helpers_configured": false,
+        "creds_store_configured": true,
+        "path": "/home/heron/.docker/config.json",
+        "present": true,
+        "readable": true
+      }
+    ],
+    "client_config_isolation": {
+      "isolated": true,
+      "isolated_directory_empty_at_creation": true,
+      "variable": "DOCKER_CONFIG"
+    },
+    "credential_env_names_dropped_unconditionally": [
+      "DOCKER_AUTH_CONFIG",
+      "DOCKER_PASSWORD",
+      "DOCKER_PAT",
+      "DOCKER_TOKEN",
+      "DOCKER_USERNAME",
+      "REGISTRY_AUTH_FILE",
+      "REGISTRY_PASSWORD",
+      "REGISTRY_USERNAME"
+    ],
+    "credential_env_present_in_ambient_environment": [],
+    "credential_env_removed_from_child_environment": [],
+    "effective_for_the_run": {
+      "ambient_client_config_used": false,
+      "auth_entries_available": 0,
+      "credential_helper_available": false
+    },
+    "isolated_config": {
+      "auths_entries": 0,
+      "credential_keys_present": [],
+      "creds_helpers_configured": false,
+      "creds_store_configured": false,
+      "empty_at_creation": true,
+      "present": false,
+      "readable": false,
+      "role": "the empty client configuration directory this setup created"
+    },
+    "limitations": [
+      "a credential helper configured in the ambient client configuration is disclosed as a boolean and is never read, invoked or named here",
+      "the ambient configurations checked are the ones this process can compute from DOCKER_CONFIG and the home directory; a client configuration outside those paths is not visible to it",
+      "the *contents* of a stored auth entry are never read, so the count of entries is all this record states about them"
+    ],
+    "login_dispatched": false
+  },
+  "dockerfile": {
+    "builds_from_pinned_base": true,
+    "path": "packaging/runner/Dockerfile",
+    "reason": null
+  },
+  "image": {
+    "created": "2026-09-20T12:51:51.33647605Z",
+    "digest": "sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258",
+    "layer_diff_ids": [
+      "sha256:411a86676185cb54d695a805b238194a64e9b77e0c723f3802fbb87d333ea0b3",
+      "sha256:3070bb8623db07ca38569112f9b296043371a00bfb3ee4d9f8f63ddfd2f2efca",
+      "sha256:3d664d274420a79749a26f9e5115b2120d46037264011773ca4c52e22780b2ca",
+      "sha256:24257af4ce5bde01d3c7ebd6d366ec4a298ed27c794bbd6832ef5ce934a66170",
+      "sha256:b2a062a9091ab17df49e9fade2ec5a0f7e9853ee9af12c3adf272c3d05e3f3a4",
+      "sha256:f901d2bfb5c4a929fa43f9e0c1ae15699e220cbc18b22bc0c82548896566a4c3",
+      "sha256:355729319100bd6d65a0d8b627ae4291c5f916060fa5926ebe29d57b3f244235",
+      "sha256:3ba4a7f44908506328dd473d06b48505d20d39ef0f32ae32e9765e0c36543072"
+    ],
+    "matches_pinned": false,
+    "onbuild_reason": null,
+    "pinned_digest": "sha256:f6b3752c53fa5261bbcf5121684767275a15d2a2286d47393f01ace8e8780f9f",
+    "reference": "hrca-runner:v1",
+    "repository_tags": [
+      "hrca-runner:v1"
+    ],
+    "user": "65534:65534",
+    "working_dir": "/app"
+  },
+  "limitations": [
+    "this is networked setup evidence: the build reached the official registry over the network, and nothing here is a zero-egress proof",
+    "the endpoint classes are declared from the official client's documented behaviour; no destination was observed, so they do not prove the purpose of any request",
+    "the docker client on this host is a Windows binary and the daemon and BuildKit run in the Docker Desktop VM, so client-side and daemon-side traffic are outside this setup's observation",
+    "the credential-free property is constructed rather than merely observed: every command runs with DOCKER_CONFIG pointing at a fresh empty directory, so the client has no stored auth entry and no credential helper configured for the run",
+    "a credential helper configured in the ambient client configuration is disclosed as a boolean and is never read, invoked or named by this setup",
+    "the client configuration checked for credentials is the one this process can compute from DOCKER_CONFIG or the home directory; a platform-specific client configuration outside that path is not visible to it",
+    "no candidate was mounted, executed or validated: preparing an image is not a validation result, and this setup creates no plan, attempt or result",
+    "a rebuild may produce a different image digest than the pinned one; until the pin is updated the artifact is not ready, and readiness says so rather than re-pinning itself",
+    "the record is deterministic for one environment, not across environments: fields that describe the environment \u2014 a client configuration path, Git's view of the working tree \u2014 differ when the environment does",
+    "the builder's own cache is not an image and does not appear in the image list, so a change to it is outside what these before/after observations cover"
+  ],
+  "non_mutation": {
+    "after": {
+      "candidate_roots": {
+        "candidate_fixtures": {
+          "digest": "sha256:9e98e246c5b72b819f3e593ec55455921c2d62ea678ea0be0b1566fe720fcbfa",
+          "files": 4,
+          "state": "digested",
+          "truncated": false
+        }
+      },
+      "containers": [
+        "987756aea1a0e2f65441dac2f7c3e67ffee73294757673d76efe9f0b8b365780|rag-control-plane|kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5",
+        "aaeda25405f0ff36c5fff5442293ca9810497d3ba6c1cd0ab7e40267a40b9a03|rag-milvus-etcd|quay.io/coreos/etcd:v3.5.14",
+        "b0ce91618146898bc5bb12ed0747fa61260f4e31ff36444882b2aaea3bbab45b|rag-app-web-1|sha256:8ef6d455264d13294e2e3da4159c2ff8c4aea2801eebda78be48ea4f0804a90b",
+        "b7ec02e1aa275d44d718209f85adae898f104d1a9490d8b45c89688bbdaffd14|rag-app-api-1|sha256:8380e9964d418771c25041abd607f485ccc1e11c624fbe7efe84e75c8f3be7c8",
+        "c2f939e558285d497954c9c9c6bf0de1f9043e75be8bbbe26653bea795bb8c16|rag-ollama|ollama/ollama:latest",
+        "ce70ca7b7654fd2c8667759e28e8f47c26f5f25762bc0d2625d12b8b34ac1435|rag-milvus-standalone|milvusdb/milvus:v2.4.9",
+        "dbd3eb9bef1010789c6cdb0f26034823233d8b167217664d692f4015340a063d|rag-milvus-minio|minio/minio:RELEASE.2023-03-20T20-16-18Z",
+        "e58215d58a22e5955590241a92c1be02101827a5e7a570fa5d21381fd57c3bbf|mongo|mongo:8"
+      ],
+      "git_diff_stat": [
+        " 5 files changed, 106 insertions(+), 10 deletions(-)",
+        " README.md                         | 38 +++++++++++++++++++---",
+        " fixtures/validation/manifest.json |  6 ++--",
+        " src/hrca/container_runner.py      |  2 +-",
+        " src/hrca/validation_policy.py     |  2 +-",
+        " tests/test_architecture.py        | 68 +++++++++++++++++++++++++++++++++++++++"
+      ],
+      "git_head": "38e6c5282c70aae0e7938a5aec3752cdd4ecdf33",
+      "git_status": [
+        " M README.md",
+        " M fixtures/validation/manifest.json",
+        " M src/hrca/container_runner.py",
+        " M src/hrca/validation_policy.py",
+        " M tests/test_architecture.py",
+        "?? evidence/p5.5a-r3c/",
+        "?? hrca-df8baf7.bundle",
+        "?? src/hrca/runner_image_policy.py",
+        "?? src/hrca/runner_image_setup.py",
+        "?? src/hrca/runner_image_setup_cli.py",
+        "?? tests/test_runner_image_policy.py",
+        "?? tests/test_runner_image_setup.py"
+      ],
+      "images": [
+        "sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258|hrca-runner:v1",
+        "sha256:115d77efe6e256cefbcdf1d3292bede9339ef3952a2a83393cea217a3ffdef36|docker/desktop-storage-provisioner:v2.0",
+        "sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5|kindest/node:<none>",
+        "sha256:399aa50f4d1361c59dc458e634506d02de32613d03a9a614a21058741162ef90|registry.k8s.io/kube-controller-manager:v1.32.2",
+        "sha256:3a351b2870dc1174ca18991101a4bcad1fc3ebae26f823d7700601103d9903cd|container-lab:local",
+        "sha256:3a351b2870dc1174ca18991101a4bcad1fc3ebae26f823d7700601103d9903cd|heronleung/container-lab:1",
+        "sha256:42106a001d1be7fd22e48830071ceae0fe760ff2c5df8c76c0e3b586d8a1f0fc|quay.io/coreos/etcd:v3.5.14",
+        "sha256:45710d74cfd5aa10a001d0cf81747b77c28617444ffee0503d12f1dcd7450f76|registry.k8s.io/kube-scheduler:v1.32.2",
+        "sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131|ollama/ollama:latest",
+        "sha256:55b6b8042c06c7a188c503c258cb6e61b5cd307a4297d41da02021084dbdac08|hello-world:1",
+        "sha256:5f243e473f228c1e81e55c42ecba81c23ed6161c871fb0f35314e02361e52a4e|rag-api:phase6-48250fd23375",
+        "sha256:63c1cb08f081a91f70baa086757af5aada1985e75ab6be42d6bdec9612d41341|rag-web:phase6-48250fd23375",
+        "sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d|nginx:1.27",
+        "sha256:6d770d7f255cda1f18d841ffc4365cb7e0d237f6af6a15fcdb587480cd7c3b93|minio/minio:RELEASE.2023-03-20T20-16-18Z",
+        "sha256:7ecf567ea07095f9af6ce2004055d4d37e4ee3bc19b553cce2f6c37ee9b916bf|docker/desktop-vpnkit-controller:dc331cb22850be0cdd97c84a9cfecaf44a1afb6e",
+        "sha256:7f4da0fc94bcece205a8c0b6f4d11c8196924654ffe5c4d1aa439b7f632048b2|hello-world:latest",
+        "sha256:83c025f0faa6799fab6645102a98138e39a9a7db2be3bc792c79d72659b1805d|registry.k8s.io/kube-proxy:v1.32.2",
+        "sha256:90bf64ec238b88908389694b5ace00e5c17ea5d4a0af812dd266d7cfcd40984f|docker.n8n.io/n8nio/n8n:latest",
+        "sha256:9caabbf6238b189a65d0d6e6ac138de60d6a1c419e5a341fbbb7c78382559c6e|registry.k8s.io/coredns/coredns:v1.11.3",
+        "sha256:ab599c8ef70f92bd8ae2b743a5830bd677076c66eedc494e81c0e0e5011aee67|milvusdb/milvus:v2.4.9",
+        "sha256:b4ae72b0f03f309705d718eb3e76209b318a18a9f11c0e809c82982f50fcc492|atctam/c3230-25-ubuntu:latest",
+        "sha256:c47449f3e751588ea0cb74e325e0f83db335a415f4f4c7fb147375dd6c84757f|registry.k8s.io/kube-apiserver:v1.32.2",
+        "sha256:c4d56c24da4f009ecf8352146b43497fe78953edb4c679b841732beb97e588b0|docker/welcome-to-docker:latest",
+        "sha256:c6a9d11cc5c04b114ccdef39a9265eeef818e3d02f5359be035ae784097fdec5|registry.k8s.io/etcd:3.5.16-0",
+        "sha256:d0db7d8dcc45c8cf3c088a646b76447794403f62188c310ac887469d945c73a2|rag-web:dev",
+        "sha256:d4b1f87142d66830b9e3a2680ea9076ad4357cc601239fbf33f5f591b9e3feb3|rag-api:dev",
+        "sha256:e0ce8c35124d4a9f9785532d1f268f39e9728ffa1cb38f46fa482436424c4bd3|mongo:8",
+        "sha256:ec810187599a66e9c5daa6646b710b4c35b3e50b8a69b9d6c85960b2d049ed60|rag-web:phase6-005ff45e5faa",
+        "sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a|registry.k8s.io/pause:3.10",
+        "sha256:f2597de57cc3cdfed703ea14a2c93fb055ba094df5d13885f4c91c303be8e32e|rag-api:phase6-005ff45e5faa",
+        "sha256:fdd1722efdccb82bdc2d86109a9790f606bfc1a51149d8e1af225aa55265cefb|docker/desktop-kubernetes:kubernetes-v1.32.2-cni-v1.6.0-critools-v1.31.1-cri-dockerd-v0.3.16-1-debian"
+      ],
+      "images_excluding_runner": [
+        "sha256:115d77efe6e256cefbcdf1d3292bede9339ef3952a2a83393cea217a3ffdef36|docker/desktop-storage-provisioner:v2.0",
+        "sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5|kindest/node:<none>",
+        "sha256:399aa50f4d1361c59dc458e634506d02de32613d03a9a614a21058741162ef90|registry.k8s.io/kube-controller-manager:v1.32.2",
+        "sha256:3a351b2870dc1174ca18991101a4bcad1fc3ebae26f823d7700601103d9903cd|container-lab:local",
+        "sha256:3a351b2870dc1174ca18991101a4bcad1fc3ebae26f823d7700601103d9903cd|heronleung/container-lab:1",
+        "sha256:42106a001d1be7fd22e48830071ceae0fe760ff2c5df8c76c0e3b586d8a1f0fc|quay.io/coreos/etcd:v3.5.14",
+        "sha256:45710d74cfd5aa10a001d0cf81747b77c28617444ffee0503d12f1dcd7450f76|registry.k8s.io/kube-scheduler:v1.32.2",
+        "sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131|ollama/ollama:latest",
+        "sha256:55b6b8042c06c7a188c503c258cb6e61b5cd307a4297d41da02021084dbdac08|hello-world:1",
+        "sha256:5f243e473f228c1e81e55c42ecba81c23ed6161c871fb0f35314e02361e52a4e|rag-api:phase6-48250fd23375",
+        "sha256:63c1cb08f081a91f70baa086757af5aada1985e75ab6be42d6bdec9612d41341|rag-web:phase6-48250fd23375",
+        "sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d|nginx:1.27",
+        "sha256:6d770d7f255cda1f18d841ffc4365cb7e0d237f6af6a15fcdb587480cd7c3b93|minio/minio:RELEASE.2023-03-20T20-16-18Z",
+        "sha256:7ecf567ea07095f9af6ce2004055d4d37e4ee3bc19b553cce2f6c37ee9b916bf|docker/desktop-vpnkit-controller:dc331cb22850be0cdd97c84a9cfecaf44a1afb6e",
+        "sha256:7f4da0fc94bcece205a8c0b6f4d11c8196924654ffe5c4d1aa439b7f632048b2|hello-world:latest",
+        "sha256:83c025f0faa6799fab6645102a98138e39a9a7db2be3bc792c79d72659b1805d|registry.k8s.io/kube-proxy:v1.32.2",
+        "sha256:90bf64ec238b88908389694b5ace00e5c17ea5d4a0af812dd266d7cfcd40984f|docker.n8n.io/n8nio/n8n:latest",
+        "sha256:9caabbf6238b189a65d0d6e6ac138de60d6a1c419e5a341fbbb7c78382559c6e|registry.k8s.io/coredns/coredns:v1.11.3",
+        "sha256:ab599c8ef70f92bd8ae2b743a5830bd677076c66eedc494e81c0e0e5011aee67|milvusdb/milvus:v2.4.9",
+        "sha256:b4ae72b0f03f309705d718eb3e76209b318a18a9f11c0e809c82982f50fcc492|atctam/c3230-25-ubuntu:latest",
+        "sha256:c47449f3e751588ea0cb74e325e0f83db335a415f4f4c7fb147375dd6c84757f|registry.k8s.io/kube-apiserver:v1.32.2",
+        "sha256:c4d56c24da4f009ecf8352146b43497fe78953edb4c679b841732beb97e588b0|docker/welcome-to-docker:latest",
+        "sha256:c6a9d11cc5c04b114ccdef39a9265eeef818e3d02f5359be035ae784097fdec5|registry.k8s.io/etcd:3.5.16-0",
+        "sha256:d0db7d8dcc45c8cf3c088a646b76447794403f62188c310ac887469d945c73a2|rag-web:dev",
+        "sha256:d4b1f87142d66830b9e3a2680ea9076ad4357cc601239fbf33f5f591b9e3feb3|rag-api:dev",
+        "sha256:e0ce8c35124d4a9f9785532d1f268f39e9728ffa1cb38f46fa482436424c4bd3|mongo:8",
+        "sha256:ec810187599a66e9c5daa6646b710b4c35b3e50b8a69b9d6c85960b2d049ed60|rag-web:phase6-005ff45e5faa",
+        "sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a|registry.k8s.io/pause:3.10",
+        "sha256:f2597de57cc3cdfed703ea14a2c93fb055ba094df5d13885f4c91c303be8e32e|rag-api:phase6-005ff45e5faa",
+        "sha256:fdd1722efdccb82bdc2d86109a9790f606bfc1a51149d8e1af225aa55265cefb|docker/desktop-kubernetes:kubernetes-v1.32.2-cni-v1.6.0-critools-v1.31.1-cri-dockerd-v0.3.16-1-debian"
+      ],
+      "readable": true
+    },
+    "all_unchanged": true,
+    "before": {
+      "candidate_roots": {
+        "candidate_fixtures": {
+          "digest": "sha256:9e98e246c5b72b819f3e593ec55455921c2d62ea678ea0be0b1566fe720fcbfa",
+          "files": 4,
+          "state": "digested",
+          "truncated": false
+        }
+      },
+      "containers": [
+        "987756aea1a0e2f65441dac2f7c3e67ffee73294757673d76efe9f0b8b365780|rag-control-plane|kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5",
+        "aaeda25405f0ff36c5fff5442293ca9810497d3ba6c1cd0ab7e40267a40b9a03|rag-milvus-etcd|quay.io/coreos/etcd:v3.5.14",
+        "b0ce91618146898bc5bb12ed0747fa61260f4e31ff36444882b2aaea3bbab45b|rag-app-web-1|sha256:8ef6d455264d13294e2e3da4159c2ff8c4aea2801eebda78be48ea4f0804a90b",
+        "b7ec02e1aa275d44d718209f85adae898f104d1a9490d8b45c89688bbdaffd14|rag-app-api-1|sha256:8380e9964d418771c25041abd607f485ccc1e11c624fbe7efe84e75c8f3be7c8",
+        "c2f939e558285d497954c9c9c6bf0de1f9043e75be8bbbe26653bea795bb8c16|rag-ollama|ollama/ollama:latest",
+        "ce70ca7b7654fd2c8667759e28e8f47c26f5f25762bc0d2625d12b8b34ac1435|rag-milvus-standalone|milvusdb/milvus:v2.4.9",
+        "dbd3eb9bef1010789c6cdb0f26034823233d8b167217664d692f4015340a063d|rag-milvus-minio|minio/minio:RELEASE.2023-03-20T20-16-18Z",
+        "e58215d58a22e5955590241a92c1be02101827a5e7a570fa5d21381fd57c3bbf|mongo|mongo:8"
+      ],
+      "git_diff_stat": [
+        " 5 files changed, 106 insertions(+), 10 deletions(-)",
+        " README.md                         | 38 +++++++++++++++++++---",
+        " fixtures/validation/manifest.json |  6 ++--",
+        " src/hrca/container_runner.py      |  2 +-",
+        " src/hrca/validation_policy.py     |  2 +-",
+        " tests/test_architecture.py        | 68 +++++++++++++++++++++++++++++++++++++++"
+      ],
+      "git_head": "38e6c5282c70aae0e7938a5aec3752cdd4ecdf33",
+      "git_status": [
+        " M README.md",
+        " M fixtures/validation/manifest.json",
+        " M src/hrca/container_runner.py",
+        " M src/hrca/validation_policy.py",
+        " M tests/test_architecture.py",
+        "?? evidence/p5.5a-r3c/",
+        "?? hrca-df8baf7.bundle",
+        "?? src/hrca/runner_image_policy.py",
+        "?? src/hrca/runner_image_setup.py",
+        "?? src/hrca/runner_image_setup_cli.py",
+        "?? tests/test_runner_image_policy.py",
+        "?? tests/test_runner_image_setup.py"
+      ],
+      "images": [
+        "sha256:115d77efe6e256cefbcdf1d3292bede9339ef3952a2a83393cea217a3ffdef36|docker/desktop-storage-provisioner:v2.0",
+        "sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5|kindest/node:<none>",
+        "sha256:399aa50f4d1361c59dc458e634506d02de32613d03a9a614a21058741162ef90|registry.k8s.io/kube-controller-manager:v1.32.2",
+        "sha256:3a351b2870dc1174ca18991101a4bcad1fc3ebae26f823d7700601103d9903cd|container-lab:local",
+        "sha256:3a351b2870dc1174ca18991101a4bcad1fc3ebae26f823d7700601103d9903cd|heronleung/container-lab:1",
+        "sha256:42106a001d1be7fd22e48830071ceae0fe760ff2c5df8c76c0e3b586d8a1f0fc|quay.io/coreos/etcd:v3.5.14",
+        "sha256:45710d74cfd5aa10a001d0cf81747b77c28617444ffee0503d12f1dcd7450f76|registry.k8s.io/kube-scheduler:v1.32.2",
+        "sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131|ollama/ollama:latest",
+        "sha256:55b6b8042c06c7a188c503c258cb6e61b5cd307a4297d41da02021084dbdac08|hello-world:1",
+        "sha256:5f243e473f228c1e81e55c42ecba81c23ed6161c871fb0f35314e02361e52a4e|rag-api:phase6-48250fd23375",
+        "sha256:63c1cb08f081a91f70baa086757af5aada1985e75ab6be42d6bdec9612d41341|rag-web:phase6-48250fd23375",
+        "sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d|nginx:1.27",
+        "sha256:6d770d7f255cda1f18d841ffc4365cb7e0d237f6af6a15fcdb587480cd7c3b93|minio/minio:RELEASE.2023-03-20T20-16-18Z",
+        "sha256:7ecf567ea07095f9af6ce2004055d4d37e4ee3bc19b553cce2f6c37ee9b916bf|docker/desktop-vpnkit-controller:dc331cb22850be0cdd97c84a9cfecaf44a1afb6e",
+        "sha256:7f4da0fc94bcece205a8c0b6f4d11c8196924654ffe5c4d1aa439b7f632048b2|hello-world:latest",
+        "sha256:83c025f0faa6799fab6645102a98138e39a9a7db2be3bc792c79d72659b1805d|registry.k8s.io/kube-proxy:v1.32.2",
+        "sha256:90bf64ec238b88908389694b5ace00e5c17ea5d4a0af812dd266d7cfcd40984f|docker.n8n.io/n8nio/n8n:latest",
+        "sha256:9caabbf6238b189a65d0d6e6ac138de60d6a1c419e5a341fbbb7c78382559c6e|registry.k8s.io/coredns/coredns:v1.11.3",
+        "sha256:ab599c8ef70f92bd8ae2b743a5830bd677076c66eedc494e81c0e0e5011aee67|milvusdb/milvus:v2.4.9",
+        "sha256:b4ae72b0f03f309705d718eb3e76209b318a18a9f11c0e809c82982f50fcc492|atctam/c3230-25-ubuntu:latest",
+        "sha256:c47449f3e751588ea0cb74e325e0f83db335a415f4f4c7fb147375dd6c84757f|registry.k8s.io/kube-apiserver:v1.32.2",
+        "sha256:c4d56c24da4f009ecf8352146b43497fe78953edb4c679b841732beb97e588b0|docker/welcome-to-docker:latest",
+        "sha256:c6a9d11cc5c04b114ccdef39a9265eeef818e3d02f5359be035ae784097fdec5|registry.k8s.io/etcd:3.5.16-0",
+        "sha256:d0db7d8dcc45c8cf3c088a646b76447794403f62188c310ac887469d945c73a2|rag-web:dev",
+        "sha256:d4b1f87142d66830b9e3a2680ea9076ad4357cc601239fbf33f5f591b9e3feb3|rag-api:dev",
+        "sha256:e0ce8c35124d4a9f9785532d1f268f39e9728ffa1cb38f46fa482436424c4bd3|mongo:8",
+        "sha256:ec810187599a66e9c5daa6646b710b4c35b3e50b8a69b9d6c85960b2d049ed60|rag-web:phase6-005ff45e5faa",
+        "sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a|registry.k8s.io/pause:3.10",
+        "sha256:f2597de57cc3cdfed703ea14a2c93fb055ba094df5d13885f4c91c303be8e32e|rag-api:phase6-005ff45e5faa",
+        "sha256:f6b3752c53fa5261bbcf5121684767275a15d2a2286d47393f01ace8e8780f9f|hrca-runner:v1",
+        "sha256:fdd1722efdccb82bdc2d86109a9790f606bfc1a51149d8e1af225aa55265cefb|docker/desktop-kubernetes:kubernetes-v1.32.2-cni-v1.6.0-critools-v1.31.1-cri-dockerd-v0.3.16-1-debian"
+      ],
+      "images_excluding_runner": [
+        "sha256:115d77efe6e256cefbcdf1d3292bede9339ef3952a2a83393cea217a3ffdef36|docker/desktop-storage-provisioner:v2.0",
+        "sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5|kindest/node:<none>",
+        "sha256:399aa50f4d1361c59dc458e634506d02de32613d03a9a614a21058741162ef90|registry.k8s.io/kube-controller-manager:v1.32.2",
+        "sha256:3a351b2870dc1174ca18991101a4bcad1fc3ebae26f823d7700601103d9903cd|container-lab:local",
+        "sha256:3a351b2870dc1174ca18991101a4bcad1fc3ebae26f823d7700601103d9903cd|heronleung/container-lab:1",
+        "sha256:42106a001d1be7fd22e48830071ceae0fe760ff2c5df8c76c0e3b586d8a1f0fc|quay.io/coreos/etcd:v3.5.14",
+        "sha256:45710d74cfd5aa10a001d0cf81747b77c28617444ffee0503d12f1dcd7450f76|registry.k8s.io/kube-scheduler:v1.32.2",
+        "sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131|ollama/ollama:latest",
+        "sha256:55b6b8042c06c7a188c503c258cb6e61b5cd307a4297d41da02021084dbdac08|hello-world:1",
+        "sha256:5f243e473f228c1e81e55c42ecba81c23ed6161c871fb0f35314e02361e52a4e|rag-api:phase6-48250fd23375",
+        "sha256:63c1cb08f081a91f70baa086757af5aada1985e75ab6be42d6bdec9612d41341|rag-web:phase6-48250fd23375",
+        "sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d|nginx:1.27",
+        "sha256:6d770d7f255cda1f18d841ffc4365cb7e0d237f6af6a15fcdb587480cd7c3b93|minio/minio:RELEASE.2023-03-20T20-16-18Z",
+        "sha256:7ecf567ea07095f9af6ce2004055d4d37e4ee3bc19b553cce2f6c37ee9b916bf|docker/desktop-vpnkit-controller:dc331cb22850be0cdd97c84a9cfecaf44a1afb6e",
+        "sha256:7f4da0fc94bcece205a8c0b6f4d11c8196924654ffe5c4d1aa439b7f632048b2|hello-world:latest",
+        "sha256:83c025f0faa6799fab6645102a98138e39a9a7db2be3bc792c79d72659b1805d|registry.k8s.io/kube-proxy:v1.32.2",
+        "sha256:90bf64ec238b88908389694b5ace00e5c17ea5d4a0af812dd266d7cfcd40984f|docker.n8n.io/n8nio/n8n:latest",
+        "sha256:9caabbf6238b189a65d0d6e6ac138de60d6a1c419e5a341fbbb7c78382559c6e|registry.k8s.io/coredns/coredns:v1.11.3",
+        "sha256:ab599c8ef70f92bd8ae2b743a5830bd677076c66eedc494e81c0e0e5011aee67|milvusdb/milvus:v2.4.9",
+        "sha256:b4ae72b0f03f309705d718eb3e76209b318a18a9f11c0e809c82982f50fcc492|atctam/c3230-25-ubuntu:latest",
+        "sha256:c47449f3e751588ea0cb74e325e0f83db335a415f4f4c7fb147375dd6c84757f|registry.k8s.io/kube-apiserver:v1.32.2",
+        "sha256:c4d56c24da4f009ecf8352146b43497fe78953edb4c679b841732beb97e588b0|docker/welcome-to-docker:latest",
+        "sha256:c6a9d11cc5c04b114ccdef39a9265eeef818e3d02f5359be035ae784097fdec5|registry.k8s.io/etcd:3.5.16-0",
+        "sha256:d0db7d8dcc45c8cf3c088a646b76447794403f62188c310ac887469d945c73a2|rag-web:dev",
+        "sha256:d4b1f87142d66830b9e3a2680ea9076ad4357cc601239fbf33f5f591b9e3feb3|rag-api:dev",
+        "sha256:e0ce8c35124d4a9f9785532d1f268f39e9728ffa1cb38f46fa482436424c4bd3|mongo:8",
+        "sha256:ec810187599a66e9c5daa6646b710b4c35b3e50b8a69b9d6c85960b2d049ed60|rag-web:phase6-005ff45e5faa",
+        "sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a|registry.k8s.io/pause:3.10",
+        "sha256:f2597de57cc3cdfed703ea14a2c93fb055ba094df5d13885f4c91c303be8e32e|rag-api:phase6-005ff45e5faa",
+        "sha256:fdd1722efdccb82bdc2d86109a9790f606bfc1a51149d8e1af225aa55265cefb|docker/desktop-kubernetes:kubernetes-v1.32.2-cni-v1.6.0-critools-v1.31.1-cri-dockerd-v0.3.16-1-debian"
+      ],
+      "readable": true
+    },
+    "notes": [
+      "no container is dispatched, no candidate root is written, and nothing is staged or committed: each named candidate root is observed by content digest before and after, and the build context is the repository root",
+      "the build context is the repository root and the builder transfers the dockerfile and the files the Dockerfile copies; which lines it printed and how many bytes it moved are in this record's build events, so what left the tree is readable rather than assumed",
+      "Git's view of an untracked file is its name alone, so this record does not and cannot verify the content of any untracked file"
+    ],
+    "unchanged": {
+      "candidate_roots": true,
+      "containers": true,
+      "git_diff_stat": true,
+      "git_head": true,
+      "git_status": true,
+      "images_excluding_runner": true
+    }
+  },
+  "outcome": "built",
+  "pinned_base": "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+  "pinned_runner_digest": "sha256:f6b3752c53fa5261bbcf5121684767275a15d2a2286d47393f01ace8e8780f9f",
+  "pinned_runner_image": "hrca-runner:v1",
+  "policy_version": "1.0.0",
+  "readiness": {
+    "reason": "the recorded runner image digest is not the pinned digest",
+    "state": "not_ready"
+  },
+  "record": "hrca-runner-image-setup",
+  "refusal": null,
+  "requested_base": "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+  "schema_version": "1.1.0"
+}

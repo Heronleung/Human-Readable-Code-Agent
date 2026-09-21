@@ -9,9 +9,9 @@
     "unavailable is the only outcome reachable on a host with no reachable Docker daemon, which is what this environment reports. It is the honest result, not a skipped test."
   ],
   "candidate_check": {
-    "note": "The candidate-validation check (P5.5a-r2), pinned by the image digest the local hrca-runner:v1 was actually rebuilt to. This file is the fixture a rebuild must re-pin: if the image is rebuilt and these two digests are not updated, the candidate-syntax tests fail rather than a run quietly reporting evidence about an image nobody reviewed.",
+    "note": "The candidate-validation check (P5.5a-r2), pinned by the image digest the local hrca-runner:v1 was actually rebuilt to. This file is the fixture a rebuild must re-pin: if the image is rebuilt and these two digests are not updated, the candidate-syntax tests fail rather than a run quietly reporting evidence about an image nobody reviewed. Repinned at P5.5a-r3c. Two rebuilds from the same pinned base produced the SAME platform manifest (sha256:0ba2c00a...) and the SAME config (sha256:89b3c9d9...) and the SAME eight layer diff_ids, but a DIFFERENT attestation manifest each time, so the tag's immutable identity - which docker inspect reports as an index digest - moved on every rebuild (0ae0f7f5..., then f6b3752c..., then 0809a47a...). Content is reproducible; that index identity is not. The candidate path was NOT exercised against any of these identities: preparing an image is not validating one, and P5.5b remains unauthorized.",
     "image": "hrca-runner:v1",
-    "image_digest": "sha256:0ae0f7f5c31a4378a03f35c158d7c07989bcd3f1fcc64148e914ef363cbf2c48",
+    "image_digest": "sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258",
     "entrypoint": "runner_syntax",
     "candidate_mount": "/candidate",
     "artifact_schema": "hrca-syntax-check/1",
@@ -22,7 +22,7 @@
       "entrypoint": "runner_syntax",
       "candidate_mount": "/candidate",
       "image": "hrca-runner:v1",
-      "image_digest": "sha256:0ae0f7f5c31a4378a03f35c158d7c07989bcd3f1fcc64148e914ef363cbf2c48",
+      "image_digest": "sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258",
       "timeout_seconds": 10.0,
       "resource_profile": "runner_default",
       "network_policy": "none",
