@@ -945,7 +945,9 @@ class RunnerImageSetup:
             "record": RECORD_NAME,
             "schema_version": RECORD_SCHEMA_VERSION,
             "policy_version": policy.POLICY_VERSION,
-            "claim": dict(policy.CLAIMS),
+            # The networked claim starts false and is set true only by
+            # _finalize_contact, from what the run actually dispatched.
+            "claim": {**policy.CLAIMS, policy.NETWORKED_CLAIM: False},
             "outcome": OUTCOME_REFUSED,
             "refusal": None,
             "requested_base": base_reference if isinstance(base_reference, str) else None,
@@ -979,6 +981,18 @@ class RunnerImageSetup:
             "limitations": list(policy.LIMITATIONS),
         }
 
+    def contacted_a_registry(self) -> bool:
+        """Return True only if this run dispatched a registry-reaching operation.
+
+        The setup's only registry-reaching operations are a resolution and a
+        build. Nothing else it dispatches leaves the machine, so this is a
+        statement about what was *attempted* — not about what any request was
+        for, and not about which destinations a daemon reached.
+        """
+        return any(
+            _operation(argv) in policy.NETWORK_OPERATIONS for argv in self.dispatched
+        )
+
     def _finalize_contact(self, record: Dict[str, Any]) -> Dict[str, Any]:
         """Record what was dispatched, and the contact classes that followed."""
         build = record.get("build") or {}
@@ -997,6 +1011,9 @@ class RunnerImageSetup:
         record["contact"]["hosts_named_in_build_output"] = hosts
         record["contact"]["host_names_observed"] = bool(hosts)
         record["contact"]["unexpected_hits"] = unexpected_hits(record)
+        # Set from what the run did, never assumed: a refused run that never
+        # reached the registry must not describe itself as networked evidence.
+        record["claim"][policy.NETWORKED_CLAIM] = self.contacted_a_registry()
         return record
 
     def _refuse(self, record: Dict[str, Any], reason: str) -> Dict[str, Any]:

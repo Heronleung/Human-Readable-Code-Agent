@@ -1,0 +1,165 @@
+{
+  "base": null,
+  "build": {
+    "dispatched": false
+  },
+  "claim": {
+    "adopted": false,
+    "applied": false,
+    "approved": false,
+    "attempt_created": false,
+    "candidate_executed": false,
+    "candidate_mounted": false,
+    "candidate_validation_success": false,
+    "exact_purpose_proof": false,
+    "networked_setup_evidence": false,
+    "plan_created": false,
+    "remote_pushed": false,
+    "result_created": false,
+    "source_modified": false,
+    "zero_egress_proof": false
+  },
+  "contact": {
+    "declared_endpoint_classes": [
+      "the Docker Hub registry manifest API for the pinned base index, its platform manifest and its config blob",
+      "the Docker Hub token endpoint the official client uses to obtain an anonymous pull token",
+      "the Docker Hub content endpoints that serve manifest and blob bytes, including the redirect target the registry names for blob delivery"
+    ],
+    "dispatched_operations": [
+      "images",
+      "ps",
+      "version"
+    ],
+    "host_names_observed": false,
+    "hosts_named_in_build_output": [],
+    "observed_classes": [],
+    "unexpected_hits": [],
+    "unobserved": [
+      "request destinations, ports, paths, query strings and payloads",
+      "whether any request carried a token, and whether the client consulted a credential helper",
+      "which declared endpoint class served any individual artifact",
+      "whether the engine also contacted an endpoint outside the declared classes"
+    ]
+  },
+  "credentials": {
+    "ambient_configs": [
+      {
+        "auths_entries": 1,
+        "credential_keys_present": [
+          "auths",
+          "credsStore"
+        ],
+        "creds_helpers_configured": false,
+        "creds_store_configured": true,
+        "path": "/home/heron/.docker/config.json",
+        "present": true,
+        "readable": true
+      }
+    ],
+    "client_config_isolation": {
+      "isolated": true,
+      "isolated_directory_empty_at_creation": true,
+      "variable": "DOCKER_CONFIG"
+    },
+    "credential_env_names_dropped_unconditionally": [
+      "DOCKER_AUTH_CONFIG",
+      "DOCKER_PASSWORD",
+      "DOCKER_PAT",
+      "DOCKER_TOKEN",
+      "DOCKER_USERNAME",
+      "REGISTRY_AUTH_FILE",
+      "REGISTRY_PASSWORD",
+      "REGISTRY_USERNAME"
+    ],
+    "credential_env_present_in_ambient_environment": [],
+    "credential_env_removed_from_child_environment": [],
+    "effective_for_the_run": {
+      "ambient_client_config_used": false,
+      "auth_entries_available": 0,
+      "credential_helper_available": false
+    },
+    "isolated_config": {
+      "auths_entries": 0,
+      "credential_keys_present": [],
+      "creds_helpers_configured": false,
+      "creds_store_configured": false,
+      "empty_at_creation": true,
+      "present": false,
+      "readable": false,
+      "role": "the empty client configuration directory this setup created"
+    },
+    "limitations": [
+      "a credential helper configured in the ambient client configuration is disclosed as a boolean and is never read, invoked or named here",
+      "the ambient configurations checked are the ones this process can compute from DOCKER_CONFIG and the home directory; a client configuration outside those paths is not visible to it",
+      "the *contents* of a stored auth entry are never read, so the count of entries is all this record states about them"
+    ],
+    "login_dispatched": false
+  },
+  "dockerfile": null,
+  "image": null,
+  "limitations": [
+    "this is networked setup evidence: the build reached the official registry over the network, and nothing here is a zero-egress proof",
+    "the endpoint classes are declared from the official client's documented behaviour; no destination was observed, so they do not prove the purpose of any request",
+    "the docker client on this host is a Windows binary and the daemon and BuildKit run in the Docker Desktop VM, so client-side and daemon-side traffic are outside this setup's observation",
+    "the credential-free property is constructed rather than merely observed: every command runs with DOCKER_CONFIG pointing at a fresh empty directory, so the client has no stored auth entry and no credential helper configured for the run",
+    "a credential helper configured in the ambient client configuration is disclosed as a boolean and is never read, invoked or named by this setup",
+    "the client configuration checked for credentials is the one this process can compute from DOCKER_CONFIG or the home directory; a platform-specific client configuration outside that path is not visible to it",
+    "no candidate was mounted, executed or validated: preparing an image is not a validation result, and this setup creates no plan, attempt or result",
+    "a rebuild may produce a different image digest than the pinned one; until the pin is updated the artifact is not ready, and readiness says so rather than re-pinning itself",
+    "the record is deterministic for one environment, not across environments: fields that describe the environment \u2014 a client configuration path, Git's view of the working tree \u2014 differ when the environment does",
+    "the builder's own cache is not an image and does not appear in the image list, so a change to it is outside what these before/after observations cover"
+  ],
+  "non_mutation": {
+    "after": null,
+    "all_unchanged": false,
+    "before": {
+      "candidate_roots": {
+        "candidate_fixtures": {
+          "digest": "sha256:9e98e246c5b72b819f3e593ec55455921c2d62ea678ea0be0b1566fe720fcbfa",
+          "files": 4,
+          "state": "digested",
+          "truncated": false
+        }
+      },
+      "containers": [],
+      "git_diff_stat": [
+        " 4 files changed, 78 insertions(+), 5 deletions(-)",
+        " src/hrca/runner_image_policy.py   | 20 +++++++++++++++++---",
+        " src/hrca/runner_image_setup.py    | 19 ++++++++++++++++++-",
+        " tests/test_runner_image_policy.py | 11 ++++++++++-",
+        " tests/test_runner_image_setup.py  | 33 +++++++++++++++++++++++++++++++++"
+      ],
+      "git_head": "62f897c67c485b916bd8262a5636c0d527ab1431",
+      "git_status": [
+        " M src/hrca/runner_image_policy.py",
+        " M src/hrca/runner_image_setup.py",
+        " M tests/test_runner_image_policy.py",
+        " M tests/test_runner_image_setup.py",
+        "?? hrca-df8baf7.bundle"
+      ],
+      "images": [],
+      "images_excluding_runner": [],
+      "readable": false
+    },
+    "notes": [
+      "no container is dispatched, no candidate root is written, and nothing is staged or committed: each named candidate root is observed by content digest before and after, and the build context is the repository root",
+      "the build context is the repository root and the builder transfers the dockerfile and the files the Dockerfile copies; which lines it printed and how many bytes it moved are in this record's build events, so what left the tree is readable rather than assumed",
+      "Git's view of an untracked file is its name alone, so this record does not and cannot verify the content of any untracked file",
+      "the setup refused before it observed an after state"
+    ],
+    "unchanged": {}
+  },
+  "outcome": "refused",
+  "pinned_base": "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+  "pinned_runner_digest": "sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258",
+  "pinned_runner_image": "hrca-runner:v1",
+  "policy_version": "1.0.0",
+  "readiness": {
+    "reason": "the container daemon could not be reached",
+    "state": "not_ready"
+  },
+  "record": "hrca-runner-image-setup",
+  "refusal": "the container daemon could not be reached",
+  "requested_base": "python:3.12-slim@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea",
+  "schema_version": "1.1.0"
+}

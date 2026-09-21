@@ -458,12 +458,12 @@ class PinAgreementTests(unittest.TestCase):
         self.assertTrue(policy.is_digest(policy.RUNNER_IMAGE_DIGEST))
 
     def test_the_claims_state_what_this_setup_is_not(self):
-        self.assertIs(True, policy.CLAIMS["networked_setup_evidence"])
         for key in (
             "zero_egress_proof",
             "exact_purpose_proof",
             "candidate_validation_success",
             "candidate_executed",
+            "candidate_mounted",
             "plan_created",
             "attempt_created",
             "result_created",
@@ -475,6 +475,15 @@ class PinAgreementTests(unittest.TestCase):
         ):
             with self.subTest(claim=key):
                 self.assertIs(False, policy.CLAIMS[key])
+
+    def test_the_networked_claim_is_not_a_constant(self):
+        # It is the one claim that depends on what a run did, so it must not be
+        # baked into the fixed map the record starts from.
+        self.assertNotIn(policy.NETWORKED_CLAIM, policy.CLAIMS)
+        self.assertEqual("networked_setup_evidence", policy.NETWORKED_CLAIM)
+        self.assertEqual(
+            ("buildx imagetools inspect", "build"), policy.NETWORK_OPERATIONS
+        )
 
     def test_the_limitations_say_the_record_is_not_a_zero_egress_proof(self):
         joined = " ".join(policy.LIMITATIONS).lower()

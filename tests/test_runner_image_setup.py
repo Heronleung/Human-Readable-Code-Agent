@@ -1007,6 +1007,7 @@ class RecordShapeTests(SetupTestCase):
     def test_the_record_says_it_is_not_a_zero_egress_or_purpose_proof(self):
         engine = self.engine()
         record, _error = self.run_setup(engine)
+        # This run dispatched a build, so it *is* networked setup evidence.
         self.assertIs(True, record["claim"]["networked_setup_evidence"])
         self.assertIs(False, record["claim"]["zero_egress_proof"])
         self.assertIs(False, record["claim"]["exact_purpose_proof"])
@@ -1015,6 +1016,38 @@ class RecordShapeTests(SetupTestCase):
         self.assertIs(False, record["claim"]["attempt_created"])
         joined = " ".join(record["limitations"]).lower()
         self.assertIn("zero-egress", joined)
+
+    def test_a_run_that_reached_nothing_is_not_networked_setup_evidence(self):
+        # The claim follows what the run dispatched, not the artifact's
+        # category: a base that is not the pinned base is refused before any
+        # dispatch, so nothing left the machine and the record must not say
+        # otherwise.
+        engine = self.engine()
+        record, error = self.run_setup(engine, policy.BASE_IMAGE)
+        self.assertEqual(policy.REASON_BASE_TAG_ONLY, error)
+        self.assertEqual([], engine.calls)
+        self.assertIs(False, record["claim"]["networked_setup_evidence"])
+        self.assertEqual([], record["contact"]["dispatched_operations"])
+
+    def test_a_daemon_that_cannot_be_reached_contacted_no_registry(self):
+        class Down(FakeEngine):
+            def _docker(self, argv):
+                if argv[:1] == ["version"]:
+                    return self._proc(argv, 1, "", "Cannot connect to the Docker daemon")
+                return super()._docker(argv)
+
+        record, error = self.run_setup(Down())
+        self.assertEqual(setup.REASON_DAEMON_UNREACHABLE, error)
+        self.assertIs(False, record["claim"]["networked_setup_evidence"])
+        self.assertEqual([], record["contact"]["observed_classes"])
+        self.assertIs(False, record["build"]["dispatched"])
+
+    def test_an_inspect_that_resolved_the_base_is_networked_evidence(self):
+        # inspect never builds, but it does resolve the base over the network.
+        engine = self.engine()
+        record, _error = self.run_inspect(engine)
+        self.assertIs(True, record["claim"]["networked_setup_evidence"])
+        self.assertIn("buildx imagetools inspect", record["contact"]["dispatched_operations"])
 
     def test_the_record_is_deterministic_for_the_same_environment(self):
         first, _ = self.run_setup(self.engine())

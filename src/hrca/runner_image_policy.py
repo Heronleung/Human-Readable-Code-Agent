@@ -192,10 +192,9 @@ REASON_READY_DIGEST = "the recorded runner image digest is not the pinned digest
 READY = "ready_for_validation_planning"
 NOT_READY = "not_ready"
 
-# What the setup is allowed to claim. The false entries are the point: this is
-# networked setup evidence and nothing more.
+# What this artifact is not, always and regardless of what a run did. The false
+# entries are the point.
 CLAIMS = {
-    "networked_setup_evidence": True,
     "zero_egress_proof": False,
     "exact_purpose_proof": False,
     "candidate_validation_success": False,
@@ -210,6 +209,19 @@ CLAIMS = {
     "source_modified": False,
     "remote_pushed": False,
 }
+
+# The one claim that depends on what a run actually did. The setup's only
+# registry-reaching operations are these two, so the adapter sets this from what
+# it dispatched: a run that refused before reaching the registry — an unreachable
+# daemon, a base that is not the pinned base — must not describe itself as
+# networked setup evidence. Claiming the category on a run that made no contact
+# would be exactly the kind of stronger-than-observed claim this record exists to
+# avoid.
+NETWORKED_CLAIM = "networked_setup_evidence"
+NETWORK_OPERATIONS = (
+    "buildx imagetools inspect",
+    "build",
+)
 
 # The contact classes a setup run can observe, because they name operations it
 # dispatched itself and whose outcomes it read back. The record carries the ones
@@ -630,6 +642,8 @@ __all__ = [
     "CLIENT_CONFIG_FILENAME",
     "CLIENT_CONFIG_ENV",
     "CLAIMS",
+    "NETWORKED_CLAIM",
+    "NETWORK_OPERATIONS",
     "CONTACT_INDEX_RESOLUTION",
     "CONTACT_PLATFORM_RESOLUTION",
     "CONTACT_CONFIG_RESOLUTION",
