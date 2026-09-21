@@ -130,6 +130,23 @@ execution at scan time.
   the tests. `packaging/runner/Dockerfile` pins its base by manifest digest for
   the same reason — a floating `python:3.12-slim` tag let a rebuild silently
   swap the interpreter.
+  The P5.5r3c1 setup-verification partition is `setup_verification.py` (the
+  selector and its guard) with the entrypoint in `setup_verification_cli.py`.
+  **A setup-only change is verified with
+  `uv run python -m hrca.setup_verification_cli` and never with
+  `unittest discover`**: discovery selects every module, and
+  `test_candidate_syntax_integration` and `test_rule_delta_docker_integration`
+  mount a
+  candidate or run a handler in a real container whenever a daemon is
+  reachable, which is how a "quick baseline check" once put a candidate in a
+  container. The selector has no discovery: it runs a code-owned allowlist,
+  refuses any other module *by name* before importing it, and while it runs an
+  audit hook makes any attempt to start a process a failure and an import hook
+  refuses the excluded modules. Those two integration modules stay exactly as
+  they are and stay reachable through their own explicit route. The entrypoint
+  is a separate module on purpose: `python -m hrca.setup_verification` would
+  duplicate the state module and its guard in one process, so that form refuses
+  instead of running something weaker than it appears to be.
 - `fixtures/` — synthetic Python corpus used by the tests; `fixtures/memory/`
   holds the M4.1 session/store corpus with its `manifest.json`, and
   `fixtures/intent/manifest.json` the P5.3 hand-authored intent oracle.
@@ -158,6 +175,7 @@ uv run python -m hrca.memory_cli project --base <store-dir>  # M4.3 documents
 uv run python -m hrca.intent_cli propose --intent <f> --scanner <f> --twin <f>  # P5.3 proposal
 uv run python -m hrca.candidate_cli review --edit <f> --intent <f> --scanner <f> --twin <f> --repo <dir>  # P5.4 diff
 uv run python -m hrca.validation_cli run --candidate <dir> --review <f> --evidence-base <dir>  # P5.5a evidence
+uv run python -m hrca.setup_verification_cli  # P5.5r3c1 setup verification — no discovery, no container
 ```
 
 ## Contract (Phase 1)

@@ -1852,6 +1852,51 @@ be re-pinned on every rebuild — which is what the fixture note already require
 and the candidate path was deliberately **not** exercised against any of these
 identities.
 
+### Verifying a setup-only change
+
+Preparing an image is not validating one, and the two are verified by different
+commands. Running the repository's discovery command for a setup-only change is
+**not** safe here: `uv run python -m unittest discover -s tests` selects every
+module, and two of them dispatch real containers whenever a daemon is reachable —
+`test_candidate_syntax_integration` mounts a candidate, and
+`test_rule_delta_docker_integration` runs the package handlers. That is exactly
+how a "quick baseline check" once put a candidate inside a container.
+
+Setup verification therefore has its own entrypoint:
+
+```bash
+uv run python -m hrca.setup_verification_cli          # the whole allowlist
+uv run python -m hrca.setup_verification_cli --module test_architecture
+```
+
+| | |
+|---|---|
+| Selects | a **code-owned allowlist** — `test_architecture`, `test_runner_image_policy`, `test_runner_image_setup`, `test_setup_verification`. There is no discovery, no pattern and no directory walk, so a new test module is outside the surface until someone adds it on purpose. |
+| Refuses | any other module, **by name, before importing it**. An excluded module gets its own bounded reason — `the requested module dispatches containers and is never selectable here` — and exit code `2`. |
+| While it runs | an audit hook makes any attempt to **start a process** a failure, and an import hook refuses the excluded modules. An attempt is a refusal, not a note: the run cannot report success if anything tried. |
+| Refuses to be vacuous | a selection that runs no tests, or leaves an allowed module contributing none, is refused. "Verified nothing" must not look like "verified". |
+| Exit codes | `0` verified, `1` the selection ran and failed, `2` refused before it could verify anything. A usage error is `2`, so a typo is never mistaken for a pass. |
+
+The guard is an audit hook rather than a patched `subprocess.run` for a concrete
+reason: `ContainerRunner` binds `spawn=subprocess.run` as a **default argument**,
+so replacing the module attribute afterwards is invisible to a run that would
+dispatch with the original. The audit event fires at the C level, before any
+process exists, whichever reference the caller holds.
+
+The two live integration modules are untouched and stay reachable through their
+own explicit route — the correction is a partition, not a weakening. The tests
+that *prove* the guard refuses a spawn necessarily attempt one, so they live in
+`tests/test_setup_verification_guard.py`, which is deliberately **not** on the
+allowlist: that is what lets a passing setup run report "nothing attempted" and
+mean it.
+
+The entrypoint is a separate module on purpose. `python -m hrca.x` executes `x` as
+`__main__`, so a self-entrypoint in the state module would exist twice in one
+process — once as `__main__`, once as `hrca.setup_verification` when the tests
+under it import the canonical name — with separate guard state and *separate
+exception classes*. The wrong form refuses rather than running something weaker
+than it appears to be, and a test asserts no duplicate is live.
+
 ### What a passing result does and does not mean
 
 `passed` means the pinned files **compiled** under the bound image digest. It is
