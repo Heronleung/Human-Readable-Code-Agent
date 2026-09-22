@@ -341,18 +341,10 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _prepare_rule_delta_result(request, session)
     elif action == contract.ACTION_INTERPRET_RULE_DELTA:
         result = _interpret_rule_delta_result(request, session)
-    elif action == contract.ACTION_MEMORY_DOCUMENTS:
-        result = _get_memory_documents_result(request, session)
-    elif action == contract.ACTION_MEMORY_RECORD:
-        result = _get_memory_record_result(request, session)
-    elif action == contract.ACTION_MEMORY_SEARCH:
-        result = _search_memory_result(request, session)
-    elif action == contract.ACTION_MEMORY_RESUME:
-        result = _memory_resume_result(request, session)
-    elif action == contract.ACTION_MEMORY_HISTORY:
-        result = _get_memory_history_result(request, session)
-    elif action == contract.ACTION_MEMORY_EFFECTIVE:
-        result = _resolve_memory_effective_result(request, session)
+    # The six read-only Memory actions are registered above and deliberately
+    # have no branch here. ``append_memory_correction`` — the one Memory action
+    # that writes — stays on the chain, as do the two Memory-Twin bridge
+    # actions further down.
     elif action == contract.ACTION_MEMORY_CORRECTION:
         result = _append_memory_correction_result(request, session)
     elif action == contract.ACTION_MEMORY_CODE_LINK:
@@ -3244,7 +3236,7 @@ def _resolve_memory_code_freshness_result(
     return memory_twin_link.resolve_freshness(link, store, workspace_id)
 
 
-# -- boundary handler registry (B3a / B3b-A) -----------------------------
+# -- boundary handler registry (B3a / B3b-A / B3b-B) ---------------------
 #
 # This module's dispatch has grown one ``elif`` per action, and it must import
 # every capability it can serve. That is why the boundary is the one module
@@ -3252,10 +3244,11 @@ def _resolve_memory_code_freshness_result(
 # without editing the hub itself.
 #
 # The registry is the seam that changes that. B3a proved it on a single action
-# (``get_tree``); B3b-A extends it to the read-only document reads. Every other
-# action stays on the chain it already used. A migrated action has exactly one
-# owner — its registry entry — and no branch here, so the two can never
-# disagree about which handler answers a request.
+# (``get_tree``); B3b-A extended it to the read-only document reads and B3b-B
+# to the read-only Memory reads. Every other action stays on the chain it
+# already used. A migrated action has exactly one owner — its registry entry —
+# and no branch here, so the two can never disagree about which handler answers
+# a request.
 #
 # Registration is **code-owned and literal**. There is no discovery of any kind
 # here: no dynamic import, no package walk, no entry-point scan, no subclass
@@ -3330,10 +3323,11 @@ class _HandlerRegistry:
 # handler, and every handler is a named module-level function — never a lambda,
 # a partial, or an attribute borrowed from another module.
 #
-# These six are read-only: each returns a bounded read-model, writes no store,
-# reaches no Twin, provider, credential, runner or container surface, and reads
-# no clock. Everything else stays on the dispatch chain until its own package
-# is authorized.
+# These twelve are read-only: each returns a bounded read-model, writes no
+# store, reaches no Twin, provider, credential, runner or container surface,
+# and reads no clock. ``append_memory_correction`` is the one Memory action
+# that writes and is deliberately *not* here. Everything else stays on the
+# dispatch chain until its own package is authorized.
 _BOUNDARY_HANDLER_ENTRIES: Tuple[Tuple[str, "Handler"], ...] = (
     (contract.ACTION_GET_TREE, _get_tree_result),
     (contract.ACTION_GET_DOCUMENT, _get_document_result),
@@ -3341,6 +3335,12 @@ _BOUNDARY_HANDLER_ENTRIES: Tuple[Tuple[str, "Handler"], ...] = (
     (contract.ACTION_DOCUMENT_LIST_VERSIONS, _list_versions_result),
     (contract.ACTION_DOCUMENT_GET_CANDIDATE, _get_candidate_result),
     (contract.ACTION_DOCUMENT_PREVIEW, _preview_document_result),
+    (contract.ACTION_MEMORY_DOCUMENTS, _get_memory_documents_result),
+    (contract.ACTION_MEMORY_RECORD, _get_memory_record_result),
+    (contract.ACTION_MEMORY_SEARCH, _search_memory_result),
+    (contract.ACTION_MEMORY_RESUME, _memory_resume_result),
+    (contract.ACTION_MEMORY_HISTORY, _get_memory_history_result),
+    (contract.ACTION_MEMORY_EFFECTIVE, _resolve_memory_effective_result),
 )
 
 # Built at import, so a duplicate or a non-callable entry is a startup failure.
