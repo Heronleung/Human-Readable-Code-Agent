@@ -1560,5 +1560,117 @@ class BoundaryRegistryIsolationTests(unittest.TestCase):
         self.assertNotIn(_REGISTRY_ENTRIES_NAME, exported)
 
 
+# -- the scan family (B3b-H) ---------------------------------------------
+#
+# Five action strings — scan, read, analyze, inspect, plan — name one
+# session-free pipeline. They are registered as five ordinary keys so the
+# registry keeps one uniform rule, and that requires every one of them to be
+# named by a contract constant rather than a bare string.
+
+_EXPECTED_SCAN_ACTIONS = (
+    "ACTION_SCAN",
+    "ACTION_READ",
+    "ACTION_ANALYZE",
+    "ACTION_INSPECT",
+    "ACTION_PLAN",
+)
+
+
+def _scan_actions_elements():
+    """Return the AST elements of ``SCAN_ACTIONS``, or ``None``."""
+    with open(_CONTRACT_MODULE, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    value = _top_level_value(tree, "SCAN_ACTIONS")
+    if value is None:
+        return None
+    # ``frozenset({...})``
+    if isinstance(value, ast.Call) and value.args:
+        value = value.args[0]
+    if not isinstance(value, (ast.Set, ast.Tuple, ast.List)):
+        return None
+    return value.elts
+
+
+class ScanFamilyRegistryTests(unittest.TestCase):
+    """The five scan synonyms are constant-named and share one adapter."""
+
+    def test_the_scan_family_is_exactly_five_members(self):
+        elements = _scan_actions_elements()
+        self.assertIsNotNone(elements, "SCAN_ACTIONS could not be read")
+        self.assertEqual(5, len(elements))
+
+    def test_every_scan_member_is_named_by_a_contract_constant(self):
+        elements = _scan_actions_elements()
+        self.assertIsNotNone(elements)
+        for element in elements:
+            with self.subTest(element=ast.dump(element)):
+                # A bare string literal here is what would make a scan action
+                # unregistrable, so it is refused rather than tolerated.
+                self.assertNotIsInstance(element, ast.Constant)
+                self.assertIsInstance(element, ast.Name)
+                self.assertTrue(element.id.startswith("ACTION_"), element.id)
+
+    def test_the_scan_members_are_the_expected_five(self):
+        elements = _scan_actions_elements()
+        self.assertIsNotNone(elements)
+        self.assertEqual(
+            set(_EXPECTED_SCAN_ACTIONS), {element.id for element in elements}
+        )
+
+    def test_no_legacy_scan_group_branch_remains(self):
+        # The branch was deleted, not narrowed: a group comparator would still
+        # own actions the registry also owns, and the per-action dual-ownership
+        # check below cannot see inside a group.
+        self.assertNotIn("SCAN_ACTIONS", _legacy_action_names())
+
+    def test_the_scan_handler_takes_the_registry_shape(self):
+        with open(_BOUNDARY_MODULE, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        handler = None
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "_scan_handler":
+                handler = node
+        self.assertIsNotNone(handler, "_scan_handler not found")
+        self.assertEqual(["request", "session"], [a.arg for a in handler.args.args])
+
+    def test_the_scan_handler_never_reads_its_session(self):
+        # The adapter exists only to match the registry's shape. If it ever
+        # touched the session it would be supplying authority the scan
+        # pipeline does not have.
+        with open(_BOUNDARY_MODULE, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        handler = None
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "_scan_handler":
+                handler = node
+        self.assertIsNotNone(handler)
+        used = [
+            node.id
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Name) and node.id == "session"
+        ]
+        self.assertEqual([], used)
+
+    def test_the_scan_handler_delegates_to_the_scan_pipeline(self):
+        with open(_BOUNDARY_MODULE, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        handler = None
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name == "_scan_handler":
+                handler = node
+        self.assertIsNotNone(handler)
+        calls = [
+            node.func.id
+            for node in ast.walk(handler)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+        self.assertEqual(["_scan_result"], calls)
+
+    def test_every_scan_action_is_registered(self):
+        registered = set(_registered_action_names())
+        missing = sorted(set(_EXPECTED_SCAN_ACTIONS) - registered)
+        self.assertEqual([], missing)
+
+
 if __name__ == "__main__":
     unittest.main()

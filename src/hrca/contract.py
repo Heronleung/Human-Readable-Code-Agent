@@ -52,7 +52,17 @@ CORRELATION_ID_MAX_CHARS = 64
 #   require a ``task`` payload (the P2.3 intake shape).
 # * ``WORKSPACE_ACTIONS`` are the P3.2 read-only workspace/document actions that
 #   open a project root, list a filtered tree, and read one permitted document.
+# The scan family is five *synonyms*, not five capabilities: every one of these
+# runs the same read-only scan -> plan -> report pipeline and requires the same
+# ``task`` payload. They carry separate constant names so that each is named by
+# a contract constant rather than a bare string — which is what lets the
+# boundary's handler registry key all five — while ``SCAN_ACTIONS`` below stays
+# exactly the same five strings it has always been.
 ACTION_SCAN = "scan"
+ACTION_READ = "read"
+ACTION_ANALYZE = "analyze"
+ACTION_INSPECT = "inspect"
+ACTION_PLAN = "plan"
 ACTION_OPEN_PROJECT = "open_project"
 ACTION_GET_TREE = "get_tree"
 ACTION_GET_DOCUMENT = "get_document"
@@ -196,7 +206,9 @@ ACTION_MEMORY_CORRECTION = "append_memory_correction"
 ACTION_MEMORY_CODE_LINK = "get_memory_code_link"
 ACTION_MEMORY_CODE_FRESHNESS = "resolve_memory_code_freshness"
 
-SCAN_ACTIONS = frozenset({"scan", "read", "analyze", "inspect", "plan"})
+SCAN_ACTIONS = frozenset(
+    {ACTION_SCAN, ACTION_READ, ACTION_ANALYZE, ACTION_INSPECT, ACTION_PLAN}
+)
 WORKSPACE_ACTIONS = frozenset(
     {ACTION_OPEN_PROJECT, ACTION_GET_TREE, ACTION_GET_DOCUMENT}
 )
@@ -640,6 +652,10 @@ __all__ = [
     "CONTRACT_VERSION",
     "CORRELATION_ID_MAX_CHARS",
     "ACTION_SCAN",
+    "ACTION_READ",
+    "ACTION_ANALYZE",
+    "ACTION_INSPECT",
+    "ACTION_PLAN",
     "ACTION_OPEN_PROJECT",
     "ACTION_GET_TREE",
     "ACTION_GET_DOCUMENT",

@@ -245,16 +245,14 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
 
     correlation_id = _correlation_id(request)
 
-    # A *registered* action dispatches through the handler registry (B3a). The
-    # registry currently owns exactly one action — ``get_tree`` — so every other
-    # action resolves to ``None`` here and falls through to the chain below,
-    # unchanged. It is consulted first only so that a migrated action has a
-    # single owner rather than two.
+    # A *registered* action dispatches through the handler registry (B3a /
+    # B3b-A / B3b-B / B3b-H). An action the registry owns resolves here and
+    # never reaches the chain below; anything it does not own resolves to
+    # ``None`` and falls through unchanged. It is consulted first so that a
+    # migrated action has a single owner rather than two.
     handler = _BOUNDARY_HANDLERS.resolve(action)
     if handler is not None:
         result = handler(request, session)
-    elif action in contract.SCAN_ACTIONS:
-        result = _scan_result(request)
     elif action == contract.ACTION_OPEN_PROJECT:
         result = _open_project_result(request, session)
     # The actions the registry owns deliberately have no branch here — a
@@ -3317,13 +3315,31 @@ class _HandlerRegistry:
         return tuple(self._handlers)
 
 
+# The scan family is the one capability whose handler is not already in the
+# registry's shape: ``_scan_result`` predates the session and takes only the
+# request. This named adapter is the *only* adapter in the design — every other
+# handler already matches the shape — and it is a function rather than a lambda
+# so it can be grepped, pointed at and asserted on. It reads no session state,
+# supplies no default and adds no authority: ``read``, ``analyze``, ``inspect``
+# and ``plan`` are synonyms of ``scan``, so all five reach the one pipeline.
+def _scan_handler(request: Dict[str, Any], session: WorkspaceSession) -> Dict[str, Any]:
+    """Adapt the session-free scan pipeline to the registry's handler shape.
+
+    The scan pipeline predates the session and reads only the request, so the
+    session is ignored rather than inspected. This is the only signature
+    difference in the whole dispatch surface, and it is spelled out here rather
+    than discovered at call time.
+    """
+    return _scan_result(request)
+
+
 # The registry's contents: the read-side actions it owns so far. Every entry
 # names its action with the contract's constant rather than a string literal,
 # so a rename in the contract becomes a failing test instead of a silently dead
 # handler, and every handler is a named module-level function — never a lambda,
 # a partial, or an attribute borrowed from another module.
 #
-# These twelve are read-only: each returns a bounded read-model, writes no
+# These seventeen are read-only: each returns a bounded read-model, writes no
 # store, reaches no Twin, provider, credential, runner or container surface,
 # and reads no clock. ``append_memory_correction`` is the one Memory action
 # that writes and is deliberately *not* here. Everything else stays on the
@@ -3341,6 +3357,11 @@ _BOUNDARY_HANDLER_ENTRIES: Tuple[Tuple[str, "Handler"], ...] = (
     (contract.ACTION_MEMORY_RESUME, _memory_resume_result),
     (contract.ACTION_MEMORY_HISTORY, _get_memory_history_result),
     (contract.ACTION_MEMORY_EFFECTIVE, _resolve_memory_effective_result),
+    (contract.ACTION_SCAN, _scan_handler),
+    (contract.ACTION_READ, _scan_handler),
+    (contract.ACTION_ANALYZE, _scan_handler),
+    (contract.ACTION_INSPECT, _scan_handler),
+    (contract.ACTION_PLAN, _scan_handler),
 )
 
 # Built at import, so a duplicate or a non-callable entry is a startup failure.

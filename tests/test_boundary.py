@@ -834,12 +834,18 @@ _EXPECTED_REGISTRY = (
     (contract.ACTION_MEMORY_RESUME, boundary._memory_resume_result),
     (contract.ACTION_MEMORY_HISTORY, boundary._get_memory_history_result),
     (contract.ACTION_MEMORY_EFFECTIVE, boundary._resolve_memory_effective_result),
+    # The scan family: five synonyms of one session-free pipeline, reached
+    # through the registry's only adapter.
+    (contract.ACTION_SCAN, boundary._scan_handler),
+    (contract.ACTION_READ, boundary._scan_handler),
+    (contract.ACTION_ANALYZE, boundary._scan_handler),
+    (contract.ACTION_INSPECT, boundary._scan_handler),
+    (contract.ACTION_PLAN, boundary._scan_handler),
 )
 
 # Actions that look read-only and are deliberately held back, with the reason.
 _HELD_BACK = {
     contract.ACTION_OPEN_PROJECT: "it mutates in-memory session state",
-    contract.ACTION_SCAN: "the scan pipeline needs the session-free adapter",
     contract.ACTION_DOCUMENT_SAVE: "it writes the version store",
     contract.ACTION_DOCUMENT_ADOPT: "it changes accepted state",
     contract.ACTION_LIBRARY_GET: "it creates and persists the library store",
@@ -1499,6 +1505,140 @@ class BoundaryRegisteredMemoryReadTests(unittest.TestCase):
         )
         self.assertFalse(env["ok"])
         self.assertEqual("unknown_contract_version", env["error"]["code"])
+
+
+_SCAN_FAMILY = (
+    contract.ACTION_SCAN,
+    contract.ACTION_READ,
+    contract.ACTION_ANALYZE,
+    contract.ACTION_INSPECT,
+    contract.ACTION_PLAN,
+)
+
+
+class BoundaryRegisteredScanTests(unittest.TestCase):
+    """The five scan synonyms, exercised end to end through the registry.
+
+    ``scan``, ``read``, ``analyze``, ``inspect`` and ``plan`` name one
+    pipeline. They are registered as five ordinary keys pointing at the one
+    ``_scan_handler`` adapter, so these tests hold both halves: that each alias
+    still answers, and that they answer *identically*.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.session = boundary.WorkspaceSession(store_base=self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _req(self, action, **overrides):
+        req = contract.build_request(
+            "cid-scan", action, FIXTURES, build_fixture_task(FIXTURES)
+        )
+        req.update(overrides)
+        return req
+
+    def _call(self, action, **overrides):
+        return boundary.handle_request(self._req(action, **overrides), self.session)
+
+    # -- every alias still runs the pipeline -----------------------------
+
+    def test_every_scan_alias_runs_the_pipeline(self):
+        for action in _SCAN_FAMILY:
+            with self.subTest(action=action):
+                env = self._call(action)
+                self.assertTrue(env["ok"])
+                self.assertEqual("cid-scan", env["correlation_id"])
+                # scan -> plan -> report: the scanner evidence, the derived
+                # plan inside the report, and the task identity it was run for.
+                self.assertIn("evidence", env["result"])
+                self.assertIn("report", env["result"])
+                self.assertTrue(env["result"]["report"]["plan"])
+                self.assertEqual("P3.1", env["result"]["task_id"])
+
+    def test_the_five_aliases_are_synonyms(self):
+        # The strongest form of "unchanged": a request that differs only in the
+        # action verb produces a byte-identical result.
+        baseline = self._call(contract.ACTION_SCAN)["result"]
+        for action in _SCAN_FAMILY[1:]:
+            with self.subTest(action=action):
+                self.assertEqual(baseline, self._call(action)["result"])
+
+    def test_every_scan_alias_refuses_an_empty_path(self):
+        for action in _SCAN_FAMILY:
+            with self.subTest(action=action):
+                env = self._call(action, path="")
+                self.assertFalse(env["ok"])
+                self.assertEqual("invalid_request", env["error"]["code"])
+
+    def test_every_scan_alias_refuses_a_mutating_task(self):
+        for action in _SCAN_FAMILY:
+            with self.subTest(action=action):
+                task = dict(build_fixture_task(FIXTURES))
+                task["allowed_actions"] = ["edit"]
+                env = self._call(action, task=task)
+                self.assertFalse(env["ok"])
+                self.assertEqual("action_not_allowed", env["error"]["code"])
+
+    def test_a_wrong_contract_version_is_refused_before_scan_dispatch(self):
+        env = boundary.handle_request(
+            self._req(contract.ACTION_SCAN, contract_version="0.0.1"), self.session
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("unknown_contract_version", env["error"]["code"])
+
+    def test_a_non_dict_request_is_still_invalid_request(self):
+        env = boundary.handle_request("not-a-dict", self.session)
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- one handler, reached through the registry ------------------------
+
+    def test_all_five_aliases_resolve_through_the_registry(self):
+        for action in _SCAN_FAMILY:
+            with self.subTest(action=action):
+                self.assertIs(
+                    boundary._scan_handler,
+                    boundary._BOUNDARY_HANDLERS.resolve(action),
+                )
+
+    def test_the_five_aliases_share_one_handler(self):
+        handlers = {
+            boundary._BOUNDARY_HANDLERS.resolve(action) for action in _SCAN_FAMILY
+        }
+        self.assertEqual({boundary._scan_handler}, handlers)
+        self.assertIs(boundary._scan_handler, boundary._scan_handler)
+
+    def test_the_scan_handler_ignores_its_session(self):
+        # A session double records every attribute access, call and item get.
+        # The adapter must record none of them — it reads the request and
+        # nothing else.
+        request = self._req(contract.ACTION_SCAN)
+        sentinel = mock.Mock()
+        via_adapter = boundary._scan_handler(request, sentinel)
+        self.assertEqual([], sentinel.mock_calls)
+        self.assertEqual(boundary._scan_result(request), via_adapter)
+
+    def test_scan_dispatch_really_goes_through_the_registry(self):
+        seen = []
+        real = boundary._scan_result
+
+        def spy(request):
+            seen.append(request.get("action"))
+            return real(request)
+
+        with mock.patch.object(boundary, "_scan_result", spy):
+            env = self._call(contract.ACTION_ANALYZE)
+        self.assertEqual(["analyze"], seen)
+        self.assertTrue(env["ok"])
+
+    def test_no_legacy_branch_owns_a_scan_alias(self):
+        # The group branch is gone, not narrowed: every one of the five is
+        # registered, so none may be reachable through the chain.
+        for action in _SCAN_FAMILY:
+            with self.subTest(action=action):
+                self.assertIn(action, boundary._BOUNDARY_HANDLERS.actions())
 
 
 if __name__ == "__main__":
