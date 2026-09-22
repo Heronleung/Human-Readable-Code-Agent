@@ -830,5 +830,215 @@ class EmojiAuditTests(unittest.TestCase):
         )
 
 
+# -- explicit test routes (B0) -------------------------------------------
+#
+# The route table lives in ``hrca.test_routes``, but this module imports
+# nothing from ``hrca`` — that is the property that lets it police the package
+# without depending on it, and it is asserted below. So the table is read the
+# same way every other rule here is: by parsing the source.
+
+_ROUTE_MODULE = os.path.join(_SRC, "test_routes.py")
+_SETUP_MODULE = os.path.join(_SRC, "setup_verification.py")
+
+# Import names a route mechanism must never carry. It is dev tooling that
+# partitions the surface, so it cannot be part of it, and it must not be able
+# to dispatch, reach a network, or touch a credential.
+_ROUTE_FORBIDDEN_IMPORTS = frozenset(
+    {
+        "container_runner", "runner_broker", "runner_image_policy",
+        "runner_image_setup", "runner_image_setup_cli", "runtime_handlers",
+        "provider", "provider_cli", "provider_config", "deepseek",
+        "deepseek_transport", "delta_transport", "credential_store",
+        "credential_store_win", "credential_host", "credential_sheet_win",
+        "boundary", "client", "client_core", "twin", "twin_store", "codemap",
+        "codemap_draft", "proposal", "advisory", "scanner", "memory",
+        "subprocess", "multiprocessing", "socket", "urllib", "ssl", "http",
+        "requests", "docker",
+    }
+)
+
+# Calls that would make module selection a discovery rather than a lookup.
+_DYNAMIC_IMPORT_NAMES = frozenset(
+    {
+        "__import__", "import_module", "walk_packages", "iter_modules",
+        "entry_points", "__subclasses__",
+    }
+)
+
+
+def _module_constants_and_assignments(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    consts = {}
+    assignments = {}
+    for node in tree.body:
+        # Both plain and annotated assignments are read, because a route table
+        # is naturally written with an annotation and a table that vanished
+        # from this reader would silently disable every rule below.
+        value = None
+        name = None
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            name = node.target.id
+            value = node.value
+        if name is None or value is None:
+            continue
+        assignments[name] = value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            consts[name] = value.value
+    return tree, consts, assignments
+
+
+def _literal_string_tuple(node, consts=None):
+    """Return the tuple of strings a tuple/list/set resolves to, else None.
+
+    Elements may be written as string literals or as names bound to string
+    constants in the same module — a route list is naturally written the second
+    way, and a reader that understood only literals would report an empty table
+    rather than a broken one.
+    """
+    if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return None
+    values = []
+    for element in node.elts:
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            values.append(element.value)
+        elif isinstance(element, ast.Name) and consts and element.id in consts:
+            values.append(consts[element.id])
+        else:
+            return None
+    return tuple(values)
+
+
+def _route_table():
+    """Return ``(routes, allowlists, container, safe, acknowledged)``.
+
+    ``setup``'s allowlist is written as a reference to the setup-verification
+    module, so it is resolved from that module's own literal rather than
+    duplicated here.
+    """
+    _, route_consts, route_assigns = _module_constants_and_assignments(_ROUTE_MODULE)
+    _, setup_consts, setup_assigns = _module_constants_and_assignments(_SETUP_MODULE)
+    setup_allowlist = _literal_string_tuple(
+        setup_assigns.get("ALLOWED_MODULES"), setup_consts
+    )
+
+    def resolve_key(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return route_consts.get(node.id)
+        return None
+
+    table = {}
+    routes_node = route_assigns.get("ROUTE_MODULES")
+    if not isinstance(routes_node, ast.Dict):
+        return None
+    for key, value in zip(routes_node.keys, routes_node.values):
+        route = resolve_key(key)
+        if route is None:
+            return None
+        modules = _literal_string_tuple(value, route_consts)
+        if modules is None and isinstance(value, ast.Call):
+            modules = setup_allowlist
+        if modules is None:
+            return None
+        table[route] = tuple(modules)
+
+    def string_tuple(name):
+        return _literal_string_tuple(route_assigns.get(name), route_consts)
+
+    return (
+        table,
+        string_tuple("ROUTES"),
+        string_tuple("CONTAINER_MODULES"),
+        string_tuple("SAFE_ROUTES"),
+        string_tuple("ACKNOWLEDGED_ROUTES"),
+    )
+
+
+class TestRouteIsolationTests(unittest.TestCase):
+    """The B0 route mechanism stays an explicit lookup, and its routes stay
+    partitioned. The rules are read from the source so this module keeps its
+    no-``hrca``-import property.
+    """
+
+    def test_the_route_table_is_readable(self):
+        parsed = _route_table()
+        self.assertIsNotNone(parsed, "the route table could not be read statically")
+        table, routes, container, safe, acknowledged = parsed
+        self.assertTrue(table)
+        self.assertIsNotNone(routes)
+        self.assertIsNotNone(container)
+        self.assertIsNotNone(safe)
+        self.assertIsNotNone(acknowledged)
+        self.assertEqual(set(routes), set(table))
+
+    def test_every_route_has_an_explicit_non_empty_allowlist(self):
+        table, _, _, _, _ = _route_table()
+        for route, modules in sorted(table.items()):
+            self.assertTrue(modules, route)
+            self.assertEqual(len(set(modules)), len(modules), route)
+
+    def test_safe_routes_are_disjoint_from_the_container_modules(self):
+        table, _, container, safe, _ = _route_table()
+        container = set(container)
+        for route in safe:
+            self.assertFalse(
+                set(table[route]) & container, "route %s reaches a container" % route
+            )
+
+    def test_container_modules_appear_only_on_the_dispatching_routes(self):
+        table, _, container, _, acknowledged = _route_table()
+        for module in container:
+            found = {route for route, mods in table.items() if module in mods}
+            self.assertEqual(set(acknowledged), found, module)
+
+    def test_the_setup_route_mirrors_the_setup_verification_allowlist(self):
+        table, _, _, _, _ = _route_table()
+        _, setup_consts, setup_assigns = _module_constants_and_assignments(_SETUP_MODULE)
+        setup_allowlist = _literal_string_tuple(
+            setup_assigns.get("ALLOWED_MODULES"), setup_consts
+        )
+        self.assertEqual(setup_allowlist, table["setup"])
+
+    def test_the_route_module_imports_no_product_or_dispatch_module(self):
+        imported = _imported_top_level_names(_ROUTE_MODULE)
+        offending = sorted(imported & _ROUTE_FORBIDDEN_IMPORTS)
+        self.assertEqual([], offending)
+
+    def test_the_route_module_contains_no_dynamic_import(self):
+        tree, _, _ = _module_constants_and_assignments(_ROUTE_MODULE)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = None
+                if isinstance(func, ast.Name):
+                    name = func.id
+                elif isinstance(func, ast.Attribute):
+                    name = func.attr
+                self.assertNotIn(name, _DYNAMIC_IMPORT_NAMES, name)
+
+    def test_this_module_imports_no_hrca_module(self):
+        imported = _imported_top_level_names(os.path.join(_HERE, "test_architecture.py"))
+        hrca_names = {
+            name
+            for name in imported
+            if os.path.isfile(os.path.join(_SRC, name + ".py"))
+        }
+        self.assertEqual(set(), hrca_names)
+
+    def test_the_provider_seam_guards_import_no_hrca_module(self):
+        imported = _imported_top_level_names(os.path.join(_HERE, "test_provider_seam.py"))
+        hrca_names = {
+            name
+            for name in imported
+            if os.path.isfile(os.path.join(_SRC, name + ".py"))
+        }
+        self.assertEqual(set(), hrca_names)
+
+
 if __name__ == "__main__":
     unittest.main()
