@@ -40,7 +40,8 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import codemap, twin
+from . import codemap
+from .identity import sha256_hex
 
 ADVISORY_SCHEMA_VERSION = "1.0.0"
 ADVISORY_GENERATOR = "hrca-advisory"
@@ -391,7 +392,7 @@ def _context_items(
 def advisory_token_for(items: List[Dict[str, str]]) -> str:
     """Return a content-addressed token binding the prepared context items."""
     canon = dumps([(i["kind"], i["label"], i["text"]) for i in items])
-    return "advisory:" + twin.sha256_hex(canon.encode("utf-8"))
+    return "advisory:" + sha256_hex(canon.encode("utf-8"))
 
 
 def build_context(

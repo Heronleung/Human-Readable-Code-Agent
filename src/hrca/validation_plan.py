@@ -42,7 +42,7 @@ import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import validation_policy
-from .twin import sha256_hex
+from .identity import sha256_hex
 
 VALIDATION_PLAN_SCHEMA_VERSION = "1.0.0"
 VALIDATION_PLAN_GENERATOR = "hrca-validation-plan"

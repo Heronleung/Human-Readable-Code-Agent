@@ -78,7 +78,7 @@ from . import (
     validation_plan,
     validation_policy,
 )
-from .twin import sha256_hex
+from .identity import sha256_hex
 
 VALIDATION_ATTEMPT_SCHEMA_VERSION = "1.0.0"
 VALIDATION_ATTEMPT_GENERATOR = "hrca-validation-attempt"

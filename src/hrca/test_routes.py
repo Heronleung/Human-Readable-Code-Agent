@@ -184,6 +184,8 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_architecture",
         "test_provider_seam",
         "test_test_routes",
+        # shared identity primitives (B1)
+        "test_identity",
         # deterministic scanner and its shared foundation
         "test_scanner",
         "test_contract",
@@ -322,6 +324,7 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_delta_verifier",
         "test_document",
         "test_hook_capture",
+        "test_identity",
         "test_impact_proposal",
         "test_intent_delta",
         "test_library",

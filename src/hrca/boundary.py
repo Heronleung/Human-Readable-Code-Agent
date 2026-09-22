@@ -46,6 +46,7 @@ from . import (
     delta_candidate,
     delta_verifier,
     document,
+    identity,
     library,
     library_store,
     memory_docs,
@@ -449,7 +450,7 @@ def _compute_fingerprints(root: str, scanner_doc: Dict[str, Any]) -> Dict[str, O
             continue
         try:
             with open(os.path.join(root, rel_path), "rb") as fh:
-                fingerprints[rel_path] = twin.fingerprint_bytes(fh.read())
+                fingerprints[rel_path] = identity.fingerprint_bytes(fh.read())
         except OSError:
             fingerprints[rel_path] = None
     return fingerprints
@@ -457,7 +458,7 @@ def _compute_fingerprints(root: str, scanner_doc: Dict[str, Any]) -> Dict[str, O
 
 def _twin_store(session: WorkspaceSession) -> Dict[str, Any]:
     """Load the workspace Twin store, raising ``twin_not_synchronized`` if absent."""
-    workspace_id = twin.workspace_id_for(session.root)
+    workspace_id = identity.workspace_id_for(session.root)
     store, err = twin_store.load(session.store_base, workspace_id)
     if err is not None or store is None:
         raise contract.ContractError("twin_not_synchronized")
@@ -498,7 +499,7 @@ def _sync_twin_result(request: Dict[str, Any], session: WorkspaceSession) -> Dic
 
     scanner_doc = scan_directory(session.root)
     fingerprints = _compute_fingerprints(session.root, scanner_doc)
-    workspace_id = twin.workspace_id_for(session.root)
+    workspace_id = identity.workspace_id_for(session.root)
     previous, _ = twin_store.load(session.store_base, workspace_id)
     generation = _next_generation(previous)
 
@@ -554,7 +555,7 @@ def _get_anchor_result(request: Dict[str, Any], session: WorkspaceSession) -> Di
 
 def _workspace_id(session: WorkspaceSession) -> str:
     """Return the canonical workspace identifier for the accepted root."""
-    return twin.workspace_id_for(session.root)
+    return identity.workspace_id_for(session.root)
 
 
 def _load_draft_or_raise(session: WorkspaceSession) -> Dict[str, Any]:
@@ -583,7 +584,7 @@ def _code_map_baseline(session: WorkspaceSession, store: Dict[str, Any]) -> Dict
     for artifact in store.get("artifacts", []):
         if not isinstance(artifact, dict):
             continue
-        if artifact.get("kind") != twin.ARTIFACT_FILE:
+        if artifact.get("kind") != identity.ARTIFACT_FILE:
             continue
         rel_path = artifact.get("path")
         if not isinstance(rel_path, str) or not rel_path.endswith((".py", ".pyi")):
@@ -3156,7 +3157,7 @@ def _load_memory_code_twin_store(
     unsupported schema yields no usable authority and is refused rather than
     guessed at.
     """
-    workspace_id = twin.workspace_id_for(session.root)
+    workspace_id = identity.workspace_id_for(session.root)
     store, err = twin_store.load(session.store_base, workspace_id)
     if err is not None or store is None:
         raise contract.ContractError("twin_not_synchronized")
@@ -3228,7 +3229,7 @@ def _resolve_memory_code_freshness_result(
     if link is None:
         raise contract.ContractError("memory_code_link_invalid")
 
-    workspace_id = twin.workspace_id_for(session.root)
+    workspace_id = identity.workspace_id_for(session.root)
     store, err = twin_store.load(session.store_base, workspace_id)
     if err is not None:
         store = None

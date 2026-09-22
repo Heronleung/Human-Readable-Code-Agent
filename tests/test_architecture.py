@@ -1040,5 +1040,165 @@ class TestRouteIsolationTests(unittest.TestCase):
         self.assertEqual(set(), hrca_names)
 
 
+# -- the identity seam (B1) ----------------------------------------------
+#
+# ``hrca.identity`` owns the pure digests, fingerprints and stable identifier
+# constructors. ``hrca.twin`` re-exports them. These rules hold that seam:
+# identity stays a dependency-light leaf, and twin keeps no second
+# implementation that could drift from it.
+
+_IDENTITY_MODULE = os.path.join(_SRC, "identity.py")
+_TWIN_MODULE = os.path.join(_SRC, "twin.py")
+
+# The primitives B1 relocated out of twin.py.
+_MOVED_IDENTITY_SYMBOLS = (
+    "sha256_hex",
+    "fingerprint_bytes",
+    "fingerprint_source",
+    "workspace_id_for",
+    "file_artifact_id",
+    "symbol_artifact_id",
+    "baseline_fingerprint",
+    "ARTIFACT_FILE",
+)
+
+# identity.py is a leaf: standard library only, and not even all of that.
+_IDENTITY_FORBIDDEN_IMPORTS = frozenset(
+    {
+        "os", "io", "pathlib", "subprocess", "socket", "time", "datetime",
+        "shutil", "tempfile", "sys", "sqlite3", "pickle", "importlib",
+        "multiprocessing", "threading", "asyncio", "random", "secrets",
+        "uuid", "logging", "warnings", "atexit", "signal",
+    }
+)
+
+# Attribute hosts that would mean I/O, a clock read, or a store read if this
+# module ever touched them.
+_IDENTITY_FORBIDDEN_ATTR_HOSTS = frozenset(
+    {
+        "os", "io", "subprocess", "socket", "time", "datetime", "shutil",
+        "tempfile", "pathlib", "sqlite3", "pickle", "sys",
+    }
+)
+
+# Modules that import ``hashlib``. These predate B1 and are *recorded* here,
+# not endorsed: what this pins is that B1 created no new digest helper and that
+# ``twin`` is no longer one of them. Folding the remaining callers onto
+# ``identity.sha256_hex`` is a later, separately reviewed change — they are not
+# identity primitives today, and moving them is not this seam's business.
+_DIRECT_HASHLIB_MODULES = frozenset(
+    {
+        "identity",
+        "client_core",
+        "delta_candidate",
+        "document",
+        "memory",
+        "memory_package",
+        "rule_delta_interpret",
+        "runner_image_setup",
+    }
+)
+
+
+def _top_level_definitions(path):
+    """Return the top-level function and assignment names a module defines."""
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            names.add(node.targets[0].id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+    return names
+
+
+def _imported_from(path, relative_module):
+    """Return the names a module imports from one relative sibling module."""
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 1 and node.module == relative_module:
+                for alias in node.names:
+                    names.add(alias.name)
+    return names
+
+
+class IdentitySeamTests(unittest.TestCase):
+    """hrca.identity is a pure leaf; hrca.twin re-exports, never duplicates."""
+
+    def test_the_identity_module_exists(self):
+        self.assertTrue(os.path.isfile(_IDENTITY_MODULE))
+
+    def test_the_identity_module_imports_no_hrca_module(self):
+        imported = _imported_top_level_names(_IDENTITY_MODULE)
+        hrca_names = {
+            name for name in imported if os.path.isfile(os.path.join(_SRC, name + ".py"))
+        }
+        self.assertEqual(set(), hrca_names)
+
+    def test_the_identity_module_imports_no_io_process_or_clock_host(self):
+        imported = _imported_top_level_names(_IDENTITY_MODULE)
+        offending = sorted(imported & _IDENTITY_FORBIDDEN_IMPORTS)
+        self.assertEqual([], offending)
+
+    def test_the_identity_module_performs_no_io_clock_or_store_access(self):
+        with open(_IDENTITY_MODULE, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        violations = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id == "open":
+                    violations.append(("open()", node.lineno))
+            elif isinstance(node, ast.Attribute):
+                if isinstance(node.value, ast.Name):
+                    if node.value.id in _IDENTITY_FORBIDDEN_ATTR_HOSTS:
+                        violations.append(
+                            ("%s.%s" % (node.value.id, node.attr), node.lineno)
+                        )
+        self.assertEqual([], violations)
+
+    def test_the_identity_module_loads_no_json_only_dumps_it(self):
+        # ``json.dumps`` is how a baseline is canonicalised; ``load``/``loads``
+        # would mean reading a store, which this module must not do.
+        with open(_IDENTITY_MODULE, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+                if node.value.id == "json":
+                    self.assertIn(node.attr, {"dumps"}, node.attr)
+
+    def test_twin_re_exports_every_moved_symbol(self):
+        reexported = _imported_from(_TWIN_MODULE, "identity")
+        missing = sorted(set(_MOVED_IDENTITY_SYMBOLS) - reexported)
+        self.assertEqual([], missing)
+
+    def test_twin_defines_none_of_the_moved_symbols(self):
+        defined = _top_level_definitions(_TWIN_MODULE)
+        duplicated = sorted(defined & set(_MOVED_IDENTITY_SYMBOLS))
+        self.assertEqual([], duplicated)
+
+    def test_twin_still_owns_its_own_vocabulary(self):
+        defined = _top_level_definitions(_TWIN_MODULE)
+        for name in ("CONF_HIGH", "CONF_LOW", "ARTIFACT_CLASS", "ARTIFACT_KINDS",
+                     "TWIN_SCHEMA_VERSION", "MIGRATIONS"):
+            self.assertIn(name, defined, name)
+
+    def test_no_module_added_a_duplicate_digest_helper(self):
+        found = set()
+        for name in sorted(os.listdir(_SRC)):
+            if not name.endswith(".py"):
+                continue
+            module = name[:-3]
+            if "hashlib" in _imported_top_level_names(os.path.join(_SRC, name)):
+                found.add(module)
+        self.assertEqual(set(_DIRECT_HASHLIB_MODULES), found)
+
+
 if __name__ == "__main__":
     unittest.main()

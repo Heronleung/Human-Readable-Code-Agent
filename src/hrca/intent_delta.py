@@ -45,7 +45,7 @@ thing that must not be re-published by a downstream document.
 Purity
 ------
 
-Standard library plus :func:`hrca.twin.sha256_hex` for content addressing. No
+Standard library plus :func:`hrca.identity.sha256_hex` for content addressing. No
 filesystem access, no network, no model, no provider, no credential, no
 command, no Git, no repository write. Nothing here can create a candidate, a
 diff, a branch or a commit: ``executable`` and ``applied`` are always ``False``.
@@ -64,7 +64,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import twin
+from .identity import sha256_hex
 
 INTENT_DELTA_SCHEMA_VERSION = "1.0.0"
 INTENT_DELTA_GENERATOR = "hrca-developer-intent"
@@ -324,7 +324,7 @@ def _normalize_prose(value: Any) -> Dict[str, Any]:
 def intent_delta_id_for(delta: Dict[str, Any]) -> str:
     """Return the content-addressed identity of a delta (never time-derived)."""
     canon = dumps({k: v for k, v in delta.items() if k != "intent_delta_id"})
-    return INTENT_ID_PREFIX + twin.sha256_hex(canon.encode("utf-8"))
+    return INTENT_ID_PREFIX + sha256_hex(canon.encode("utf-8"))
 
 
 def build_intent_delta(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:

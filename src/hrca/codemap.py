@@ -34,6 +34,7 @@ import ast
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import scanner, twin
+from .identity import sha256_hex
 
 CODEMAP_LANGUAGE_VERSION = "0.1"
 GENERATOR = "hrca-codemap"
@@ -173,7 +174,7 @@ def fingerprint_block(block: Dict[str, Any]) -> str:
             "source_anchors": block.get("source_anchors"),
         }
     )
-    return twin.sha256_hex(canon.encode("utf-8"))
+    return sha256_hex(canon.encode("utf-8"))
 
 
 # -- parameter / signature rendering -------------------------------------

@@ -35,7 +35,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import codemap, twin
+from . import codemap
+from .identity import sha256_hex
 
 CODEMAP_DRAFT_SCHEMA_VERSION = "1.0.0"
 DRAFT_GENERATOR = "hrca-codemap-draft"
@@ -150,7 +151,7 @@ def draft_id_for(
             "operations": operations,
         }
     )
-    return "draft:" + twin.sha256_hex(canon.encode("utf-8"))
+    return "draft:" + sha256_hex(canon.encode("utf-8"))
 
 
 # -- baseline helpers -----------------------------------------------------
@@ -190,7 +191,7 @@ def _draft_block_id(workspace_id: str, op_index: int) -> str:
 
 
 def _fingerprint_of_payload(payload: Dict[str, Any]) -> str:
-    return twin.sha256_hex(dumps(payload).encode("utf-8"))
+    return sha256_hex(dumps(payload).encode("utf-8"))
 
 
 def _clean_text(value: Any, reason: str = REASON_INVALID_PROPOSED) -> Optional[str]:
@@ -504,7 +505,7 @@ def _entity_facts(baseline: Dict[str, Any], entity_id: Optional[str]) -> Tuple[L
 
 def _intent_delta_id_for(delta: Dict[str, Any]) -> str:
     canon = dumps({k: v for k, v in delta.items() if k != "intent_delta_id"})
-    return "delta:" + twin.sha256_hex(canon.encode("utf-8"))
+    return "delta:" + sha256_hex(canon.encode("utf-8"))
 
 
 def generate_intent_delta(

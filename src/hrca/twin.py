@@ -35,9 +35,33 @@ categories are all fixed constants below.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+# -- relocated identity primitives (B1) ----------------------------------
+#
+# These digests, content fingerprints and stable identifier constructors were
+# first written here; :mod:`hrca.identity` now owns them, because eight
+# modules that are not Twin modules needed them and should not have had to
+# import a capability to reach a hash. They are re-exported rather than
+# reimplemented, so ``twin.sha256_hex`` is the *same object* as
+# ``identity.sha256_hex`` and every import path that resolved before B1 still
+# resolves, with the same values: no stored identifier changes.
+#
+# The Twin keeps everything that is Twin vocabulary rather than identity —
+# ``CONF_*``, the symbol artifact kinds, ``PROVENANCE_*``, ``SYNC_*``,
+# ``BEHAVIOR_*``, ``TWIN_SCHEMA_VERSION`` and the migration registry below.
+from .identity import (
+    ARTIFACT_FILE,
+    _portable,
+    baseline_fingerprint,
+    file_artifact_id,
+    fingerprint_bytes,
+    fingerprint_source,
+    sha256_hex,
+    symbol_artifact_id,
+    workspace_id_for,
+)
 
 TWIN_SCHEMA_VERSION = "1.0.0"
 TWIN_GENERATOR = "hrca-twin"
@@ -80,7 +104,9 @@ SYNC_STATES = frozenset(
 
 # -- artifact kinds ------------------------------------------------------
 
-ARTIFACT_FILE = "file"
+# ``ARTIFACT_FILE`` is re-exported from :mod:`hrca.identity`, where the file
+# identifier constructor also lives. The symbol kinds below are Twin taxonomy
+# and stay here.
 ARTIFACT_CLASS = "class"
 ARTIFACT_FUNCTION = "function"
 ARTIFACT_METHOD = "method"
@@ -133,21 +159,6 @@ CONF_LOW = "low"
 _PY_SUFFIXES = (".py", ".pyi")
 
 
-def sha256_hex(data: bytes) -> str:
-    """Return the lowercase SHA-256 hex digest of ``data``."""
-    return hashlib.sha256(data).hexdigest()
-
-
-def fingerprint_bytes(data: bytes) -> str:
-    """Return a content fingerprint (SHA-256 hex) for raw source ``data``."""
-    return sha256_hex(data)
-
-
-def fingerprint_source(source: str) -> str:
-    """Return a content fingerprint for ``source`` text (UTF-8 encoded)."""
-    return fingerprint_bytes(source.encode("utf-8"))
-
-
 # -- deterministic identifiers -------------------------------------------
 
 # Identifiers are stable and deterministic. Symbol identifiers keep the
@@ -155,25 +166,11 @@ def fingerprint_source(source: str) -> str:
 # portable root-relative path. A formatting-only change never changes any
 # identifier because they are derived from the path and qualified name, never
 # from content.
-
-
-def workspace_id_for(canonical_root: str) -> str:
-    """Return the canonical workspace identifier for a canonical root path."""
-    return "ws:" + sha256_hex(canonical_root.encode("utf-8"))
-
-
-def _portable(rel_path: str) -> str:
-    return rel_path.replace("\\", "/")
-
-
-def file_artifact_id(rel_path: str) -> str:
-    """Return the SourceArtifact id for a file (``artifact:file:<path>``)."""
-    return f"artifact:file:{_portable(rel_path)}"
-
-
-def symbol_artifact_id(qname: str, kind: str) -> str:
-    """Return the SourceArtifact id for a symbol (``artifact:<kind>:<qname>``)."""
-    return f"artifact:{kind}:{qname}"
+#
+# The workspace, file and symbol identifier constructors that this comment
+# used to introduce now live in :mod:`hrca.identity` and are re-exported at the
+# top of this module. The behavior, correspondence and projection identifiers
+# below are Twin-store concepts and stay here.
 
 
 def behavior_node_id(qname: str, category: str, ordinal: int) -> str:
@@ -231,20 +228,6 @@ def migrate_store(raw: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Option
     if version not in MIGRATIONS:
         return None, "schema_version is not migratable"
     return MIGRATIONS[version](dict(raw)), None
-
-
-# -- baseline fingerprint ------------------------------------------------
-
-def baseline_fingerprint(file_fingerprints: Dict[str, Optional[str]]) -> str:
-    """Return a deterministic fingerprint over ``{path: fingerprint}``.
-
-    The baseline captures *which* supported files exist and *what* content each
-    has, so a content change, an addition, or a removal always changes the
-    fingerprint while a byte-identical rescan keeps it unchanged.
-    """
-    pairs = [(p, fp) for p, fp in sorted(file_fingerprints.items())]
-    canon = json.dumps(pairs, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return sha256_hex(canon.encode("utf-8"))
 
 
 def dumps(store: Dict[str, Any]) -> str:

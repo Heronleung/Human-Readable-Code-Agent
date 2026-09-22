@@ -48,7 +48,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import codemap, codemap_draft, twin
+from . import codemap, codemap_draft
+from .identity import ARTIFACT_FILE, sha256_hex
 
 PROPOSAL_SCHEMA_VERSION = "1.0.0"
 PROPOSAL_GENERATOR = "hrca-proposal"
@@ -130,7 +131,7 @@ def dumps(obj: Any) -> str:
 
 def _proposal_id_for(package: Dict[str, Any]) -> str:
     canon = dumps({k: v for k, v in package.items() if k != "proposal_id"})
-    return "proposal:" + twin.sha256_hex(canon.encode("utf-8"))
+    return "proposal:" + sha256_hex(canon.encode("utf-8"))
 
 
 # -- source grounding helpers ---------------------------------------------
@@ -169,7 +170,7 @@ def _artifact_refs_for_locator(
         for art in store.get("artifacts", []):
             if not isinstance(art, dict):
                 continue
-            if art.get("kind") == twin.ARTIFACT_FILE and art.get("module") == locator:
+            if art.get("kind") == ARTIFACT_FILE and art.get("module") == locator:
                 refs.append(
                     {"locator": locator, "path": art.get("path"), "kind": art.get("kind")}
                 )

@@ -98,7 +98,8 @@ import stat
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import candidate_diff, candidate_edit, impact_proposal, intent_delta, twin
+from . import candidate_diff, candidate_edit, impact_proposal, intent_delta
+from .identity import file_artifact_id, sha256_hex
 
 CANDIDATE_SCHEMA_VERSION = "1.0.0"
 CANDIDATE_GENERATOR = "hrca-candidate"
@@ -265,7 +266,7 @@ def _mutation_surface() -> Dict[str, bool]:
 def candidate_id_for(manifest: Dict[str, Any]) -> str:
     """Return the content-addressed identity of a candidate manifest."""
     canon = dumps({k: v for k, v in manifest.items() if k != "candidate_id"})
-    return CANDIDATE_ID_PREFIX + twin.sha256_hex(canon.encode("utf-8"))
+    return CANDIDATE_ID_PREFIX + sha256_hex(canon.encode("utf-8"))
 
 
 def candidate_root_name(candidate_id: str) -> str:
@@ -361,7 +362,7 @@ def _read_predecessor(
         {
             "bytes": data,
             "text": text,
-            "sha256": twin.sha256_hex(data),
+            "sha256": sha256_hex(data),
             "size": len(data),
             "stat_key": (info.st_ino, info.st_size, info.st_mtime_ns),
         },
@@ -383,7 +384,7 @@ def _predecessor_moved(root_real: str, path: str, record: Dict[str, Any]) -> boo
             data = handle.read(MAX_FILE_BYTES + 1)
     except OSError:
         return True
-    return twin.sha256_hex(data) != record["sha256"]
+    return sha256_hex(data) != record["sha256"]
 
 
 # -- authorization ---------------------------------------------------------
@@ -443,7 +444,7 @@ def _bound_artifact(
     if not bound:
         return None, REASON_TWIN_IDENTITY_UNBOUND
 
-    artifact_id = twin.file_artifact_id(path)
+    artifact_id = file_artifact_id(path)
     for record in store.get("artifacts") or []:
         if isinstance(record, dict) and record.get("id") == artifact_id:
             return record, None
@@ -531,7 +532,7 @@ def _stage(
         for path, data in entries:
             staged = os.path.join(staging, FILES_DIR, *path.split("/"))
             with open(staged, "rb") as handle:
-                if twin.sha256_hex(handle.read()) != twin.sha256_hex(data):
+                if sha256_hex(handle.read()) != sha256_hex(data):
                     raise _Staging(REASON_VERIFY_FAILED)
         with open(os.path.join(staging, MANIFEST_NAME), "rb") as handle:
             if handle.read() != manifest_bytes:
@@ -883,7 +884,7 @@ def build_candidate(
 
         record["before_sha256"] = predecessor["sha256"]
         record["before_bytes"] = predecessor["size"]
-        record["after_sha256"] = twin.sha256_hex(replacement_text.encode("utf-8"))
+        record["after_sha256"] = sha256_hex(replacement_text.encode("utf-8"))
         record["after_bytes"] = len(replacement_text.encode("utf-8"))
         record["before_final_newline"] = candidate_diff.final_newline(predecessor["text"])
         record["after_final_newline"] = candidate_diff.final_newline(replacement_text)

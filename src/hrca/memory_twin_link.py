@@ -77,6 +77,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 from . import twin
+from .identity import ARTIFACT_FILE
 
 LINK_SCHEMA_VERSION = "1.0.0"
 
@@ -154,7 +155,7 @@ def parse_entity_id(entity_id: Any) -> Tuple[Optional[str], Optional[str], Optio
     kind, body = parts[1], parts[2]
     if kind not in twin.ARTIFACT_KINDS or not body:
         return None, None, REASON_ENTITY_MALFORMED
-    if kind == twin.ARTIFACT_FILE:
+    if kind == ARTIFACT_FILE:
         if len(body) > MAX_LOCATOR_CHARS or _unsafe_rel_path(body):
             return None, None, REASON_ENTITY_MALFORMED
     else:

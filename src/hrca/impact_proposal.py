@@ -90,6 +90,7 @@ import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import intent_delta, scanner, twin
+from .identity import ARTIFACT_FILE, sha256_hex
 
 IMPACT_SCHEMA_VERSION = "1.0.0"
 IMPACT_GENERATOR = "hrca-impact-proposal"
@@ -400,7 +401,7 @@ def _resolve_scope(
         artifact = next(iter(candidates.values()))
         binding = (
             BINDING_ENTITY_MODULE
-            if artifact.get("kind") == twin.ARTIFACT_FILE
+            if artifact.get("kind") == ARTIFACT_FILE
             else BINDING_ENTITY_LOCATOR
         )
         take(artifact, entity, binding)
@@ -456,7 +457,7 @@ def _contained_facts(
         artifact = entry["artifact"]
         if not readable(artifact.get("path")):
             continue
-        if artifact.get("kind") == twin.ARTIFACT_FILE:
+        if artifact.get("kind") == ARTIFACT_FILE:
             path = artifact["path"]
             symbols = [s for s in indexes["symbols"] if s.get("file") == path]
             relations = [r for r in indexes["relations"] if r.get("file") == path]
@@ -685,7 +686,7 @@ def _risks(
                 }
             )
     if any(
-        entry["artifact"].get("kind") == twin.ARTIFACT_FILE for entry in bound.values()
+        entry["artifact"].get("kind") == ARTIFACT_FILE for entry in bound.values()
     ):
         out.append(
             {
@@ -887,7 +888,7 @@ def _binding_record(
         },
         "twin_schema_version": store.get("schema_version"),
     }
-    record["binding_fingerprint"] = BINDING_ID_PREFIX + twin.sha256_hex(
+    record["binding_fingerprint"] = BINDING_ID_PREFIX + sha256_hex(
         dumps(record).encode("utf-8")
     )
     return record
@@ -896,7 +897,7 @@ def _binding_record(
 def impact_proposal_id_for(proposal: Dict[str, Any]) -> str:
     """Return the content-addressed identity of a proposal (never time-derived)."""
     canon = dumps({k: v for k, v in proposal.items() if k != "proposal_id"})
-    return IMPACT_ID_PREFIX + twin.sha256_hex(canon.encode("utf-8"))
+    return IMPACT_ID_PREFIX + sha256_hex(canon.encode("utf-8"))
 
 
 # -- derivation ------------------------------------------------------------
@@ -959,7 +960,7 @@ def build_impact_proposal(
         if isinstance(locator, str) and locator:
             indexes["by_locator"].setdefault(locator, []).append(artifact)
             indexes["symbol_artifacts"].setdefault(locator, artifact["id"])
-        if artifact.get("kind") == twin.ARTIFACT_FILE:
+        if artifact.get("kind") == ARTIFACT_FILE:
             module = artifact.get("module")
             if isinstance(module, str) and module:
                 indexes["by_module"].setdefault(module, []).append(artifact)

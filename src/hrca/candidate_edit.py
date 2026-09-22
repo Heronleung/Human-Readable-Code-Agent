@@ -61,7 +61,7 @@ import json
 import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import twin
+from .identity import sha256_hex
 
 CANDIDATE_EDIT_SCHEMA_VERSION = "1.0.0"
 CANDIDATE_EDIT_GENERATOR = "hrca-candidate-edit"
@@ -374,7 +374,7 @@ def _normalize_identifiers(raw: Dict[str, Any]) -> Dict[str, Any]:
 def edit_id_for(edit: Dict[str, Any]) -> str:
     """Return the content-addressed identity of an edit (never time-derived)."""
     canon = dumps({k: v for k, v in edit.items() if k != "edit_id"})
-    return EDIT_ID_PREFIX + twin.sha256_hex(canon.encode("utf-8"))
+    return EDIT_ID_PREFIX + sha256_hex(canon.encode("utf-8"))
 
 
 def build_edit(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
