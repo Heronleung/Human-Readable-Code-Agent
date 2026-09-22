@@ -25,10 +25,15 @@ import os
 import tempfile
 from typing import Optional, Tuple
 
-from . import twin, codemap_draft
+from . import codemap_draft, storage, twin
 
-# App-data directory name (per user), independent of any selected repository.
-_APP_DIR_NAME = "human-readable-code-agent"
+# The application-data root is re-exported from :mod:`hrca.storage` (B2), which
+# owns it. It is the same function object, so `twin_store.app_data_dir()`
+# returns exactly what it always returned and every existing caller — including
+# the tests that assert it is never the repository — keeps working unchanged.
+# The per-user directory leaf each platform uses is a compatibility
+# requirement; see :mod:`hrca.storage`.
+from .storage import app_data_dir
 
 # File name of the canonical Twin store within a workspace directory.
 TWIN_STORE_FILENAME = "twin.json"
@@ -42,23 +47,6 @@ DRAFT_STORE_FILENAME = "draft.json"
 # directory as the target so ``os.replace`` is atomic on the same filesystem.
 _TMP_PREFIX = ".twin-"
 _TMP_SUFFIX = ".tmp"
-
-
-def app_data_dir() -> str:
-    """Return the per-user app-data directory that owns all Twin storage.
-
-    Uses the platform convention and never consults the selected repository:
-
-    * Windows — ``%LOCALAPPDATA%`` (falling back to the home directory);
-    * POSIX  — ``$XDG_DATA_HOME`` (falling back to ``~/.local/share``).
-    """
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        return os.path.join(base, "HumanReadableCodeAgent")
-    base = os.environ.get("XDG_DATA_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "share"
-    )
-    return os.path.join(base, _APP_DIR_NAME)
 
 
 def _namespace(workspace_id: str) -> str:
@@ -156,7 +144,7 @@ def save(base_dir: str, workspace_id: str, store: dict) -> Optional[str]:
     err = _ensure_dir(dirpath)
     if err is not None:
         return err
-    return _atomic_write(dirpath, path, twin.dumps(store).encode("utf-8"), "Twin store")
+    return _atomic_write(dirpath, path, storage.dumps(store).encode("utf-8"), "Twin store")
 
 
 def load_draft(base_dir: str, workspace_id: str) -> Tuple[Optional[dict], Optional[str]]:

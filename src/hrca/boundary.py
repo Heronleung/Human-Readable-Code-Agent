@@ -59,6 +59,7 @@ from . import (
     provider_config,
     rule_delta,
     rule_delta_interpret,
+    storage,
     twin,
     twin_store,
     verifier,
@@ -95,7 +96,7 @@ class WorkspaceSession:
         runner: Any = None,
     ) -> None:
         self.root: Optional[str] = None
-        self.store_base: str = store_base or twin_store.app_data_dir()
+        self.store_base: str = store_base or storage.app_data_dir()
         # Backend-owned credential store, injected for tests; resolved lazily to
         # the platform store by the readiness handler so a ``--serve`` loop that
         # never queries readiness never constructs (or touches) a credential

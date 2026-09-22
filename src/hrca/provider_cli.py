@@ -19,7 +19,7 @@ import json
 import sys
 from typing import Any, Callable, Dict, Optional, Sequence
 
-from . import credential_store, deepseek, provider_config, twin_store
+from . import credential_store, deepseek, provider_config, storage
 
 # Argument sentinel used by the unified entry executable (see hrca.app).
 PROVIDER_SENTINEL = "--provider"
@@ -97,7 +97,7 @@ def run(
 ) -> int:
     """Run one subcommand with injected dependencies (testable)."""
     store = store if store is not None else credential_store.make_credential_store()
-    base_dir = base_dir if base_dir is not None else twin_store.app_data_dir()
+    base_dir = base_dir if base_dir is not None else storage.app_data_dir()
     prompt = prompt if prompt is not None else getpass.getpass
     if subcommand == _ENROLL:
         return _enroll(store, prompt)

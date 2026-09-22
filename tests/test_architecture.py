@@ -1200,5 +1200,108 @@ class IdentitySeamTests(unittest.TestCase):
         self.assertEqual(set(_DIRECT_HASHLIB_MODULES), found)
 
 
+# -- the storage seam (B2) -----------------------------------------------
+#
+# ``hrca.storage`` owns the application-data root, canonical serialization and
+# the generic migration engine. It must stay generic: a storage module that
+# names a schema, a capability or a platform privileged surface has stopped
+# being one. ``hrca.twin`` and ``hrca.twin_store`` re-export what they used to
+# own.
+
+_STORAGE_MODULE = os.path.join(_SRC, "storage.py")
+_TWIN_STORE_MODULE = os.path.join(_SRC, "twin_store.py")
+
+# Privileged or non-generic hosts storage must never reach. ``os`` and ``json``
+# are deliberately absent: resolving a per-user directory and serializing a
+# mapping are the two things this module is *for*.
+_STORAGE_FORBIDDEN_IMPORTS = frozenset(
+    {
+        "subprocess", "socket", "urllib", "http", "ssl", "requests",
+        "shutil", "tempfile", "pathlib", "io", "sys", "sqlite3", "pickle",
+        "importlib", "time", "datetime", "random", "secrets", "uuid",
+        "logging", "warnings", "ctypes", "winreg", "PySide6",
+        "PyQt5", "PyQt6",
+    }
+)
+
+# Names that would mean storage had learned what it stores. Each is a schema
+# version or a migration registry owned by some capability.
+_STORAGE_FORBIDDEN_DEFINITIONS = frozenset(
+    {
+        "TWIN_SCHEMA_VERSION", "MIGRATIONS", "TWIN_GENERATOR",
+        "MEMORY_SCHEMA_VERSION", "DOCUMENT_SCHEMA_VERSION",
+        "LIBRARY_SCHEMA_VERSION", "CANDIDATE_EDIT_SCHEMA_VERSION",
+        "VALIDATION_PLAN_SCHEMA_VERSION", "CODEMAP_DRAFT_SCHEMA_VERSION",
+        "INTENT_DELTA_SCHEMA_VERSION", "SCHEMA_VERSION",
+    }
+)
+
+
+class StorageSeamTests(unittest.TestCase):
+    """hrca.storage is generic; Twin keeps its own schema and registry."""
+
+    def test_the_storage_module_exists(self):
+        self.assertTrue(os.path.isfile(_STORAGE_MODULE))
+
+    def test_the_storage_module_imports_no_hrca_module(self):
+        imported = _imported_top_level_names(_STORAGE_MODULE)
+        hrca_names = {
+            name for name in imported if os.path.isfile(os.path.join(_SRC, name + ".py"))
+        }
+        self.assertEqual(set(), hrca_names)
+
+    def test_the_storage_module_reaches_no_privileged_or_ui_host(self):
+        imported = _imported_top_level_names(_STORAGE_MODULE)
+        offending = sorted(imported & _STORAGE_FORBIDDEN_IMPORTS)
+        self.assertEqual([], offending)
+
+    def test_the_storage_module_owns_no_schema_or_migration_registry(self):
+        defined = _top_level_definitions(_STORAGE_MODULE)
+        offending = sorted(defined & _STORAGE_FORBIDDEN_DEFINITIONS)
+        self.assertEqual([], offending)
+
+    def test_the_storage_module_names_no_store_or_capability(self):
+        # A directory leaf for the application root is storage's business; a
+        # name for a *particular* store is not.
+        defined = _top_level_definitions(_STORAGE_MODULE)
+        for name in sorted(defined):
+            lowered = name.lower()
+            for capability in ("twin", "memory", "candidate", "validation",
+                               "provider", "credential", "library", "document",
+                               "codemap", "runner", "client"):
+                self.assertNotIn(capability, lowered, name)
+
+    def test_twin_store_re_exports_the_application_data_root(self):
+        reexported = _imported_from(_TWIN_STORE_MODULE, "storage")
+        self.assertIn("app_data_dir", reexported)
+
+    def test_twin_store_no_longer_defines_the_root(self):
+        defined = _top_level_definitions(_TWIN_STORE_MODULE)
+        self.assertNotIn("app_data_dir", defined)
+
+    def test_twin_keeps_its_schema_version_and_registry(self):
+        defined = _top_level_definitions(_TWIN_MODULE)
+        self.assertIn("TWIN_SCHEMA_VERSION", defined)
+        self.assertIn("MIGRATIONS", defined)
+
+    def test_twin_re_exports_the_serializer_rather_than_redefining_it(self):
+        reexported = _imported_from(_TWIN_MODULE, "storage")
+        self.assertIn("dumps", reexported)
+        defined = _top_level_definitions(_TWIN_MODULE)
+        self.assertNotIn("dumps", defined)
+
+    def test_no_module_but_storage_defines_the_application_root(self):
+        offenders = []
+        for name in sorted(os.listdir(_SRC)):
+            if not name.endswith(".py"):
+                continue
+            module = name[:-3]
+            if module in ("storage", "twin_store"):
+                continue
+            if "app_data_dir" in _top_level_definitions(os.path.join(_SRC, name)):
+                offenders.append(module)
+        self.assertEqual([], offenders)
+
+
 if __name__ == "__main__":
     unittest.main()

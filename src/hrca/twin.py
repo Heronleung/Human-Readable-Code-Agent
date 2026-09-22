@@ -63,6 +63,21 @@ from .identity import (
     workspace_id_for,
 )
 
+# -- relocated storage concerns (B2) -------------------------------------
+#
+# The canonical serializer and the generic schema-migration engine now live in
+# :mod:`hrca.storage`, which owns them: every store in the package needs both,
+# and neither is Twin knowledge. They are re-exported rather than
+# reimplemented, so ``twin.dumps`` and ``twin._version_tuple`` resolve to the
+# same objects as their ``hrca.storage`` equivalents and no stored byte and no
+# physical path changes.
+#
+# What stays here is what is genuinely the Twin's: ``TWIN_SCHEMA_VERSION`` and
+# the ``MIGRATIONS`` registry below. The engine runs a migration chain; the
+# Twin owns its own.
+from . import storage
+from .storage import dumps, version_tuple as _version_tuple
+
 TWIN_SCHEMA_VERSION = "1.0.0"
 TWIN_GENERATOR = "hrca-twin"
 
@@ -195,11 +210,11 @@ def projection_id(artifact_id: str) -> str:
 # registry is empty; it exists so later phases can add migrations without
 # changing the load path. A store with a *future* (or unknown) version is never
 # migrated and never overwritten.
+#
+# The registry and the version it is keyed to are the Twin's. The engine that
+# runs a chain over them is :func:`hrca.storage.migrate`; keeping the two apart
+# is what lets another store migrate without importing the Twin.
 MIGRATIONS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {}
-
-
-def _version_tuple(version: str) -> Tuple[int, ...]:
-    return tuple(int(p) for p in version.split(".") if p.isdigit()) or (0,)
 
 
 def migrate_store(raw: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -210,29 +225,9 @@ def migrate_store(raw: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Option
     ``error`` is a bounded reason. The caller must retain the last valid store
     whenever this returns an error.
     """
-    if not isinstance(raw, dict):
-        return None, "store is not a mapping"
-    version = raw.get("schema_version")
-    if not isinstance(version, str) or not version:
-        return None, "missing schema_version"
-    try:
-        current = _version_tuple(TWIN_SCHEMA_VERSION)
-        found = _version_tuple(version)
-    except ValueError:
-        return None, "invalid schema_version"
-
-    if found == current:
-        return raw, None
-    if found > current:
-        return None, "schema_version is newer than supported"
-    if version not in MIGRATIONS:
-        return None, "schema_version is not migratable"
-    return MIGRATIONS[version](dict(raw)), None
-
-
-def dumps(store: Dict[str, Any]) -> str:
-    """Serialize a store to a single-line, deterministic, ASCII-safe JSON string."""
-    return json.dumps(store, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return storage.migrate(
+        raw, current_version=TWIN_SCHEMA_VERSION, migrations=MIGRATIONS
+    )
 
 
 # -- scanner-fact indexing -----------------------------------------------
