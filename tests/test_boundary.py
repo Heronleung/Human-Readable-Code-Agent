@@ -825,9 +825,16 @@ class BoundaryHandlerRegistryTests(unittest.TestCase):
         # failure rather than a request-time surprise.
         self.assertIsInstance(boundary._BOUNDARY_HANDLERS, boundary._HandlerRegistry)
 
-    def test_the_registry_owns_exactly_the_proof_action(self):
+    def test_the_registry_owns_the_read_only_actions(self):
         self.assertEqual(
-            (contract.ACTION_GET_TREE,),
+            (
+                contract.ACTION_GET_TREE,
+                contract.ACTION_GET_DOCUMENT,
+                contract.ACTION_DOCUMENT_LIST,
+                contract.ACTION_DOCUMENT_LIST_VERSIONS,
+                contract.ACTION_DOCUMENT_GET_CANDIDATE,
+                contract.ACTION_DOCUMENT_PREVIEW,
+            ),
             boundary._BOUNDARY_HANDLERS.actions(),
         )
 
@@ -838,20 +845,63 @@ class BoundaryHandlerRegistryTests(unittest.TestCase):
         )
 
     def test_the_entries_name_the_action_by_contract_constant(self):
-        # One literal entry, and it is the handler the chain used to call.
-        self.assertEqual(
-            ((contract.ACTION_GET_TREE, boundary._get_tree_result),),
-            boundary._BOUNDARY_HANDLER_ENTRIES,
+        # Every entry pairs a contract constant with the very handler the chain
+        # used to call for it: the registry took over dispatch, it did not
+        # replace the handler.
+        expected = (
+            (contract.ACTION_GET_TREE, boundary._get_tree_result),
+            (contract.ACTION_GET_DOCUMENT, boundary._get_document_result),
+            (contract.ACTION_DOCUMENT_LIST, boundary._list_documents_result),
+            (
+                contract.ACTION_DOCUMENT_LIST_VERSIONS,
+                boundary._list_versions_result,
+            ),
+            (
+                contract.ACTION_DOCUMENT_GET_CANDIDATE,
+                boundary._get_candidate_result,
+            ),
+            (contract.ACTION_DOCUMENT_PREVIEW, boundary._preview_document_result),
         )
+        self.assertEqual(expected, boundary._BOUNDARY_HANDLER_ENTRIES)
 
     def test_no_other_allowed_action_is_registered(self):
-        # The B3a boundary: everything except `get_tree` is still on the chain.
+        # The B3b-A boundary: these six are registered, and the remaining 55
+        # allowed actions are still on the chain they always used.
         registered = {
             action
             for action in contract.ALLOWED_ACTIONS
             if boundary._BOUNDARY_HANDLERS.resolve(action) is not None
         }
-        self.assertEqual({contract.ACTION_GET_TREE}, registered)
+        self.assertEqual(
+            {
+                contract.ACTION_GET_TREE,
+                contract.ACTION_GET_DOCUMENT,
+                contract.ACTION_DOCUMENT_LIST,
+                contract.ACTION_DOCUMENT_LIST_VERSIONS,
+                contract.ACTION_DOCUMENT_GET_CANDIDATE,
+                contract.ACTION_DOCUMENT_PREVIEW,
+            },
+            registered,
+        )
+        self.assertEqual(len(contract.ALLOWED_ACTIONS) - 6, len(
+            [a for a in contract.ALLOWED_ACTIONS
+             if boundary._BOUNDARY_HANDLERS.resolve(a) is None]
+        ))
+
+    def test_actions_held_for_later_packages_are_not_registered(self):
+        for action in (
+            contract.ACTION_OPEN_PROJECT,
+            contract.ACTION_SCAN,
+            contract.ACTION_DOCUMENT_SAVE,
+            contract.ACTION_DOCUMENT_ADOPT,
+            contract.ACTION_MEMORY_DOCUMENTS,
+            contract.ACTION_LIBRARY_GET,
+            contract.ACTION_GET_PACKAGE,
+            contract.ACTION_GET_READINESS,
+            contract.ACTION_SYNC_TWIN,
+        ):
+            with self.subTest(action=action):
+                self.assertIsNone(boundary._BOUNDARY_HANDLERS.resolve(action))
 
     def test_no_twin_provider_or_execution_action_is_registered(self):
         for action in (
@@ -984,6 +1034,217 @@ class BoundaryHandlerRegistryTests(unittest.TestCase):
         doc_env = loads(responses[1])
         self.assertTrue(doc_env["ok"])
         self.assertEqual("main.py", doc_env["result"]["name"])
+
+
+class BoundaryRegisteredReadTests(unittest.TestCase):
+    """The six registered read actions, exercised end to end.
+
+    These go through ``handle_request``, so they exercise the registry itself:
+    the architecture tests prove no legacy ``elif`` still claims these actions,
+    and these prove the actions still answer exactly as they did.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.session = boundary.WorkspaceSession(store_base=self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _do(self, action, **overrides):
+        return boundary.handle_request(
+            _workspace_request(action, **overrides), self.session
+        )
+
+    def _make_document(self, name="notes.md"):
+        created = self._do(contract.ACTION_DOCUMENT_CREATE, name=name)
+        self.assertTrue(created["ok"])
+        return created["result"]["document"]["document_id"]
+
+    def _make_candidate(self):
+        document_id = self._make_document()
+        saved = self._do(
+            contract.ACTION_DOCUMENT_SAVE,
+            document_id=document_id,
+            content="v1",
+            base_revision_id=None,
+        )
+        self.assertTrue(saved["ok"])
+        created = self._do(
+            contract.ACTION_DOCUMENT_CREATE_CANDIDATE, document_id=document_id
+        )
+        self.assertTrue(created["ok"])
+        return document_id, created["result"]["candidate"]["candidate_id"]
+
+    # -- get_document ----------------------------------------------------
+
+    def test_get_document_reads_a_permitted_file(self):
+        self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        env = self._do(contract.ACTION_GET_DOCUMENT, path="app/main.py")
+        self.assertTrue(env["ok"])
+        self.assertEqual("main.py", env["result"]["name"])
+        self.assertEqual("source", env["result"]["kind"])
+
+    def test_get_document_refuses_without_an_accepted_root(self):
+        env = self._do(contract.ACTION_GET_DOCUMENT, path="app/main.py")
+        self.assertFalse(env["ok"])
+        self.assertEqual("project_not_open", env["error"]["code"])
+
+    def test_get_document_refuses_a_path_that_escapes(self):
+        self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        env = self._do(contract.ACTION_GET_DOCUMENT, path="../escape.py")
+        self.assertFalse(env["ok"])
+        self.assertEqual("path_not_allowed", env["error"]["code"])
+
+    def test_get_document_is_unavailable_for_a_missing_file(self):
+        self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        env = self._do(contract.ACTION_GET_DOCUMENT, path="nope.py")
+        self.assertTrue(env["ok"])
+        self.assertEqual("unavailable", env["result"]["kind"])
+        self.assertEqual("path_not_found", env["result"]["reason"])
+
+    # -- list_documents --------------------------------------------------
+
+    def test_list_documents_starts_empty(self):
+        env = self._do(contract.ACTION_DOCUMENT_LIST)
+        self.assertTrue(env["ok"])
+        self.assertEqual([], env["result"]["documents"])
+
+    def test_list_documents_lists_a_created_document(self):
+        document_id = self._make_document()
+        env = self._do(contract.ACTION_DOCUMENT_LIST)
+        self.assertTrue(env["ok"])
+        self.assertEqual(
+            [document_id], [d["document_id"] for d in env["result"]["documents"]]
+        )
+
+    def test_list_documents_refuses_an_invalid_request_never(self):
+        # The action takes no arguments, so the only way it could refuse is a
+        # malformed envelope — which the dispatcher refuses before dispatch.
+        env = boundary.handle_request(
+            {"contract_version": "0.0.1", "action": contract.ACTION_DOCUMENT_LIST}
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("unknown_contract_version", env["error"]["code"])
+
+    # -- list_versions ---------------------------------------------------
+
+    def test_list_versions_reads_an_existing_document(self):
+        document_id = self._make_document()
+        env = self._do(
+            contract.ACTION_DOCUMENT_LIST_VERSIONS, document_id=document_id
+        )
+        self.assertTrue(env["ok"])
+        self.assertEqual([], env["result"]["versions"])
+
+    def test_list_versions_refuses_a_missing_document(self):
+        env = self._do(
+            contract.ACTION_DOCUMENT_LIST_VERSIONS, document_id="doc:absent"
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("document_not_found", env["error"]["code"])
+
+    def test_list_versions_refuses_an_invalid_request(self):
+        env = self._do(contract.ACTION_DOCUMENT_LIST_VERSIONS)
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- get_candidate ---------------------------------------------------
+
+    def test_get_candidate_reads_a_created_candidate(self):
+        document_id, candidate_id = self._make_candidate()
+        env = self._do(
+            contract.ACTION_DOCUMENT_GET_CANDIDATE,
+            document_id=document_id,
+            candidate_id=candidate_id,
+        )
+        self.assertTrue(env["ok"])
+        self.assertEqual(candidate_id, env["result"]["candidate"]["candidate_id"])
+
+    def test_get_candidate_refuses_an_unknown_candidate(self):
+        document_id = self._make_document()
+        env = self._do(
+            contract.ACTION_DOCUMENT_GET_CANDIDATE,
+            document_id=document_id,
+            candidate_id="cand:absent",
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("candidate_not_found", env["error"]["code"])
+
+    def test_get_candidate_refuses_an_invalid_request(self):
+        env = self._do(contract.ACTION_DOCUMENT_GET_CANDIDATE)
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- preview_document ------------------------------------------------
+
+    def test_preview_document_reads_a_created_document(self):
+        document_id = self._make_document()
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=document_id)
+        self.assertTrue(env["ok"])
+        self.assertIn("binding", env["result"])
+        self.assertIn("evidence", env["result"])
+        # A document with no candidate has no bound evidence yet, and the
+        # preview says so rather than inventing an execution outcome.
+        self.assertIsNone(env["result"]["evidence"])
+
+    def test_preview_document_reports_evidence_for_a_bound_candidate(self):
+        document_id, _ = self._make_candidate()
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=document_id)
+        self.assertTrue(env["ok"])
+        evidence = env["result"]["evidence"]
+        self.assertIsNotNone(evidence)
+        # Previewing is not executing: the read-model says so explicitly.
+        self.assertFalse(evidence["execution_performed"])
+
+    def test_preview_document_refuses_a_missing_document(self):
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id="doc:absent")
+        self.assertFalse(env["ok"])
+        self.assertEqual("document_not_found", env["error"]["code"])
+
+    def test_preview_document_refuses_an_invalid_request(self):
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW)
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- what the registered set does and does not need -------------------
+
+    def test_the_store_backed_reads_need_no_project_root(self):
+        # Four of the six read the app-data store rather than the accepted
+        # repository, so they have no ``project_not_open`` path at all. Only
+        # ``get_document`` and ``get_tree`` are root-scoped.
+        self.assertTrue(self._do(contract.ACTION_DOCUMENT_LIST)["ok"])
+        document_id = self._make_document()
+        self.assertTrue(
+            self._do(
+                contract.ACTION_DOCUMENT_LIST_VERSIONS, document_id=document_id
+            )["ok"]
+        )
+        self.assertTrue(
+            self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=document_id)["ok"]
+        )
+        self.assertIsNone(self.session.root)
+
+    def test_dispatch_really_goes_through_the_registry(self):
+        # The direct proof of the seam: replace a registry entry and watch the
+        # registered handler answer. If the legacy chain still owned this
+        # action, the spy would never be called.
+        self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        seen = []
+        real = boundary._get_document_result
+
+        def spy(request, session):
+            seen.append(request.get("action"))
+            return real(request, session)
+
+        with mock.patch.dict(
+            boundary._BOUNDARY_HANDLERS._handlers,
+            {contract.ACTION_GET_DOCUMENT: spy},
+        ):
+            env = self._do(contract.ACTION_GET_DOCUMENT, path="app/main.py")
+        self.assertEqual(["get_document"], seen)
+        self.assertTrue(env["ok"])
+        self.assertEqual("main.py", env["result"]["name"])
 
 
 if __name__ == "__main__":

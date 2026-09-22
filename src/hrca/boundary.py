@@ -257,9 +257,10 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _scan_result(request)
     elif action == contract.ACTION_OPEN_PROJECT:
         result = _open_project_result(request, session)
-    # ``get_tree`` is registered above; it deliberately has no branch here.
-    elif action == contract.ACTION_GET_DOCUMENT:
-        result = _get_document_result(request, session)
+    # The actions the registry owns deliberately have no branch here — a
+    # migrated action has exactly one owner, never two. They are ``get_tree``,
+    # ``get_document``, ``list_documents``, ``list_versions``, ``get_candidate``
+    # and ``preview_document``.
     elif action == contract.ACTION_SYNC_TWIN:
         result = _sync_twin_result(request, session)
     elif action == contract.ACTION_GET_TWIN:
@@ -312,20 +313,12 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _open_document_result(request, session)
     elif action == contract.ACTION_DOCUMENT_SAVE:
         result = _save_document_result(request, session)
-    elif action == contract.ACTION_DOCUMENT_LIST:
-        result = _list_documents_result(request, session)
     elif action == contract.ACTION_DOCUMENT_CREATE_CANDIDATE:
         result = _create_candidate_result(request, session)
-    elif action == contract.ACTION_DOCUMENT_GET_CANDIDATE:
-        result = _get_candidate_result(request, session)
     elif action == contract.ACTION_DOCUMENT_ADOPT:
         result = _adopt_candidate_result(request, session)
-    elif action == contract.ACTION_DOCUMENT_LIST_VERSIONS:
-        result = _list_versions_result(request, session)
     elif action == contract.ACTION_DOCUMENT_RESTORE:
         result = _restore_version_result(request, session)
-    elif action == contract.ACTION_DOCUMENT_PREVIEW:
-        result = _preview_document_result(request, session)
     elif action == contract.ACTION_LIBRARY_GET:
         result = _get_library_result(request, session)
     elif action == contract.ACTION_LIBRARY_CREATE_FOLDER:
@@ -3251,20 +3244,18 @@ def _resolve_memory_code_freshness_result(
     return memory_twin_link.resolve_freshness(link, store, workspace_id)
 
 
-# -- boundary handler registry (B3a) -------------------------------------
+# -- boundary handler registry (B3a / B3b-A) -----------------------------
 #
 # This module's dispatch has grown one ``elif`` per action, and it must import
 # every capability it can serve. That is why the boundary is the one module
 # that knows all of them, and why a capability cannot stop being dispatched
 # without editing the hub itself.
 #
-# The registry is the seam that changes that. B3a proves the seam on exactly
-# one action — ``get_tree``, a read-only workspace read that needs no Twin,
-# provider, credential, container or repository-write authority — and leaves
-# every other action on the chain it already used. This package does not
-# migrate the dispatch surface; it establishes that a handler can be owned in
-# one place and that a bad registration fails loudly at startup rather than
-# quietly at request time.
+# The registry is the seam that changes that. B3a proved it on a single action
+# (``get_tree``); B3b-A extends it to the read-only document reads. Every other
+# action stays on the chain it already used. A migrated action has exactly one
+# owner — its registry entry — and no branch here, so the two can never
+# disagree about which handler answers a request.
 #
 # Registration is **code-owned and literal**. There is no discovery of any kind
 # here: no dynamic import, no package walk, no entry-point scan, no subclass
@@ -3333,11 +3324,23 @@ class _HandlerRegistry:
         return tuple(self._handlers)
 
 
-# The registry's entire contents. One literal entry, naming its action with the
-# contract's constant rather than a string literal, so a rename in the contract
-# becomes a failing test instead of a silently dead handler.
+# The registry's contents: the read-side actions it owns so far. Every entry
+# names its action with the contract's constant rather than a string literal,
+# so a rename in the contract becomes a failing test instead of a silently dead
+# handler, and every handler is a named module-level function — never a lambda,
+# a partial, or an attribute borrowed from another module.
+#
+# These six are read-only: each returns a bounded read-model, writes no store,
+# reaches no Twin, provider, credential, runner or container surface, and reads
+# no clock. Everything else stays on the dispatch chain until its own package
+# is authorized.
 _BOUNDARY_HANDLER_ENTRIES: Tuple[Tuple[str, "Handler"], ...] = (
     (contract.ACTION_GET_TREE, _get_tree_result),
+    (contract.ACTION_GET_DOCUMENT, _get_document_result),
+    (contract.ACTION_DOCUMENT_LIST, _list_documents_result),
+    (contract.ACTION_DOCUMENT_LIST_VERSIONS, _list_versions_result),
+    (contract.ACTION_DOCUMENT_GET_CANDIDATE, _get_candidate_result),
+    (contract.ACTION_DOCUMENT_PREVIEW, _preview_document_result),
 )
 
 # Built at import, so a duplicate or a non-callable entry is a startup failure.

@@ -1346,6 +1346,88 @@ def _top_level_value(tree, name):
     return None
 
 
+def _contract_action_groups():
+    """Return ``{group_name: {action strings}}`` read from contract.py.
+
+    Resolved statically, because this module imports nothing from ``hrca`` —
+    that is what lets it police the package without depending on it.
+    """
+    with open(_CONTRACT_MODULE, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    consts, group_nodes = {}, {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                consts[name] = node.value.value
+            elif name.endswith("_ACTIONS"):
+                group_nodes[name] = node.value
+
+    def resolve(node, seen=frozenset()):
+        if isinstance(node, ast.Constant):
+            return {node.value}
+        if isinstance(node, ast.Name):
+            if node.id in group_nodes and node.id not in seen:
+                return resolve(group_nodes[node.id], seen | {node.id})
+            return {consts.get(node.id, node.id)}
+        if isinstance(node, (ast.Set, ast.Tuple, ast.List)):
+            found = set()
+            for element in node.elts:
+                found |= resolve(element, seen)
+            return found
+        if isinstance(node, ast.Call):
+            found = set()
+            for argument in node.args:
+                found |= resolve(argument, seen)
+            return found
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return resolve(node.left, seen) | resolve(node.right, seen)
+        return set()
+
+    return {name: resolve(node) for name, node in group_nodes.items()}, consts
+
+
+def _registry_entry_nodes():
+    """Return the ``(action, handler)`` AST nodes of the registry's entries."""
+    entries = _top_level_value(_boundary_module_tree(), _REGISTRY_ENTRIES_NAME)
+    if not isinstance(entries, ast.Tuple):
+        return None
+    pairs = []
+    for pair in entries.elts:
+        if not isinstance(pair, ast.Tuple) or len(pair.elts) != 2:
+            return None
+        pairs.append((pair.elts[0], pair.elts[1]))
+    return pairs
+
+
+def _registered_action_names():
+    """Return the ``ACTION_*`` attribute names the registry registers."""
+    pairs = _registry_entry_nodes()
+    if pairs is None:
+        return None
+    return [getattr(action, "attr", None) for action, _ in pairs]
+
+
+def _legacy_action_names():
+    """Return the ``ACTION_*`` names still owned by the dispatch chain."""
+    tree = _boundary_module_tree()
+    process = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_process":
+            process = node
+    if process is None:
+        return set()
+    names = set()
+    for node in ast.walk(process):
+        if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name):
+            if node.left.id != "action":
+                continue
+            for comparator in node.comparators:
+                if isinstance(comparator, ast.Attribute):
+                    names.add(comparator.attr)
+    return names
+
+
 class BoundaryRegistryIsolationTests(unittest.TestCase):
     """The registry searches for nothing and names its action exactly."""
 
@@ -1385,20 +1467,79 @@ class BoundaryRegistryIsolationTests(unittest.TestCase):
         self.assertIsNotNone(entries, "the registry entry tuple was not found")
         self.assertIsInstance(entries, ast.Tuple)
 
-    def test_the_registration_names_its_action_by_contract_constant(self):
-        entries = _top_level_value(_boundary_module_tree(), _REGISTRY_ENTRIES_NAME)
-        self.assertEqual(1, len(entries.elts), "B3a registers exactly one action")
-        pair = entries.elts[0]
-        self.assertIsInstance(pair, ast.Tuple)
-        action, handler = pair.elts
-        # ``contract.ACTION_GET_TREE`` — an attribute on the contract module,
-        # never a bare string literal that could drift from the real name.
-        self.assertIsInstance(action, ast.Attribute)
-        self.assertEqual("ACTION_GET_TREE", action.attr)
-        self.assertIsInstance(action.value, ast.Name)
-        self.assertEqual("contract", action.value.id)
-        self.assertIsInstance(handler, ast.Name)
-        self.assertEqual("_get_tree_result", handler.id)
+    def test_every_registration_names_its_action_by_contract_constant(self):
+        # ``contract.ACTION_X`` — an attribute on the contract module, never a
+        # bare string literal that could drift from the real action name.
+        pairs = _registry_entry_nodes()
+        self.assertIsNotNone(pairs, "the registry entries could not be read")
+        self.assertTrue(pairs)
+        for action, _ in pairs:
+            with self.subTest(action=ast.dump(action)):
+                self.assertIsInstance(action, ast.Attribute)
+                self.assertTrue(action.attr.startswith("ACTION_"), action.attr)
+                self.assertIsInstance(action.value, ast.Name)
+                self.assertEqual("contract", action.value.id)
+
+    def test_every_registration_names_a_module_level_function(self):
+        # A named function, never a lambda, a partial, or an attribute borrowed
+        # from another module — so a registration can always be read, grepped
+        # and pointed at.
+        with open(_BOUNDARY_MODULE, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        defined = {
+            node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+        }
+        pairs = _registry_entry_nodes()
+        self.assertIsNotNone(pairs)
+        for _, handler in pairs:
+            with self.subTest(handler=ast.dump(handler)):
+                self.assertIsInstance(handler, ast.Name)
+                self.assertIn(handler.id, defined)
+
+    def test_registered_action_constants_are_distinct(self):
+        names = _registered_action_names()
+        self.assertIsNotNone(names)
+        self.assertEqual(len(names), len(set(names)), names)
+
+    def test_every_registered_action_is_allowed(self):
+        groups, consts = _contract_action_groups()
+        allowed = groups["ALLOWED_ACTIONS"]
+        for name in _registered_action_names():
+            with self.subTest(action=name):
+                self.assertIn(name, consts, name)
+                self.assertIn(consts[name], allowed)
+
+    def test_no_registered_action_still_has_a_legacy_branch(self):
+        # A migrated action has exactly one owner. Two would be a latent
+        # disagreement about which handler answers a request.
+        registered = set(_registered_action_names())
+        still_chained = registered & _legacy_action_names()
+        self.assertEqual(set(), still_chained)
+
+    def test_no_registered_action_is_twin_owned(self):
+        # The Twin family is held for B4. Nothing may drift into the registry
+        # because it happened to look read-only.
+        groups, consts = _contract_action_groups()
+        twin_family = set()
+        for group in (
+            "TWIN_ACTIONS",
+            "DRAFT_ACTIONS",
+            "PROPOSAL_ACTIONS",
+            "MEMORY_CODE_LINK_ACTIONS",
+        ):
+            twin_family |= groups[group]
+        for name in _registered_action_names():
+            with self.subTest(action=name):
+                self.assertNotIn(consts[name], twin_family)
+
+    def test_unregistered_actions_keep_their_legacy_branch(self):
+        registered = set(_registered_action_names())
+        chained = _legacy_action_names()
+        for name in ("ACTION_OPEN_PROJECT", "ACTION_DOCUMENT_SAVE",
+                     "ACTION_DOCUMENT_ADOPT", "ACTION_LIBRARY_GET"):
+            with self.subTest(action=name):
+                self.assertNotIn(name, registered)
+                self.assertIn(name, chained)
 
     def test_the_registry_is_not_exported_as_public_api(self):
         # It is an internal implementation detail of this package, not a new
