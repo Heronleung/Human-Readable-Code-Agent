@@ -32,7 +32,7 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, TextIO, Sequence
+from typing import Any, Callable, Dict, List, Optional, TextIO, Sequence, Tuple
 
 from . import (
     advisory,
@@ -245,12 +245,19 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
 
     correlation_id = _correlation_id(request)
 
-    if action in contract.SCAN_ACTIONS:
+    # A *registered* action dispatches through the handler registry (B3a). The
+    # registry currently owns exactly one action — ``get_tree`` — so every other
+    # action resolves to ``None`` here and falls through to the chain below,
+    # unchanged. It is consulted first only so that a migrated action has a
+    # single owner rather than two.
+    handler = _BOUNDARY_HANDLERS.resolve(action)
+    if handler is not None:
+        result = handler(request, session)
+    elif action in contract.SCAN_ACTIONS:
         result = _scan_result(request)
     elif action == contract.ACTION_OPEN_PROJECT:
         result = _open_project_result(request, session)
-    elif action == contract.ACTION_GET_TREE:
-        result = _get_tree_result(request, session)
+    # ``get_tree`` is registered above; it deliberately has no branch here.
     elif action == contract.ACTION_GET_DOCUMENT:
         result = _get_document_result(request, session)
     elif action == contract.ACTION_SYNC_TWIN:
@@ -3242,6 +3249,99 @@ def _resolve_memory_code_freshness_result(
         if declared != workspace_id:
             store = None
     return memory_twin_link.resolve_freshness(link, store, workspace_id)
+
+
+# -- boundary handler registry (B3a) -------------------------------------
+#
+# This module's dispatch has grown one ``elif`` per action, and it must import
+# every capability it can serve. That is why the boundary is the one module
+# that knows all of them, and why a capability cannot stop being dispatched
+# without editing the hub itself.
+#
+# The registry is the seam that changes that. B3a proves the seam on exactly
+# one action — ``get_tree``, a read-only workspace read that needs no Twin,
+# provider, credential, container or repository-write authority — and leaves
+# every other action on the chain it already used. This package does not
+# migrate the dispatch surface; it establishes that a handler can be owned in
+# one place and that a bad registration fails loudly at startup rather than
+# quietly at request time.
+#
+# Registration is **code-owned and literal**. There is no discovery of any kind
+# here: no dynamic import, no package walk, no entry-point scan, no subclass
+# search, no directory listing. An action is dispatchable through this registry
+# only because someone wrote it down in the tuple below, and it must be named
+# by the contract's own constant rather than by a string that merely looks
+# right.
+
+Handler = Callable[[Dict[str, Any], "WorkspaceSession"], Dict[str, Any]]
+
+
+class _RegistryError(RuntimeError):
+    """Raised while a registry is being built, before any request is served.
+
+    A registry that cannot be trusted has to fail when it is constructed, not
+    when a request happens to reach the bad entry: a duplicate or a
+    non-callable handler is a programming error, and process start is where it
+    should surface.
+    """
+
+
+class _HandlerRegistry:
+    """A deterministic, code-owned map from a contract action to its handler.
+
+    Registration order is insertion order and is preserved by
+    :meth:`actions`, so the registry is as deterministic as every other record
+    this package emits.
+    """
+
+    def __init__(self, entries: Sequence[Tuple[str, "Handler"]] = ()) -> None:
+        self._handlers: Dict[str, "Handler"] = {}
+        for action, handler in entries:
+            self.register(action, handler)
+
+    def register(self, action: str, handler: "Handler") -> None:
+        """Bind ``action`` to ``handler``, or refuse while the registry is built.
+
+        ``action`` must be one of the contract's own allowed action names. A
+        name the contract does not allow is refused *here* rather than accepted
+        and rejected later, so the registry can never hold a name no request
+        could legitimately carry — which also means a typo in a registration
+        cannot silently shadow a real action.
+        """
+        if not isinstance(action, str) or action not in contract.ALLOWED_ACTIONS:
+            raise _RegistryError("handler action is not an allowed contract action")
+        if action in self._handlers:
+            raise _RegistryError("duplicate handler registration")
+        if not callable(handler):
+            raise _RegistryError("handler is not callable")
+        self._handlers[action] = handler
+
+    def resolve(self, action: Any) -> Optional["Handler"]:
+        """Return the handler bound to ``action``, or ``None`` when none is.
+
+        An unbound action is not an error here: the caller falls through to the
+        dispatch chain, and an action the contract does not allow has already
+        been refused before this is reached. That keeps this method total for
+        every input the dispatcher can hand it.
+        """
+        if not isinstance(action, str):
+            return None
+        return self._handlers.get(action)
+
+    def actions(self) -> Tuple[str, ...]:
+        """Return the registered actions, in registration order."""
+        return tuple(self._handlers)
+
+
+# The registry's entire contents. One literal entry, naming its action with the
+# contract's constant rather than a string literal, so a rename in the contract
+# becomes a failing test instead of a silently dead handler.
+_BOUNDARY_HANDLER_ENTRIES: Tuple[Tuple[str, "Handler"], ...] = (
+    (contract.ACTION_GET_TREE, _get_tree_result),
+)
+
+# Built at import, so a duplicate or a non-callable entry is a startup failure.
+_BOUNDARY_HANDLERS = _HandlerRegistry(_BOUNDARY_HANDLER_ENTRIES)
 
 
 if __name__ == "__main__":

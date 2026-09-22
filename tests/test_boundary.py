@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hrca import boundary, contract, twin, twin_store
+from hrca import boundary, contract, twin, twin_store, workspace
 from hrca.client_core import build_fixture_task
 from hrca.contract import dumps, loads
 
@@ -807,6 +807,183 @@ class BoundaryProposalTests(unittest.TestCase):
         draft_path = twin_store.workspace_draft_path(self.store_base, self.wsid)
         self.assertTrue(os.path.isfile(draft_path))
         self.assertFalse(draft_path.startswith(FIXTURES))
+
+
+class BoundaryHandlerRegistryTests(unittest.TestCase):
+    """The B3a registry proof: one action registered, everything else legacy.
+
+    The registry is deliberately an internal implementation detail, so these
+    tests reach it directly rather than through the protocol. What they hold is
+    that it is deterministic, that a bad registration fails while it is being
+    built rather than when a request arrives, that it owns exactly one action,
+    and that `get_tree` — the action it owns — is byte-for-byte the same as it
+    was on the dispatch chain.
+    """
+
+    def test_the_registry_is_constructed_when_the_module_loads(self):
+        # Built at import, so a duplicate or a non-callable entry is a startup
+        # failure rather than a request-time surprise.
+        self.assertIsInstance(boundary._BOUNDARY_HANDLERS, boundary._HandlerRegistry)
+
+    def test_the_registry_owns_exactly_the_proof_action(self):
+        self.assertEqual(
+            (contract.ACTION_GET_TREE,),
+            boundary._BOUNDARY_HANDLERS.actions(),
+        )
+
+    def test_the_registered_handler_is_the_existing_handler(self):
+        self.assertIs(
+            boundary._get_tree_result,
+            boundary._BOUNDARY_HANDLERS.resolve(contract.ACTION_GET_TREE),
+        )
+
+    def test_the_entries_name_the_action_by_contract_constant(self):
+        # One literal entry, and it is the handler the chain used to call.
+        self.assertEqual(
+            ((contract.ACTION_GET_TREE, boundary._get_tree_result),),
+            boundary._BOUNDARY_HANDLER_ENTRIES,
+        )
+
+    def test_no_other_allowed_action_is_registered(self):
+        # The B3a boundary: everything except `get_tree` is still on the chain.
+        registered = {
+            action
+            for action in contract.ALLOWED_ACTIONS
+            if boundary._BOUNDARY_HANDLERS.resolve(action) is not None
+        }
+        self.assertEqual({contract.ACTION_GET_TREE}, registered)
+
+    def test_no_twin_provider_or_execution_action_is_registered(self):
+        for action in (
+            contract.ACTION_SYNC_TWIN,
+            contract.ACTION_GET_TWIN,
+            contract.ACTION_GET_ANCHOR,
+            contract.ACTION_GET_CODE_MAP,
+            contract.ACTION_MEMORY_CODE_LINK,
+            contract.ACTION_RUN_PACKAGE,
+            contract.ACTION_PLAN_ADVISORY,
+            contract.ACTION_MANAGE_CREDENTIAL,
+        ):
+            with self.subTest(action=action):
+                self.assertIsNone(boundary._BOUNDARY_HANDLERS.resolve(action))
+
+    def test_registration_order_is_deterministic(self):
+        registry = boundary._HandlerRegistry(
+            [
+                (contract.ACTION_GET_TREE, boundary._get_tree_result),
+                (contract.ACTION_OPEN_PROJECT, boundary._open_project_result),
+                (contract.ACTION_GET_DOCUMENT, boundary._get_document_result),
+            ]
+        )
+        self.assertEqual(
+            (
+                contract.ACTION_GET_TREE,
+                contract.ACTION_OPEN_PROJECT,
+                contract.ACTION_GET_DOCUMENT,
+            ),
+            registry.actions(),
+        )
+        # And the same entries in the same order give the same result twice.
+        again = boundary._HandlerRegistry(
+            [
+                (contract.ACTION_GET_TREE, boundary._get_tree_result),
+                (contract.ACTION_OPEN_PROJECT, boundary._open_project_result),
+                (contract.ACTION_GET_DOCUMENT, boundary._get_document_result),
+            ]
+        )
+        self.assertEqual(registry.actions(), again.actions())
+
+    def test_duplicate_registration_is_refused_while_building(self):
+        with self.assertRaises(boundary._RegistryError) as caught:
+            boundary._HandlerRegistry(
+                [
+                    (contract.ACTION_GET_TREE, boundary._get_tree_result),
+                    (contract.ACTION_GET_TREE, boundary._get_tree_result),
+                ]
+            )
+        self.assertIn("duplicate", str(caught.exception))
+
+    def test_a_non_callable_handler_is_refused_while_building(self):
+        for bad in (None, "not callable", 5, {}):
+            with self.subTest(handler=bad):
+                with self.assertRaises(boundary._RegistryError) as caught:
+                    boundary._HandlerRegistry([(contract.ACTION_GET_TREE, bad)])
+                self.assertIn("callable", str(caught.exception))
+
+    def test_an_action_the_contract_does_not_allow_is_refused(self):
+        for bad in ("no_such_action", "", 5, None):
+            with self.subTest(action=bad):
+                with self.assertRaises(boundary._RegistryError):
+                    boundary._HandlerRegistry([(bad, boundary._get_tree_result)])
+
+    def test_resolve_is_total_for_every_input_the_dispatcher_can_hand_it(self):
+        for value in (None, 5, [], {}, "", "no_such_action"):
+            with self.subTest(value=value):
+                self.assertIsNone(boundary._BOUNDARY_HANDLERS.resolve(value))
+
+    def test_get_tree_returns_the_result_the_handler_produces(self):
+        req_open = _workspace_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        req_tree = _workspace_request(contract.ACTION_GET_TREE)
+        _, responses, _ = _run(dumps(req_open), dumps(req_tree))
+        tree_env = loads(responses[1])
+        self.assertTrue(tree_env["ok"])
+        self.assertEqual("cid-ws", tree_env["correlation_id"])
+        self.assertEqual(
+            workspace.build_tree(os.path.realpath(FIXTURES)), tree_env["result"]
+        )
+
+    def test_get_tree_envelope_shape_is_unchanged(self):
+        req_tree = _workspace_request(contract.ACTION_GET_TREE)
+        env = _first_response(dumps(req_tree))
+        self.assertEqual(
+            {"contract_version", "correlation_id", "ok", "error"}, set(env)
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("project_not_open", env["error"]["code"])
+        self.assertEqual(
+            contract.CONTRACT_VERSION, env["contract_version"]
+        )
+
+    def test_get_tree_without_an_accepted_root_still_refuses(self):
+        env = _first_response(dumps(_workspace_request(contract.ACTION_GET_TREE)))
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "project_not_open")
+
+    def test_a_wrong_contract_version_is_refused_before_the_registry(self):
+        # If the version check ran after dispatch, this would report
+        # ``project_not_open`` for a registered action. It reports the version
+        # refusal, so the registry is never reached.
+        req = _workspace_request(
+            contract.ACTION_GET_TREE, contract_version="0.0.1"
+        )
+        env = _first_response(dumps(req))
+        self.assertFalse(env["ok"])
+        self.assertEqual("unknown_contract_version", env["error"]["code"])
+
+    def test_an_unknown_action_still_gets_the_bounded_refusal(self):
+        env = _first_response(dumps(_workspace_request("no_such_action")))
+        self.assertFalse(env["ok"])
+        self.assertEqual("action_not_allowed", env["error"]["code"])
+        self.assertEqual(
+            contract.error_message("action_not_allowed"), env["error"]["message"]
+        )
+        self.assertEqual(
+            "action is not allowed by the read-only boundary",
+            env["error"]["message"],
+        )
+
+    def test_unregistered_actions_keep_working_through_the_legacy_chain(self):
+        # `open_project` and `get_document` are both allowed, both unregistered,
+        # and both still served — the registry did not take them over.
+        req_open = _workspace_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        req_doc = _workspace_request(
+            contract.ACTION_GET_DOCUMENT, path="app/main.py"
+        )
+        _, responses, _ = _run(dumps(req_open), dumps(req_doc))
+        self.assertTrue(loads(responses[0])["ok"])
+        doc_env = loads(responses[1])
+        self.assertTrue(doc_env["ok"])
+        self.assertEqual("main.py", doc_env["result"]["name"])
 
 
 if __name__ == "__main__":

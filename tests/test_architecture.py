@@ -1303,5 +1303,121 @@ class StorageSeamTests(unittest.TestCase):
         self.assertEqual([], offenders)
 
 
+# -- the boundary handler registry (B3a) ---------------------------------
+#
+# The registry is code-owned: an action is dispatchable through it only because
+# someone wrote it down in a literal tuple. These rules hold that, and hold the
+# registration to the contract's own constant rather than a string that merely
+# spells the same thing.
+
+_BOUNDARY_MODULE = os.path.join(_SRC, "boundary.py")
+_REGISTRY_ENTRIES_NAME = "_BOUNDARY_HANDLER_ENTRIES"
+_REGISTRY_NAME = "_BOUNDARY_HANDLERS"
+
+# Modules that would make dispatch depend on what happens to be importable at
+# run time rather than on what was written down.
+_DISCOVERY_IMPORTS = frozenset(
+    {"importlib", "pkgutil", "pkg_resources", "stevedore", "entrypoints", "pluggy"}
+)
+
+# Calls that would turn registration into a search.
+_DISCOVERY_CALLS = frozenset(
+    {
+        "walk_packages", "iter_modules", "entry_points", "__subclasses__",
+        "import_module", "__import__", "getmembers", "find_spec",
+        "listdir", "scandir", "walk", "glob", "iglob",
+    }
+)
+
+
+def _boundary_module_tree():
+    with open(_BOUNDARY_MODULE, "r", encoding="utf-8") as fh:
+        return ast.parse(fh.read())
+
+
+def _top_level_value(tree, name):
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            if node.targets[0].id == name:
+                return node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.target.id == name:
+                return node.value
+    return None
+
+
+class BoundaryRegistryIsolationTests(unittest.TestCase):
+    """The registry searches for nothing and names its action exactly."""
+
+    def test_the_registry_module_exists(self):
+        self.assertTrue(os.path.isfile(_BOUNDARY_MODULE))
+
+    def test_the_boundary_imports_no_discovery_module(self):
+        imported = _imported_top_level_names(_BOUNDARY_MODULE)
+        offending = sorted(imported & _DISCOVERY_IMPORTS)
+        self.assertEqual([], offending)
+
+    def test_the_boundary_contains_no_discovery_call(self):
+        tree = _boundary_module_tree()
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                name = None
+                if isinstance(func, ast.Name):
+                    name = func.id
+                elif isinstance(func, ast.Attribute):
+                    name = func.attr
+                if name in _DISCOVERY_CALLS:
+                    found.append((name, node.lineno))
+        self.assertEqual([], found)
+
+    def test_the_registry_is_built_at_module_scope(self):
+        # Constructed when the module loads, so a duplicate or a non-callable
+        # entry is a startup failure rather than a request-time one.
+        value = _top_level_value(_boundary_module_tree(), _REGISTRY_NAME)
+        self.assertIsNotNone(value, "the registry is not built at module scope")
+        self.assertIsInstance(value, ast.Call)
+        self.assertEqual("_HandlerRegistry", getattr(value.func, "id", None))
+
+    def test_the_registry_entries_are_a_literal_tuple(self):
+        entries = _top_level_value(_boundary_module_tree(), _REGISTRY_ENTRIES_NAME)
+        self.assertIsNotNone(entries, "the registry entry tuple was not found")
+        self.assertIsInstance(entries, ast.Tuple)
+
+    def test_the_registration_names_its_action_by_contract_constant(self):
+        entries = _top_level_value(_boundary_module_tree(), _REGISTRY_ENTRIES_NAME)
+        self.assertEqual(1, len(entries.elts), "B3a registers exactly one action")
+        pair = entries.elts[0]
+        self.assertIsInstance(pair, ast.Tuple)
+        action, handler = pair.elts
+        # ``contract.ACTION_GET_TREE`` — an attribute on the contract module,
+        # never a bare string literal that could drift from the real name.
+        self.assertIsInstance(action, ast.Attribute)
+        self.assertEqual("ACTION_GET_TREE", action.attr)
+        self.assertIsInstance(action.value, ast.Name)
+        self.assertEqual("contract", action.value.id)
+        self.assertIsInstance(handler, ast.Name)
+        self.assertEqual("_get_tree_result", handler.id)
+
+    def test_the_registry_is_not_exported_as_public_api(self):
+        # It is an internal implementation detail of this package, not a new
+        # protocol action, plugin interface or capability surface.
+        with open(_BOUNDARY_MODULE, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        exported = set()
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+                if node.targets[0].id == "__all__":
+                    value = node.value
+                    if isinstance(value, (ast.List, ast.Tuple)):
+                        for element in value.elts:
+                            if isinstance(element, ast.Constant):
+                                exported.add(element.value)
+        self.assertNotIn(_REGISTRY_NAME, exported)
+        self.assertNotIn("_HandlerRegistry", exported)
+        self.assertNotIn(_REGISTRY_ENTRIES_NAME, exported)
+
+
 if __name__ == "__main__":
     unittest.main()
