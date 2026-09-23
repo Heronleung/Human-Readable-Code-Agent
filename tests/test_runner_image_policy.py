@@ -1,24 +1,27 @@
 """The code-owned runner-image setup policy (P5.5a-r3c).
 
-These tests are pure: no Docker, no network, no filesystem beyond reading the
-repository's own Dockerfile. They pin the decisions a setup makes *before* it
-touches anything — which base may be built from, which manifest an index may
-offer, when an OnBuild value gates readiness — and they pin the agreement
-between this policy and the constants the runner and the validation policy
-already own, so a re-pin that misses one of them fails here rather than in a
-quietly different artifact.
+These tests are pure: no Docker, no network, no filesystem beyond reading two
+repository-owned files — the runner's own Dockerfile and the accepted validation
+manifest. They pin the decisions a setup makes *before* it touches anything —
+which base may be built from, which manifest an index may offer, when an OnBuild
+value gates readiness — and they pin the agreement between this policy and every
+constant that names the runner image, so a re-pin that misses one of them fails
+here rather than in a quietly different artifact.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import unittest
 
 from hrca.authoring import validation_policy
-from hrca.execution import container_runner, runner_image_policy as policy
+from hrca.execution import app_package, container_runner
+from hrca.execution import runner_image_policy as policy
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))
+MANIFEST = os.path.join(REPO, "fixtures", "validation", "manifest.json")
 
 _OTHER_DIGEST = "sha256:" + "0" * 64
 
@@ -432,11 +435,21 @@ class ReadinessTests(unittest.TestCase):
 
 
 class PinAgreementTests(unittest.TestCase):
-    """One pin, three owners: a re-pin that misses one of them fails here."""
+    """One pin, four owners: a re-pin that misses one of them fails here.
+
+    Three of the four are the runner's own constant, the setup policy's, and the
+    validation policy's. The fourth, ``app_package.RUNNER_IDENTITY``, is the one
+    the *document authority* persists: ``authoring/document.py`` records it as a
+    candidate's ``runtime_identity``, copies it into the accepted version, and
+    compares it to decide whether stored evidence is still current. It is held
+    here with the other three so a re-pin cannot miss it and leave persisted
+    evidence naming an image that no longer exists.
+    """
 
     def test_the_runner_image_tag_is_the_same_everywhere(self):
         self.assertEqual(container_runner.RUNNER_IMAGE, policy.RUNNER_IMAGE)
         self.assertEqual(validation_policy.CANDIDATE_IMAGE, policy.RUNNER_IMAGE)
+        self.assertEqual(app_package.RUNNER_IDENTITY, policy.RUNNER_IMAGE)
 
     def test_the_runner_image_digest_is_the_same_everywhere(self):
         self.assertEqual(
@@ -445,6 +458,18 @@ class PinAgreementTests(unittest.TestCase):
         self.assertEqual(
             validation_policy.CANDIDATE_IMAGE_DIGEST, policy.RUNNER_IMAGE_DIGEST
         )
+
+    def test_the_accepted_manifest_pins_the_same_runner_image(self):
+        # The fixture every container-gated validation test is measured against
+        # names the image too. Reading it here keeps that side of the agreement
+        # on a route that needs no daemon.
+        with open(MANIFEST, "r", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        check = manifest["candidate_check"]
+        self.assertEqual(policy.RUNNER_IMAGE, check["image"])
+        self.assertEqual(policy.RUNNER_IMAGE_DIGEST, check["image_digest"])
+        self.assertEqual(policy.RUNNER_IMAGE, check["record"]["image"])
+        self.assertEqual(policy.RUNNER_IMAGE_DIGEST, check["record"]["image_digest"])
 
     def test_the_base_is_pinned_by_digest_and_named_by_tag(self):
         self.assertEqual(
