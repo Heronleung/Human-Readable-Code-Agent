@@ -188,6 +188,8 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_identity",
         # shared storage concerns (B2)
         "test_storage",
+        # shared source-evidence reads (B-T2A)
+        "test_source_evidence",
         # deterministic scanner and its shared foundation
         "test_scanner",
         "test_contract",
@@ -360,6 +362,7 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_scanner_grammar",
         "test_setup_verification",
         "test_setup_verification_guard",
+        "test_source_evidence",
         "test_storage",
         "test_style",
         "test_test_routes",

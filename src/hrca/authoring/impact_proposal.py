@@ -13,6 +13,21 @@ boundary the contract names, that nothing is written. The proposal is not a
 candidate, not a diff, not a patch, not an approval and not an execution
 outcome; it never claims that code exists or that repository state changed.
 
+How the evidence is read, and the one Twin reach
+------------------------------------------------
+
+Neither input is read by reaching into a shape this module assumes. The scanner
+document goes through its accepted migration entry point, and every
+source-evidence fact — the workspace baseline and the source artifacts — is read
+through :mod:`hrca.source_evidence`, which owns that vocabulary.
+
+There is exactly one exception, and it is temporary: the raw Twin store is put
+through ``twin.migrate_store``, because validating a document against the Twin's
+schema version and running the Twin's migration chain are Twin-owned concerns.
+``tests/test_architecture.py`` asserts mechanically that this module reaches Twin
+for that one symbol and for no other. The exception ends only when a separate
+decision gives a source-evidence document schema an explicit owner.
+
 Exact binding, never a fallback
 -------------------------------
 
@@ -90,9 +105,10 @@ import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import intent_delta
-from ..source import scanner
+from .. import source_evidence
 from .. import twin
-from ..core.identity import ARTIFACT_FILE, sha256_hex
+from ..source import scanner
+from ..core.identity import sha256_hex
 
 IMPACT_SCHEMA_VERSION = "1.0.0"
 IMPACT_GENERATOR = "hrca-impact-proposal"
@@ -265,14 +281,6 @@ def _mutation_surface() -> Dict[str, bool]:
 # -- evidence indexes ------------------------------------------------------
 
 
-def _artifacts(store: Dict[str, Any]) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for rec in store.get("artifacts") or []:
-        if isinstance(rec, dict) and isinstance(rec.get("id"), str) and rec["id"]:
-            out.append(rec)
-    return out
-
-
 def _symbols(document: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for rec in document.get("symbols") or []:
@@ -329,15 +337,14 @@ def _bind_revision(
     Twin revision is a mismatch, never a wildcard: an evidence document that
     cannot state which revision it is is not evidence for this intent.
     """
-    baseline = intent["baseline"]
-    revision = store.get("workspace_revision")
-    if not isinstance(revision, dict):
+    if source_evidence.workspace_revision(store) is None:
         return REASON_UNSUPPORTED_EVIDENCE
-    if revision.get("workspace_id") != baseline["workspace_id"]:
+    baseline = intent["baseline"]
+    if source_evidence.workspace_id(store) != baseline["workspace_id"]:
         return REASON_CROSS_WORKSPACE
-    if revision.get("scan_generation") != baseline["scan_generation"]:
+    if source_evidence.scan_generation(store) != baseline["scan_generation"]:
         return REASON_STALE_BASELINE
-    if revision.get("baseline_fingerprint") != baseline["baseline_fingerprint"]:
+    if source_evidence.baseline_fingerprint(store) != baseline["baseline_fingerprint"]:
         return REASON_STALE_BASELINE
     if document.get("schema_version") != baseline["scanner_schema_version"]:
         return REASON_SCHEMA_CHANGED
@@ -381,9 +388,10 @@ def _resolve_scope(
     unresolved: List[str] = []
 
     def take(artifact: Dict[str, Any], reference: str, binding: str) -> None:
-        if artifact["id"] in bound:
+        identity = source_evidence.artifact_id(artifact)
+        if identity in bound:
             return
-        bound[artifact["id"]] = {
+        bound[identity] = {
             "artifact": artifact,
             "reference": reference,
             "binding": binding,
@@ -392,9 +400,9 @@ def _resolve_scope(
     for entity in intent["scope"]["entities"]:
         candidates: Dict[str, Dict[str, Any]] = {}
         for artifact in indexes["by_locator"].get(entity, []):
-            candidates[artifact["id"]] = artifact
+            candidates[source_evidence.artifact_id(artifact)] = artifact
         for artifact in indexes["by_module"].get(entity, []):
-            candidates[artifact["id"]] = artifact
+            candidates[source_evidence.artifact_id(artifact)] = artifact
         if not candidates:
             unresolved.append(entity)
             continue
@@ -403,7 +411,7 @@ def _resolve_scope(
         artifact = next(iter(candidates.values()))
         binding = (
             BINDING_ENTITY_MODULE
-            if artifact.get("kind") == ARTIFACT_FILE
+            if source_evidence.is_file_artifact(artifact)
             else BINDING_ENTITY_LOCATOR
         )
         take(artifact, entity, binding)
@@ -457,10 +465,10 @@ def _contained_facts(
     for artifact_id in sorted(bound):
         entry = bound[artifact_id]
         artifact = entry["artifact"]
-        if not readable(artifact.get("path")):
+        if not readable(source_evidence.artifact_path(artifact)):
             continue
-        if artifact.get("kind") == ARTIFACT_FILE:
-            path = artifact["path"]
+        if source_evidence.is_file_artifact(artifact):
+            path = source_evidence.artifact_path(artifact)
             symbols = [s for s in indexes["symbols"] if s.get("file") == path]
             relations = [r for r in indexes["relations"] if r.get("file") == path]
             if _duplicate_ids(symbols) or _duplicate_ids(relations):
@@ -470,10 +478,10 @@ def _contained_facts(
             for relation in sorted(relations, key=lambda r: r["id"]):
                 facts.append(_relation_fact(relation, path))
         else:
-            locator = artifact.get("locator")
+            locator = source_evidence.artifact_locator(artifact)
             if not isinstance(locator, str):
                 continue
-            path = artifact["path"]
+            path = source_evidence.artifact_path(artifact)
             declared = [
                 s
                 for s in indexes["symbols"]
@@ -541,11 +549,11 @@ def _state_for(
     if unresolved:
         return STATE_UNSUPPORTED
     for artifact_id in sorted(bound):
-        path = bound[artifact_id]["artifact"].get("path")
+        path = source_evidence.artifact_path(bound[artifact_id]["artifact"])
         if not isinstance(path, str) or path not in indexes["files"]:
             return STATE_UNAVAILABLE
     for artifact_id in sorted(bound):
-        path = bound[artifact_id]["artifact"]["path"]
+        path = source_evidence.artifact_path(bound[artifact_id]["artifact"])
         record = indexes["files"][path]
         if record.get("syntax_status") != "ok" or path in indexes["parse_error_paths"]:
             return STATE_UNKNOWN
@@ -568,8 +576,8 @@ def _target_scope(
         "targets": [
             {
                 "artifact_id": artifact_id,
-                "kind": bound[artifact_id]["artifact"].get("kind"),
-                "path": bound[artifact_id]["artifact"].get("path"),
+                "kind": source_evidence.artifact_kind(bound[artifact_id]["artifact"]),
+                "path": source_evidence.artifact_path(bound[artifact_id]["artifact"]),
                 "reference": bound[artifact_id]["reference"],
                 "binding": bound[artifact_id]["binding"],
             }
@@ -672,7 +680,7 @@ def _risks(
             }
         )
     for artifact_id in sorted(bound):
-        path = bound[artifact_id]["artifact"].get("path")
+        path = source_evidence.artifact_path(bound[artifact_id]["artifact"])
         if not isinstance(path, str):
             continue
         record = indexes["files"].get(path)
@@ -688,7 +696,8 @@ def _risks(
                 }
             )
     if any(
-        entry["artifact"].get("kind") == ARTIFACT_FILE for entry in bound.values()
+        source_evidence.is_file_artifact(entry["artifact"])
+        for entry in bound.values()
     ):
         out.append(
             {
@@ -755,9 +764,11 @@ def _suggested_tests(
                 "evidence_ref": artifact_id,
             }
         )
-    for entry in sorted(bound.values(), key=lambda e: e["artifact"]["id"]):
+    for entry in sorted(
+        bound.values(), key=lambda e: source_evidence.artifact_id(e["artifact"])
+    ):
         artifact = entry["artifact"]
-        path = artifact.get("path")
+        path = source_evidence.artifact_path(artifact)
         record = indexes["files"].get(path) if isinstance(path, str) else None
         if record is not None and (
             record.get("syntax_status") != "ok" or path in indexes["parse_error_paths"]
@@ -933,6 +944,8 @@ def build_impact_proposal(
     raw_store = evidence["twin"]
     if not isinstance(raw_store, dict):
         return None, REASON_UNSUPPORTED_EVIDENCE
+    # The single, temporary Twin reach: a version gate owned by the module whose
+    # schema it validates. Every fact read below comes through source_evidence.
     store, error = twin.migrate_store(raw_store)
     if error is not None:
         return None, REASON_UNSUPPORTED_EVIDENCE
@@ -941,7 +954,7 @@ def build_impact_proposal(
     if refusal is not None:
         return None, refusal
 
-    artifacts = _artifacts(store)
+    artifacts = source_evidence.artifacts(store)
     symbols = _symbols(document)
     relations = _relations(document)
     indexes: Dict[str, Any] = {
@@ -957,13 +970,14 @@ def build_impact_proposal(
         "symbol_artifacts": {},
     }
     for artifact in artifacts:
-        indexes["by_id"].setdefault(artifact["id"], []).append(artifact)
-        locator = artifact.get("locator")
+        identity = source_evidence.artifact_id(artifact)
+        indexes["by_id"].setdefault(identity, []).append(artifact)
+        locator = source_evidence.artifact_locator(artifact)
         if isinstance(locator, str) and locator:
             indexes["by_locator"].setdefault(locator, []).append(artifact)
-            indexes["symbol_artifacts"].setdefault(locator, artifact["id"])
-        if artifact.get("kind") == ARTIFACT_FILE:
-            module = artifact.get("module")
+            indexes["symbol_artifacts"].setdefault(locator, identity)
+        if source_evidence.is_file_artifact(artifact):
+            module = source_evidence.artifact_module(artifact)
             if isinstance(module, str) and module:
                 indexes["by_module"].setdefault(module, []).append(artifact)
 
@@ -1002,7 +1016,11 @@ def build_impact_proposal(
         "unresolved_questions": _unresolved_questions(state, intent),
         "evidence_bindings": _evidence_bindings(intent, bound, facts, indexes),
         "mutation_surface": _mutation_surface(),
-        "confidence": twin.CONF_HIGH if state in (STATE_BOUND, STATE_NO_IMPACT) else twin.CONF_LOW,
+        "confidence": (
+            source_evidence.CONF_HIGH
+            if state in (STATE_BOUND, STATE_NO_IMPACT)
+            else source_evidence.CONF_LOW
+        ),
     }
     proposal["proposal_id"] = impact_proposal_id_for(proposal)
     return proposal, None

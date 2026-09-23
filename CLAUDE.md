@@ -53,13 +53,22 @@ execution at scan time.
   Git and no store of their own, and they import neither `codemap_draft` nor
   `proposal` — the P4.1 "Intent Delta" is *derived* from typed Code Map block
   edits, whereas this one records facts a developer *supplied*, so the two share
-  a name and nothing else. A proposal binds by **exact identity only** (a Twin
-  artifact id, a scanner symbol/relation id, a workspace-relative scanner file
-  path) and refuses rather than falling back to a name, a path, an order or
-  prose; a changed workspace, scan generation, baseline fingerprint or scanner
-  schema/grammar context invalidates the binding instead of silently re-binding
-  it. Neither module is reachable from the desktop and no protocol action was
-  added, so the desktop's authority is unchanged. The P5.4 typed edit request is
+  a name and nothing else. The source-evidence facts a proposal consumes — a
+  Twin-produced document's workspace baseline and its source artifacts — are read
+  through `source_evidence.py`, a pure read model over a mapping handed to it
+  (standard library plus `hrca.core.identity` only: no schema, migration, store,
+  clock, I/O or Twin import). Twin stays the producer and owner of its store,
+  its schema and its migrations; the proposal's only Twin reach is
+  `twin.migrate_store`, an explicit and mechanically bounded *temporary*
+  exception that ends only under a separate decision giving a source-evidence
+  document schema an explicit owner. A proposal binds by **exact identity only**
+  (a Twin artifact id, a scanner symbol/relation id, a workspace-relative
+  scanner file path) and refuses rather than falling back to a name, a path, an
+  order or prose; a changed workspace, scan generation, baseline fingerprint or
+  scanner schema/grammar context invalidates the binding instead of silently
+  re-binding it. Neither module is reachable from the desktop and no protocol
+  action was added, so the desktop's authority is unchanged. The P5.4 typed edit
+  request is
   `candidate_edit.py`, the canonical diff is `candidate_diff.py`, and the
   isolated content-addressed candidate is `candidate.py` with the offline
   operator CLI `candidate_cli.py`. `candidate.py` is the **only** module in this

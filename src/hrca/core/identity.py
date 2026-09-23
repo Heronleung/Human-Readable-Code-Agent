@@ -28,13 +28,14 @@ below, so those importers move without any behaviour moving with them.
 What is deliberately *not* here
 -------------------------------
 
-The Twin's own vocabulary stays in :mod:`hrca.twin`: the confidence levels
-(``CONF_*``), the symbol artifact taxonomy (``ARTIFACT_CLASS``,
-``ARTIFACT_FUNCTION``, ``ARTIFACT_METHOD`` and ``ARTIFACT_KINDS``), the
-provenance and synchronization states, the behavior categories, and the store
-schema version with its migration registry. None of those is an identity, and
-gathering them here is exactly how a "primitives" module becomes the
-miscellaneous drawer the admission rule above exists to prevent.
+The vocabulary of the capabilities that consume these primitives stays with
+them: the symbol artifact taxonomy (``ARTIFACT_CLASS``, ``ARTIFACT_FUNCTION``,
+``ARTIFACT_METHOD`` and ``ARTIFACT_KINDS``), the provenance and synchronization
+states, the behavior categories, and the store schema version with its
+migration registry are the Twin's; the confidence levels (``CONF_*``) are shared
+source-evidence vocabulary and live in :mod:`hrca.source_evidence`. None of those
+is an identity, and gathering them here is exactly how a "primitives" module
+becomes the miscellaneous drawer the admission rule above exists to prevent.
 ``ARTIFACT_FILE`` is the single exception, because a file *identifier* and a
 file *kind* are the same concept and the identifier constructor needs it.
 

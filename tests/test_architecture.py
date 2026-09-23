@@ -1228,6 +1228,14 @@ _MOVED_IDENTITY_SYMBOLS = (
     "ARTIFACT_FILE",
 )
 
+# The vocabulary B-T2A relocated out of twin.py. It is shared rather than
+# Twin-owned, because the module that reads the records carrying it and the
+# module that stamps them on must agree on the exact strings.
+_MOVED_CONFIDENCE_SYMBOLS = (
+    "CONF_HIGH",
+    "CONF_LOW",
+)
+
 # identity.py is a leaf: standard library only, and not even all of that.
 _IDENTITY_FORBIDDEN_IMPORTS = frozenset(
     {
@@ -1367,9 +1375,19 @@ class IdentitySeamTests(unittest.TestCase):
 
     def test_twin_still_owns_its_own_vocabulary(self):
         defined = _top_level_definitions(_TWIN_MODULE)
-        for name in ("CONF_HIGH", "CONF_LOW", "ARTIFACT_CLASS", "ARTIFACT_KINDS",
+        for name in ("ARTIFACT_CLASS", "ARTIFACT_KINDS",
                      "TWIN_SCHEMA_VERSION", "MIGRATIONS"):
             self.assertIn(name, defined, name)
+
+    def test_twin_re_exports_the_moved_confidence_vocabulary(self):
+        reexported = _imported_from(_TWIN_MODULE, "source_evidence")
+        missing = sorted(set(_MOVED_CONFIDENCE_SYMBOLS) - reexported)
+        self.assertEqual([], missing)
+
+    def test_twin_defines_none_of_the_moved_confidence_vocabulary(self):
+        defined = _top_level_definitions(_TWIN_MODULE)
+        duplicated = sorted(defined & set(_MOVED_CONFIDENCE_SYMBOLS))
+        self.assertEqual([], duplicated)
 
     def test_no_module_added_a_duplicate_digest_helper(self):
         found = set()
@@ -2057,6 +2075,307 @@ class RelativeImportResolutionTests(unittest.TestCase):
         )
         self.assertIn("contract", names)
         self.assertNotIn("ACTION_SCAN", names)
+
+
+# -- the source-evidence read seam (B-T2A) -------------------------------
+#
+# ``hrca.source_evidence`` owns the reads and the vocabulary for the
+# source-evidence facts authoring consumes out of a Twin-produced document: the
+# workspace baseline and the source artifacts. It is a pure read model over a
+# mapping handed to it, so it must stay a leaf — the standard library plus
+# :mod:`hrca.identity` — and must own no schema, migration, store, I/O, clock or
+# capability behaviour. ``hrca.twin`` reaches the document as its *producer*;
+# this module reaches it as a *reader*, which is why a reader must not have to
+# import the producer.
+
+_SOURCE_EVIDENCE_MODULE = _module_path("source_evidence")
+
+# The only non-stdlib modules this seam may import.
+_SOURCE_EVIDENCE_ALLOWED_MODULES = frozenset({"identity"})
+
+# What the standard library is allowed to contribute: ``typing`` for the
+# annotations every module in this package writes, and ``__future__`` for the
+# postponed evaluation they are written under.
+_SOURCE_EVIDENCE_ALLOWED_STDLIB = frozenset({"__future__", "typing"})
+
+# Hosts that would mean the read model had learned to read, run or schedule
+# something itself rather than reading the mapping it was handed.
+_SOURCE_EVIDENCE_FORBIDDEN_IMPORTS = frozenset(
+    {
+        "os", "io", "sys", "json", "pathlib", "subprocess", "socket", "ssl",
+        "urllib", "http", "requests", "shutil", "tempfile", "sqlite3",
+        "pickle", "importlib", "time", "datetime", "random", "secrets",
+        "uuid", "logging", "warnings", "ctypes", "winreg", "multiprocessing",
+        "threading", "asyncio", "PySide6", "PyQt5", "PyQt6",
+    }
+)
+
+# Names that would mean the read model had become a document schema or a store.
+# The Twin owns the schema version of the document it produces; a reader that
+# named one would be claiming the document, not reading it.
+_SOURCE_EVIDENCE_FORBIDDEN_DEFINITIONS = frozenset(
+    {"SCHEMA_VERSION", "TWIN_SCHEMA_VERSION", "MIGRATIONS", "MIGRATE"}
+)
+
+# Fragments no definition may carry: a reader may name a *fact* it reads, never
+# a capability, a store or the thing that produced the document.
+_SOURCE_EVIDENCE_FORBIDDEN_FRAGMENTS = (
+    "twin", "store", "migrat", "schema", "scanner", "memory", "candidate",
+    "validation", "provider", "credential", "library", "document", "runner",
+    "client",
+)
+
+# Every fact the seam must expose. ``name`` and ``fingerprint`` are part of an
+# artifact this module reads even though today's authoring reader does not
+# consult them: the read model states the artifact's facts, not one caller's
+# current subset of them.
+_SOURCE_EVIDENCE_REQUIRED_DEFINITIONS = frozenset(
+    {
+        "artifacts",
+        "workspace_revision",
+        "workspace_id",
+        "scan_generation",
+        "baseline_fingerprint",
+        "artifact_id",
+        "artifact_kind",
+        "artifact_path",
+        "artifact_module",
+        "artifact_name",
+        "artifact_locator",
+        "artifact_fingerprint",
+        "is_file_artifact",
+    }
+)
+
+
+def _all_exports(path):
+    """Return the string names a module's top-level ``__all__`` lists."""
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+            if node.targets[0].id != "__all__":
+                continue
+            if isinstance(node.value, (ast.List, ast.Tuple)):
+                return {
+                    element.value
+                    for element in node.value.elts
+                    if isinstance(element, ast.Constant)
+                }
+    return set()
+
+
+def _attribute_uses(path, host):
+    """Return the attribute names read off ``host`` — every ``host.name`` use."""
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    return [
+        (node.attr, node.lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == host
+    ]
+
+
+def _imported_bindings(path, host):
+    """Return ``[(imported name, asname, lineno)]`` for every binding of ``host``.
+
+    This covers the routes a scan written against the spelling ``host.attr``
+    would miss: ``import hrca.twin``, ``import hrca.twin as t`` and
+    ``from .. import twin as t``. An aliased binding is how an attribute read
+    could be written against a name other than ``twin`` and so escape the
+    comparison that bounds the Twin exception.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    dotted = _DOTTED_BY_PATH.get(os.path.normpath(path), "")
+    is_package = _module_is_package(dotted)
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                parts = alias.name.split(".")
+                if parts[0] == host or parts[-1] == host:
+                    found.append((alias.name, alias.asname, node.lineno))
+        elif isinstance(node, ast.ImportFrom):
+            base = (
+                _relative_base(dotted, is_package, node.level) if node.level else ""
+            )
+            target = (
+                ".".join(part for part in (base, node.module) if part)
+                if node.module
+                else base
+            )
+            if target.split(".")[-1] == host:
+                # A symbol imported *from* host, not a binding of host itself.
+                continue
+            for alias in node.names:
+                if alias.name == host:
+                    found.append((alias.name, alias.asname, node.lineno))
+    return found
+
+
+class SourceEvidenceSeamTests(unittest.TestCase):
+    """hrca.source_evidence reads a document; it owns no document."""
+
+    def test_the_source_evidence_module_exists(self):
+        self.assertTrue(os.path.isfile(_SOURCE_EVIDENCE_MODULE))
+
+    def test_the_source_evidence_module_is_the_stdlib_over_identity_only(self):
+        imported = _imported_top_level_names(_SOURCE_EVIDENCE_MODULE)
+        allowed = _SOURCE_EVIDENCE_ALLOWED_STDLIB | _SOURCE_EVIDENCE_ALLOWED_MODULES
+        self.assertEqual([], sorted(imported - allowed))
+
+    def test_the_source_evidence_module_does_import_identity(self):
+        # The seam is *stated* as the standard library plus identity, so a rule
+        # that merely allowed identity would be vacuous if it imported nothing.
+        imported = _imported_top_level_names(_SOURCE_EVIDENCE_MODULE)
+        self.assertIn("identity", imported)
+
+    def test_the_source_evidence_module_reaches_no_io_process_clock_or_store(self):
+        imported = _imported_top_level_names(_SOURCE_EVIDENCE_MODULE)
+        offending = sorted(imported & _SOURCE_EVIDENCE_FORBIDDEN_IMPORTS)
+        self.assertEqual([], offending)
+
+    def test_the_source_evidence_module_owns_no_schema_or_migration(self):
+        defined = _top_level_definitions(_SOURCE_EVIDENCE_MODULE)
+        offending = sorted(defined & _SOURCE_EVIDENCE_FORBIDDEN_DEFINITIONS)
+        self.assertEqual([], offending)
+
+    def test_the_source_evidence_module_names_no_store_or_capability(self):
+        defined = _top_level_definitions(_SOURCE_EVIDENCE_MODULE)
+        for name in sorted(defined):
+            lowered = name.lower()
+            for fragment in _SOURCE_EVIDENCE_FORBIDDEN_FRAGMENTS:
+                self.assertNotIn(fragment, lowered, name)
+
+    def test_the_source_evidence_module_opens_no_file_and_calls_no_host(self):
+        with open(_SOURCE_EVIDENCE_MODULE, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        violations = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "open":
+                violations.append(("open()", node.lineno))
+            elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                if func.value.id in _SOURCE_EVIDENCE_FORBIDDEN_IMPORTS:
+                    violations.append(
+                        ("%s.%s" % (func.value.id, func.attr), node.lineno)
+                    )
+        self.assertEqual([], violations)
+
+    def test_the_source_evidence_module_defines_every_required_fact(self):
+        defined = _top_level_definitions(_SOURCE_EVIDENCE_MODULE)
+        missing = sorted(_SOURCE_EVIDENCE_REQUIRED_DEFINITIONS - defined)
+        self.assertEqual([], missing)
+
+    def test_the_source_evidence_module_defines_the_confidence_vocabulary(self):
+        defined = _top_level_definitions(_SOURCE_EVIDENCE_MODULE)
+        for name in _MOVED_CONFIDENCE_SYMBOLS:
+            self.assertIn(name, defined, name)
+
+    def test_the_source_evidence_module_exports_exactly_its_vocabulary(self):
+        expected = _SOURCE_EVIDENCE_REQUIRED_DEFINITIONS | set(
+            _MOVED_CONFIDENCE_SYMBOLS
+        )
+        self.assertEqual(expected, _all_exports(_SOURCE_EVIDENCE_MODULE))
+
+
+# -- the one Twin reach in authoring (B-T2A) ------------------------------
+#
+# Authoring reads source-evidence facts through :mod:`hrca.source_evidence`.
+# Exactly one module reaches :mod:`hrca.twin`, and it reaches it for exactly one
+# symbol: ``twin.migrate_store``, a version gate owned by the module whose schema
+# it validates. The exception is temporary and mechanically bounded — a second
+# Twin symbol, an aliased import, or a restored confidence constant fails these
+# rules, and a new authoring module that reaches Twin at all fails the last one.
+
+_IMPACT_PROPOSAL_MODULE = _module_path("impact_proposal")
+_TWIN_MIGRATION_GATE = "migrate_store"
+
+# The source-evidence facts this module must read through the seam. Proving the
+# accessors are used is one half of proving the seam is real; the frozen-envelope
+# equivalence test in ``tests/test_impact_proposal.py`` is the other, because it
+# proves the reads still produce the same document.
+_SOURCE_EVIDENCE_FACTS_IN_USE = frozenset(
+    {
+        "artifacts",
+        "workspace_revision",
+        "workspace_id",
+        "scan_generation",
+        "baseline_fingerprint",
+        "artifact_id",
+        "artifact_kind",
+        "artifact_path",
+        "artifact_module",
+        "artifact_locator",
+        "is_file_artifact",
+    }
+)
+
+
+class ImpactProposalTwinExceptionTests(unittest.TestCase):
+    """impact_proposal reaches Twin once, for the migration gate, and nowhere else."""
+
+    def _twin_attributes(self):
+        return [attr for attr, _ in _attribute_uses(_IMPACT_PROPOSAL_MODULE, "twin")]
+
+    def _seam_attributes(self):
+        return {
+            attr
+            for attr, _ in _attribute_uses(_IMPACT_PROPOSAL_MODULE, "source_evidence")
+        }
+
+    def test_the_module_reaches_twin_as_a_bare_module_import(self):
+        self.assertEqual({"twin"}, _imported_from(_IMPACT_PROPOSAL_MODULE, "twin"))
+
+    def test_no_twin_import_is_aliased(self):
+        aliased = sorted(
+            (name, asname)
+            for name, asname, _ in _imported_bindings(_IMPACT_PROPOSAL_MODULE, "twin")
+            if asname is not None
+        )
+        self.assertEqual([], aliased)
+
+    def test_the_only_twin_symbol_used_is_the_migration_gate(self):
+        self.assertEqual([_TWIN_MIGRATION_GATE], sorted(set(self._twin_attributes())))
+
+    def test_the_migration_gate_is_referenced_exactly_once(self):
+        self.assertEqual(1, self._twin_attributes().count(_TWIN_MIGRATION_GATE))
+
+    def test_the_confidence_vocabulary_no_longer_comes_from_twin(self):
+        used = set(self._twin_attributes())
+        for name in _MOVED_CONFIDENCE_SYMBOLS:
+            self.assertNotIn(name, used, name)
+
+    def test_the_module_reads_the_source_evidence_seam(self):
+        self.assertEqual(
+            {"source_evidence"},
+            _imported_from(_IMPACT_PROPOSAL_MODULE, "source_evidence"),
+        )
+
+    def test_the_confidence_vocabulary_comes_from_the_seam(self):
+        used = self._seam_attributes()
+        for name in _MOVED_CONFIDENCE_SYMBOLS:
+            self.assertIn(name, used, name)
+
+    def test_the_source_evidence_facts_are_read_through_the_seam(self):
+        missing = sorted(_SOURCE_EVIDENCE_FACTS_IN_USE - self._seam_attributes())
+        self.assertEqual([], missing)
+
+    def test_no_other_authoring_module_reaches_twin(self):
+        offenders = []
+        for _leaf, dotted, path in _iter_modules():
+            if not (dotted == "authoring" or dotted.startswith("authoring.")):
+                continue
+            if os.path.normpath(path) == os.path.normpath(_IMPACT_PROPOSAL_MODULE):
+                continue
+            if _imported_from(path, "twin") or _imported_bindings(path, "twin"):
+                offenders.append(dotted)
+        self.assertEqual([], sorted(offenders))
 
 
 if __name__ == "__main__":

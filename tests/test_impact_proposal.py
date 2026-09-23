@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import hashlib
 import json
 import os
 import sys
@@ -1019,6 +1020,296 @@ class CliTests(unittest.TestCase):
                 code = intent_cli.main(["verify", os.path.join(sandbox, "absent.json")])
         self.assertEqual(intent_cli.EXIT_USAGE, code)
         self.assertNotIn(sandbox, err.getvalue())
+
+
+# -- envelope equivalence (B-T2A) -----------------------------------------
+#
+# The source-evidence read seam changed *how* this proposal reaches the facts it
+# publishes, and nothing about what it publishes. The table below is the whole
+# envelope for every case in the hand-authored manifest, plus the twin-store
+# version family, reduced to one value per case and **frozen from the
+# implementation as it stood before the seam existed**. A reader that changed a
+# fact, reordered one, or reached a different refusal cannot leave these values
+# unchanged.
+#
+# Five fields are masked, because they are derived from the machine and the
+# interpreter rather than from the evidence: ``binding.workspace_id`` hashes the
+# scan root's canonical path, ``binding.scanner_grammar`` follows the running
+# CPython, and ``intent_delta_id``, ``binding.binding_fingerprint`` and
+# ``proposal_id`` are hashes over those. Masking keeps the table portable across
+# checkouts and interpreters while still pinning every fact, binding, risk,
+# suggested test, question, constraint, assumption and refusal it carries.
+#
+# A refused case is pinned by its bounded reason and a refused intent delta by
+# its own, so "the refusal did not change" is stated as exactly as "the envelope
+# did not change".
+
+_VOLATILE_ENVELOPE_FIELDS = (
+    ("proposal_id",),
+    ("intent_delta_id",),
+    ("binding", "workspace_id"),
+    ("binding", "scanner_grammar"),
+    ("binding", "binding_fingerprint"),
+)
+
+_FROZEN_ENVELOPES = {
+    "ambiguous_impact": "f570f15a02d6bc7e8db474cfcd07a5c026d84f319dca512af6182de324aac5ba",
+    "ambiguous_reference": "refused:a scope reference does not bind to exactly one artifact",
+    "cross_workspace_reference": "refused:evidence belongs to a different workspace",
+    "empty_scope_entities": "delta_refused:scope must name at least one entity or artifact",
+    "evidence_not_a_mapping": "refused:evidence is not a mapping",
+    "future_evidence_schema": "refused:an evidence document is not a supported document",
+    "grammar_context_changed": "refused:the scanner grammar context does not match the intent baseline",
+    "invalid_scan_generation": "delta_refused:baseline.scan_generation must be an integer",
+    "missing_required_intent_field": "delta_refused:missing required section acceptance_criteria",
+    "missing_scanner_evidence": "refused:scanner evidence is missing",
+    "missing_twin_evidence": "refused:twin evidence is missing",
+    "no_impact_empty_module": "97d63620be3301ae8f7198a455db3fd1d8b43308a9bd1d6c0bc6768ecb856065",
+    "oversized_requested_outcome": "delta_refused:requested_outcome is oversized",
+    "prose_cannot_fill_a_required_field": "delta_refused:missing required section acceptance_criteria",
+    "schema_context_changed": "refused:the scanner schema context does not match the intent baseline",
+    "stale_baseline_fingerprint": "refused:evidence baseline does not match the intent baseline",
+    "stale_scan_generation": "refused:evidence baseline does not match the intent baseline",
+    "supported_class_scope": "4f236f616980eb47a45cd138676c90a0ebe908f103803daed361c63f87098c2c",
+    "supported_module_scope": "caccedd796246e9f0a90c626aa0ac32fbd0978a3f98d50457cc58cbf0a87c666",
+    "twin_future_schema_version": "refused:an evidence document is not a supported document",
+    "twin_is_a_list": "refused:an evidence document is not a supported document",
+    "twin_is_not_a_mapping": "refused:an evidence document is not a supported document",
+    "twin_missing_artifacts": "refused:an origin evidence reference does not resolve exactly",
+    "twin_missing_schema_version": "refused:an evidence document is not a supported document",
+    "twin_missing_workspace_revision": "refused:an evidence document is not a supported document",
+    "twin_mutated_artifact_added": "4f236f616980eb47a45cd138676c90a0ebe908f103803daed361c63f87098c2c",
+    "twin_older_schema_version": "refused:an evidence document is not a supported document",
+    "twin_workspace_revision_not_a_mapping": "refused:an evidence document is not a supported document",
+    "unavailable_scanner_evidence": "548cc24e4eadebd4d1f29a851779244626378df977ac7a0627186cb80a2403b8",
+    "unbound_origin_evidence": "refused:an origin evidence reference does not resolve exactly",
+    "unknown_evidence_reference_kind": "delta_refused:an origin.evidence entry names an unknown kind",
+    "unknown_source_facts": "7173b546957aa465e9f66da77ecbafe884d25392b788634721e5c4d1c6ab2709",
+    "unsupported_identity": "47f7170d50a64d65cd29c9d377182d0cfc5a83959fa412c506238843951bf444",
+}
+
+
+def _stable_envelope(proposal: dict) -> str:
+    """Return the canonical envelope with its machine-derived fields removed."""
+    stable = copy.deepcopy(proposal)
+    for path in _VOLATILE_ENVELOPE_FIELDS:
+        node = stable
+        for key in path[:-1]:
+            node = node.get(key) or {}
+        node.pop(path[-1], None)
+    return impact_proposal.dumps(stable)
+
+
+def _envelope_value(proposal):
+    """Return the one value a built proposal is pinned by."""
+    canon = _stable_envelope(proposal)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def _twin_variants(accepted_store: dict) -> dict:
+    """Return the twin-store mutations the seam's reads must answer for.
+
+    The manifest's own twin mutations cover a well-formed store whose baseline
+    moved. These cover the store the version gate cannot vouch for at all — a
+    non-mapping, a missing or future schema version, a missing or malformed
+    workspace baseline — plus a well-formed store carrying an extra artifact.
+    """
+    variants = {
+        "twin_is_not_a_mapping": "not a mapping",
+        "twin_is_a_list": [1, 2, 3],
+        "twin_missing_schema_version": {
+            k: v for k, v in accepted_store.items() if k != "schema_version"
+        },
+        "twin_missing_workspace_revision": {
+            k: v for k, v in accepted_store.items() if k != "workspace_revision"
+        },
+        "twin_missing_artifacts": {
+            k: v for k, v in accepted_store.items() if k != "artifacts"
+        },
+    }
+    future = copy.deepcopy(accepted_store)
+    future["schema_version"] = "9.9.9"
+    variants["twin_future_schema_version"] = future
+    older = copy.deepcopy(accepted_store)
+    older["schema_version"] = "0.0.1"
+    variants["twin_older_schema_version"] = older
+    malformed = copy.deepcopy(accepted_store)
+    malformed["workspace_revision"] = "not a mapping"
+    variants["twin_workspace_revision_not_a_mapping"] = malformed
+    mutated = copy.deepcopy(accepted_store)
+    mutated["artifacts"] = mutated["artifacts"] + [
+        {
+            "record_type": "artifact",
+            "id": "artifact:class:app.service",
+            "kind": "class",
+            "path": "app/service.py",
+            "module": "app.service",
+            "name": "Service",
+            "locator": "app.service.Service2",
+        }
+    ]
+    variants["twin_mutated_artifact_added"] = mutated
+    return variants
+
+
+class EnvelopeEquivalenceTests(unittest.TestCase):
+    """Every envelope and every refusal is what it was before the seam."""
+
+    maxDiff = None
+
+    @classmethod
+    def setUpClass(cls):
+        ManifestOracleTests.setUpClass()
+        cls.runner = ManifestOracleTests("test_every_case")
+
+    def _accepted(self):
+        return ManifestOracleTests.accepted_doc, ManifestOracleTests.accepted_store
+
+    def _observe_manifest_case(self, case):
+        intent_input = self.runner._intent_input(case)
+        delta, error = intent_delta.build_intent_delta(intent_input)
+        if error is not None:
+            return "delta_refused:" + error
+        bundle = self.runner._resolve_evidence(case["evidence"])
+        proposal, error = impact_proposal.build_impact_proposal(delta, bundle)
+        if error is not None:
+            return "refused:" + error
+        return _envelope_value(proposal)
+
+    def _observe_twin_variant(self, store):
+        doc, _accepted_store = self._accepted()
+        intent_input = self.runner._intent_input(
+            {"case": "twin_version_family", "intent": {}, "evidence": "accepted"}
+        )
+        delta, error = intent_delta.build_intent_delta(intent_input)
+        self.assertIsNone(error, error)
+        proposal, error = impact_proposal.build_impact_proposal(
+            delta, {"scanner": doc, "twin": store}
+        )
+        if error is not None:
+            return "refused:" + error
+        return _envelope_value(proposal)
+
+    def test_the_table_pins_every_manifest_case_and_the_twin_version_family(self):
+        expected = {case["case"] for case in ManifestOracleTests.manifest["cases"]}
+        expected |= set(_twin_variants(ManifestOracleTests.accepted_store))
+        self.assertEqual(sorted(expected), sorted(_FROZEN_ENVELOPES))
+
+    def test_every_manifest_case_keeps_its_frozen_envelope(self):
+        for case in ManifestOracleTests.manifest["cases"]:
+            with self.subTest(case=case["case"]):
+                self.assertEqual(
+                    _FROZEN_ENVELOPES[case["case"]], self._observe_manifest_case(case)
+                )
+
+    def test_every_twin_version_case_keeps_its_frozen_answer(self):
+        _doc, accepted_store = self._accepted()
+        for name, store in sorted(_twin_variants(accepted_store).items()):
+            with self.subTest(case=name):
+                self.assertEqual(_FROZEN_ENVELOPES[name], self._observe_twin_variant(store))
+
+
+class TwinEvidenceRefusalTests(unittest.TestCase):
+    """A store the version gate cannot vouch for is refused, never half-read."""
+
+    @classmethod
+    def setUpClass(cls):
+        ManifestOracleTests.setUpClass()
+        cls.runner = ManifestOracleTests("test_every_case")
+
+    def _delta(self):
+        intent_input = self.runner._intent_input(
+            {"case": "twin_version_family", "intent": {}, "evidence": "accepted"}
+        )
+        delta, error = intent_delta.build_intent_delta(intent_input)
+        self.assertIsNone(error, error)
+        return delta
+
+    def _build(self, store):
+        return impact_proposal.build_impact_proposal(
+            self._delta(),
+            {"scanner": ManifestOracleTests.accepted_doc, "twin": store},
+        )
+
+    def test_a_store_that_is_not_a_mapping_is_refused(self):
+        for store in ("not a mapping", [1, 2, 3], 5, None):
+            with self.subTest(store=store):
+                self.assertEqual(
+                    (None, impact_proposal.REASON_UNSUPPORTED_EVIDENCE),
+                    self._build(store),
+                )
+
+    def test_a_store_with_no_schema_version_is_refused(self):
+        store = {
+            k: v
+            for k, v in ManifestOracleTests.accepted_store.items()
+            if k != "schema_version"
+        }
+        self.assertEqual(
+            (None, impact_proposal.REASON_UNSUPPORTED_EVIDENCE), self._build(store)
+        )
+
+    def test_a_store_from_the_future_is_refused_rather_than_read(self):
+        # 9.9.9 is *newer* than the schema this module understands. It is
+        # refused, never partially read as if it were the version it is not.
+        for version in ("9.9.9", "0.0.1"):
+            with self.subTest(schema_version=version):
+                store = copy.deepcopy(ManifestOracleTests.accepted_store)
+                store["schema_version"] = version
+                self.assertEqual(
+                    (None, impact_proposal.REASON_UNSUPPORTED_EVIDENCE),
+                    self._build(store),
+                )
+
+    def test_a_store_with_no_workspace_baseline_is_refused(self):
+        store = {
+            k: v
+            for k, v in ManifestOracleTests.accepted_store.items()
+            if k != "workspace_revision"
+        }
+        self.assertEqual(
+            (None, impact_proposal.REASON_UNSUPPORTED_EVIDENCE), self._build(store)
+        )
+
+    def test_a_malformed_workspace_baseline_is_refused(self):
+        for revision in ("not a mapping", None, [], 5):
+            with self.subTest(workspace_revision=revision):
+                store = copy.deepcopy(ManifestOracleTests.accepted_store)
+                store["workspace_revision"] = revision
+                self.assertEqual(
+                    (None, impact_proposal.REASON_UNSUPPORTED_EVIDENCE),
+                    self._build(store),
+                )
+
+    def test_a_store_with_no_artifacts_is_refused_by_its_evidence_bindings(self):
+        # A store the gate accepts but that holds no artifact is not
+        # unsupported *evidence*: it is valid evidence that does not hold the
+        # identity the intent names.
+        store = {
+            k: v
+            for k, v in ManifestOracleTests.accepted_store.items()
+            if k != "artifacts"
+        }
+        self.assertEqual(
+            (None, impact_proposal.REASON_UNBOUND_EVIDENCE), self._build(store)
+        )
+
+    def test_a_well_formed_mutated_store_still_builds(self):
+        store = copy.deepcopy(ManifestOracleTests.accepted_store)
+        store["artifacts"] = store["artifacts"] + [
+            {
+                "record_type": "artifact",
+                "id": "artifact:class:app.service",
+                "kind": "class",
+                "path": "app/service.py",
+                "module": "app.service",
+                "name": "Service",
+                "locator": "app.service.Service2",
+            }
+        ]
+        proposal, error = self._build(store)
+        self.assertIsNone(error, error)
+        self.assertIsNone(impact_proposal.validate_impact_proposal(proposal))
 
 
 if __name__ == "__main__":

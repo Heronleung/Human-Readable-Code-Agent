@@ -48,9 +48,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # ``identity.sha256_hex`` and every import path that resolved before B1 still
 # resolves, with the same values: no stored identifier changes.
 #
-# The Twin keeps everything that is Twin vocabulary rather than identity —
-# ``CONF_*``, the symbol artifact kinds, ``PROVENANCE_*``, ``SYNC_*``,
-# ``BEHAVIOR_*``, ``TWIN_SCHEMA_VERSION`` and the migration registry below.
+# The Twin keeps everything that is Twin vocabulary rather than identity — the
+# symbol artifact kinds, ``PROVENANCE_*``, ``SYNC_*``, ``BEHAVIOR_*``,
+# ``TWIN_SCHEMA_VERSION`` and the migration registry below. The confidence
+# levels were on that list; B-T2A moved them, see the next block.
 from ..core.identity import ARTIFACT_FILE, _portable, baseline_fingerprint, file_artifact_id, fingerprint_bytes, fingerprint_source, sha256_hex, symbol_artifact_id, workspace_id_for
 
 # -- relocated storage concerns (B2) -------------------------------------
@@ -67,6 +68,18 @@ from ..core.identity import ARTIFACT_FILE, _portable, baseline_fingerprint, file
 # Twin owns its own.
 from ..core import storage
 from ..core.storage import dumps, version_tuple as _version_tuple
+
+# -- relocated confidence vocabulary (B-T2A) ------------------------------
+#
+# The confidence levels were first written here as Twin vocabulary. They are
+# not Twin's alone: the Twin stamps them on every record it builds, and the
+# advisory impact proposal reports one as its own envelope's confidence, so two
+# capabilities that must agree on the exact strings share them.
+# :mod:`hrca.source_evidence` now owns them — it is the module that reads the
+# records carrying them — and they are re-exported rather than redefined, so
+# ``twin.CONF_HIGH`` is the *same object* as ``source_evidence.CONF_HIGH`` and
+# no stored record, identifier or serialized envelope changes.
+from ..source_evidence import CONF_HIGH, CONF_LOW
 
 TWIN_SCHEMA_VERSION = "1.0.0"
 TWIN_GENERATOR = "hrca-twin"
@@ -154,10 +167,6 @@ _UNSUPPORTED_BEHAVIOR_REASON = (
     "not modeled by the deterministic scanner (P3.3); no runtime or inference "
     "evidence is available"
 )
-
-# Confidence values carried through from the scanner.
-CONF_HIGH = "high"
-CONF_LOW = "low"
 
 # Python source suffixes the Twin models as file artifacts/projections. ``.pyi``
 # type stubs share the same deterministic treatment as ``.py`` modules.
