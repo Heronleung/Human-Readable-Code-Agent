@@ -13,6 +13,8 @@ from __future__ import annotations
 import ast
 import io
 import os
+import shutil
+import tempfile
 import unittest
 
 from hrca import test_routes
@@ -346,11 +348,30 @@ class RouteMechanismStaysOutsideTheProductTests(unittest.TestCase):
         self.assertIn("raise SystemExit(EXIT_REFUSED)", source)
 
 
-_ALL_HRCA_MODULES = frozenset(
-    name[:-3]
-    for name in os.listdir(_SRC)
-    if name.endswith(".py") and name != "__init__.py"
-)
+def _discover_hrca_modules(root: str) -> frozenset:
+    """Return every module name under the package root, recursively.
+
+    ``os.listdir`` enumerates a *flat* package only. Once the package gains a
+    subdirectory the listing returns directory names, the ``.py`` filter drops
+    them, and every name below disappears from this set — which would make the
+    rule that uses it compare against nothing and pass. The walk is recursive
+    and deterministic for that reason, and the count is pinned so the surface
+    cannot shrink without a failure.
+    """
+    found = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+        for filename in sorted(filenames):
+            if filename.endswith(".py") and filename != "__init__.py":
+                found.add(filename[:-3])
+    return frozenset(found)
+
+
+# The non-``__init__`` module count when this discovery became recursive. A
+# floor, not an equality: adding a module is fine, losing one is not.
+_MINIMUM_HRCA_MODULES = 74
+
+_ALL_HRCA_MODULES = _discover_hrca_modules(_SRC)
 
 
 class CliTests(unittest.TestCase):
@@ -389,6 +410,47 @@ class CliTests(unittest.TestCase):
         with contextlib.redirect_stderr(captured):
             code = test_routes_cli.main(["--route", "no-such-route"])
         self.assertEqual(test_routes_cli.EXIT_REFUSED, code)
+
+
+class HrcaModuleDiscoveryTests(unittest.TestCase):
+    """The module surface this file compares against cannot shrink quietly."""
+
+    def test_the_surface_never_falls_below_the_current_count(self):
+        self.assertGreaterEqual(
+            len(_ALL_HRCA_MODULES),
+            _MINIMUM_HRCA_MODULES,
+            "recursive discovery found %d hrca modules but the package has at "
+            "least %d; the rule above is now comparing against a smaller "
+            "surface than it was written for"
+            % (len(_ALL_HRCA_MODULES), _MINIMUM_HRCA_MODULES),
+        )
+
+    def test_every_flat_module_is_still_discovered(self):
+        flat = {
+            name[:-3]
+            for name in os.listdir(_SRC)
+            if name.endswith(".py") and name != "__init__.py"
+        }
+        self.assertEqual(set(), flat - _ALL_HRCA_MODULES)
+        self.assertEqual(_MINIMUM_HRCA_MODULES, len(flat))
+
+    def test_discovery_is_recursive(self):
+        # Proved against a nested layout in a temporary directory rather than
+        # by moving a production module. The nested module has a name the flat
+        # scan could not produce, so finding it *is* the proof of recursion.
+        root = tempfile.mkdtemp(prefix="hrca-r0-routes-")
+        try:
+            os.makedirs(os.path.join(root, "source"))
+            for rel in ("__init__.py", "scanner.py",
+                        os.path.join("source", "__init__.py"),
+                        os.path.join("source", "nested_only.py")):
+                with open(os.path.join(root, rel), "w", encoding="utf-8") as fh:
+                    fh.write("")
+            found = _discover_hrca_modules(root)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+        self.assertIn("scanner", found)
+        self.assertIn("nested_only", found)
 
 
 if __name__ == "__main__":

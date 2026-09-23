@@ -14,29 +14,120 @@ from __future__ import annotations
 import ast
 import os
 import re
+import shutil
+import tempfile
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.normpath(os.path.join(_HERE, "..", "src", "hrca"))
 
-_CLIENT_PATH = os.path.join(_SRC, "client.py")
+# -- module discovery (R0) -----------------------------------------------
+#
+# Every rule in this module is stated over "each module in the package". That
+# was expressed as ``os.listdir(_SRC)`` plus an ``endswith(".py")`` filter,
+# which enumerates a *flat* package and nothing else: the moment the package
+# gains a subdirectory, the listing returns directory names, the filter drops
+# them, and every rule below silently inspects almost nothing while still
+# passing.
+#
+# Discovery is therefore recursive and deterministic, and every rule iterates
+# it rather than the directory. A module the discovery misses is a *failing*
+# test — see ``ModuleDiscoveryCoverageTests`` — not a quietly skipped one.
+#
+# ``_MODULES`` maps a module's dotted path relative to the package root to its
+# file. ``hrca/scanner.py`` is ``"scanner"``; ``hrca/source/scanner.py`` is
+# ``"source.scanner"``. A package's ``__init__`` is named for its package, so
+# ``hrca/twin/__init__.py`` is ``"twin"`` — which is the name a reader expects
+# and which keeps leaf names unique under nesting.
+_PYCACHE_DIRNAME = "__pycache__"
+
+
+def _discover_modules(root: str) -> dict:
+    """Return ``{dotted module name: (absolute path, is_package)}``.
+
+    Recursive, deterministic, and package-aware. ``__pycache__`` is skipped;
+    nothing else is, because a module that is skipped here is a module no rule
+    below can see.
+    """
+    found = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d != _PYCACHE_DIRNAME)
+        for filename in sorted(filenames):
+            if not filename.endswith(".py"):
+                continue
+            full = os.path.join(dirpath, filename)
+            rel = os.path.relpath(full, root).replace(os.sep, "/")
+            if rel == "__init__.py":
+                dotted, is_package = "", True
+            elif rel.endswith("/__init__.py"):
+                dotted, is_package = rel[: -len("/__init__.py")].replace("/", "."), True
+            else:
+                dotted, is_package = rel[:-3].replace("/", "."), False
+            found[dotted] = (full, is_package)
+    return found
+
+
+_MODULES = _discover_modules(_SRC)
+
+# Leaf name -> dotted name. The leaf is what an invariant compares against
+# (``{"boundary", "hook_capture", ...}``), and it stays unique under nesting
+# because a package is named for its directory. A collision is a naming defect
+# the relocation would have to resolve, so it is raised rather than hidden.
+_MODULE_LEAVES = {}
+for _dotted in sorted(_MODULES):
+    _leaf = _dotted.split(".")[-1] if _dotted else "__init__"
+    if _leaf in _MODULE_LEAVES:
+        raise AssertionError(
+            "two modules share the leaf name %r: %r and %r"
+            % (_leaf, _MODULE_LEAVES[_leaf], _dotted)
+        )
+    _MODULE_LEAVES[_leaf] = _dotted
+
+
+def _module_path(leaf: str) -> str:
+    """Return the path of the module whose leaf name is ``leaf``.
+
+    Raises rather than returning ``None``: a rule that names a module it
+    cannot find is a rule that would otherwise check nothing. This is what
+    keeps the named-module constants below correct across a relocation — they
+    follow the module, they do not assume where it lives.
+    """
+    dotted = _MODULE_LEAVES.get(leaf)
+    if dotted is None:
+        raise AssertionError("no module named %r in the package" % leaf)
+    return _MODULES[dotted][0]
+
+
+def _iter_modules():
+    """Yield ``(leaf, dotted, path)`` for every module, deterministically."""
+    for dotted in sorted(_MODULES):
+        leaf = dotted.split(".")[-1] if dotted else "__init__"
+        yield leaf, dotted, _MODULES[dotted][0]
+
+
+def _module_is_package(dotted: str) -> bool:
+    entry = _MODULES.get(dotted)
+    return bool(entry and entry[1])
+
+
+_CLIENT_PATH = _module_path("client")
 
 # Modules that are part of the client boundary and must therefore stay free of
 # any core / provider / Git / command-execution import. ``hrca.style`` is
 # included because it is the desktop-only visual layer and must own nothing but
 # presentation tokens.
 _CLIENT_MODULES = {
-    "hrca.client": os.path.join(_SRC, "client.py"),
-    "hrca.client_core": os.path.join(_SRC, "client_core.py"),
-    "hrca.style": os.path.join(_SRC, "style.py"),
+    "hrca.client": _module_path("client"),
+    "hrca.client_core": _module_path("client_core"),
+    "hrca.style": _module_path("style"),
 }
 
 # The shared contract is Qt-free and must not import the core either.
-_CONTRACT_MODULE = os.path.join(_SRC, "contract.py")
+_CONTRACT_MODULE = _module_path("contract")
 
 # The workspace policy is boundary-side: it may import stdlib and the contract,
 # but never the deterministic core.
-_WORKSPACE_MODULE = os.path.join(_SRC, "workspace.py")
+_WORKSPACE_MODULE = _module_path("workspace")
 
 # Top-level module names that a client or contract module must never import.
 _FORBIDDEN_TOP_LEVEL = frozenset(
@@ -115,21 +206,76 @@ _SETUP_SEAM = frozenset(
 _SETUP_MODULES = ("runner_image_setup", "runner_image_setup_cli", "runner_image_policy")
 
 
-def _imported_top_level_names(path: str) -> set:
-    with open(path, "r", encoding="utf-8") as fh:
-        tree = ast.parse(fh.read())
+_DOTTED_BY_PATH = {path: dotted for dotted, (path, _pkg) in _MODULES.items()}
+
+
+def _relative_base(dotted: str, is_package: bool, level: int) -> str:
+    """Return the absolute dotted module a relative import ``level`` names.
+
+    ``level`` is counted the way Python counts it: one dot is the importing
+    module's own package, each further dot walks up one. A package's
+    ``__init__`` already *is* its package, so it starts one level in.
+    """
+    parts = dotted.split(".") if dotted else []
+    if not is_package:
+        parts = parts[:-1]
+    up = level - 1
+    if up > 0:
+        parts = parts[:-up] if up <= len(parts) else []
+    return ".".join(parts)
+
+
+def _imported_names_from_source(
+    source: str, dotted: str, is_package: bool, modules: dict = None
+) -> set:
+    """Return the module names ``source`` depends on, given its own position.
+
+    Absolute imports contribute their top-level name. Relative imports are
+    resolved against the importing module's position in the package, so
+    ``from ..core import identity`` inside ``hrca/source/scanner.py``
+    contributes **``identity``** — not ``core``, which is what reading the
+    same node without resolving it would report and which would make every
+    "must not import X" rule miss its target the moment the package nests.
+    ``identity`` is only credited when it really is a module of that name, so a
+    symbol that merely shares the spelling is not mistaken for one.
+
+    ``modules`` defaults to the real package and exists so the resolution can
+    be exercised against a representative nested layout without moving any
+    production module.
+    """
+    known = _MODULES if modules is None else modules
+    tree = ast.parse(source)
     names = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 names.add(alias.name.split(".")[0])
         elif isinstance(node, ast.ImportFrom):
-            if node.module is not None:
-                names.add(node.module.split(".")[0])
-            elif node.level:  # relative import such as ``from . import scanner``
-                for alias in node.names:
-                    names.add(alias.name.split(".")[0])
+            if not node.level:
+                # Absolute imports are unchanged by this rework: they always
+                # contributed their top-level name, and every rule here is
+                # written against that. Only *relative* resolution needed
+                # fixing, so only relative resolution changed.
+                if node.module is not None:
+                    names.add(node.module.split(".")[0])
+                continue
+            base = _relative_base(dotted, is_package, node.level)
+            if node.module:
+                base = ".".join(part for part in (base, node.module) if part)
+            if base:
+                names.add(base.split(".")[-1])
+            for alias in node.names:
+                candidate = ".".join(part for part in (base, alias.name) if part)
+                if candidate in known:
+                    names.add(alias.name)
     return names
+
+
+def _imported_top_level_names(path: str) -> set:
+    with open(path, "r", encoding="utf-8") as fh:
+        source = fh.read()
+    dotted = _DOTTED_BY_PATH.get(os.path.normpath(path), "")
+    return _imported_names_from_source(source, dotted, _module_is_package(dotted))
 
 
 def _inside_function(node: ast.AST, tree: ast.AST) -> bool:
@@ -275,7 +421,7 @@ class ClientArchitectureTests(unittest.TestCase):
         # canonical records.
         for name in _MEMORY_PRODUCT_MODULES:
             with self.subTest(module=name):
-                imported = _imported_top_level_names(os.path.join(_SRC, name + ".py"))
+                imported = _imported_top_level_names(_module_path(name))
                 self.assertTrue(
                     imported.isdisjoint(_CAPTURE_SEAM),
                     f"hrca.{name} imports the provider adapter: "
@@ -286,7 +432,7 @@ class ClientArchitectureTests(unittest.TestCase):
         # The adapter is a pure translation: it may read the domain, never the
         # store, the shell or the boundary.
         imported = _imported_top_level_names(
-            os.path.join(_SRC, "claude_code_hooks.py")
+            _module_path("claude_code_hooks")
         )
         self.assertTrue(
             imported.isdisjoint(
@@ -301,7 +447,7 @@ class ClientArchitectureTests(unittest.TestCase):
         for name in ("memory", "memory_store", "memory_cli", "memory_docs",
                      "memory_query", "memory_revisions", "memory_package",
                      "memory_package_cli"):
-            path = os.path.join(_SRC, name + ".py")
+            path = _module_path(name)
             imported = _imported_top_level_names(path)
             self.assertTrue(
                 imported.isdisjoint(_NETWORK_MODULES),
@@ -313,7 +459,7 @@ class ClientArchitectureTests(unittest.TestCase):
         # M4.3 projects documents from stores. If it could reach the capture
         # seam it could read raw hook JSON, and the document would stop being a
         # view of the contract's records.
-        imported = _imported_top_level_names(os.path.join(_SRC, _DOCS_MODULE + ".py"))
+        imported = _imported_top_level_names(_module_path(_DOCS_MODULE))
         self.assertTrue(
             imported.isdisjoint(_CAPTURE_SEAM | {"memory_store", "os", "subprocess"}),
             f"hrca.{_DOCS_MODULE} reaches beyond normalized records: {sorted(imported)}",
@@ -322,7 +468,7 @@ class ClientArchitectureTests(unittest.TestCase):
     def test_the_projector_does_no_io(self):
         # A projector that opened a file could read a transcript or a log, which
         # is exactly the source this layer must not have.
-        with open(os.path.join(_SRC, _DOCS_MODULE + ".py"), "r", encoding="utf-8") as fh:
+        with open(_module_path(_DOCS_MODULE), "r", encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         called = {
             node.func.id
@@ -337,7 +483,7 @@ class ClientArchitectureTests(unittest.TestCase):
         # can reach a provider or run a command.
         for name in sorted(_CAPTURE_SEAM):
             with self.subTest(module=name):
-                imported = _imported_top_level_names(os.path.join(_SRC, name + ".py"))
+                imported = _imported_top_level_names(_module_path(name))
                 self.assertTrue(
                     imported.isdisjoint(_NETWORK_MODULES),
                     f"hrca.{name} imports network primitives: "
@@ -352,7 +498,7 @@ class ClientArchitectureTests(unittest.TestCase):
         # The document domain and its store are offline: they never open a
         # socket, so a frozen save/adopt loop stays network-free.
         for name in ("document", "version_store"):
-            path = os.path.join(_SRC, name + ".py")
+            path = _module_path(name)
             imported = _imported_top_level_names(path)
             self.assertTrue(
                 imported.isdisjoint(_NETWORK_MODULES),
@@ -365,7 +511,7 @@ class ClientArchitectureTests(unittest.TestCase):
         # they never open a socket, so validation/staging stays network-free.
         for name in ("candidate_package", "verifier", "rule_delta", "delta_verifier",
                      "delta_candidate", "rule_delta_interpret"):
-            path = os.path.join(_SRC, name + ".py")
+            path = _module_path(name)
             imported = _imported_top_level_names(path)
             self.assertTrue(
                 imported.isdisjoint(_NETWORK_MODULES),
@@ -378,7 +524,7 @@ class ClientArchitectureTests(unittest.TestCase):
         # socket-opening modules) must be imported inside a function body, never
         # at module top level, so a frozen scan/serve/readiness loop never pulls
         # in HTTP/socket code.
-        boundary_path = os.path.join(_SRC, "boundary.py")
+        boundary_path = _module_path("boundary")
         with open(boundary_path, "r", encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         violations = []
@@ -429,7 +575,7 @@ class ClientArchitectureTests(unittest.TestCase):
         }
         for name in _SETUP_MODULES:
             with self.subTest(module=name):
-                imported = _imported_top_level_names(os.path.join(_SRC, name + ".py"))
+                imported = _imported_top_level_names(_module_path(name))
                 self.assertTrue(
                     imported.isdisjoint(forbidden),
                     f"hrca.{name} reaches beyond setup: {sorted(imported & forbidden)}",
@@ -438,16 +584,14 @@ class ClientArchitectureTests(unittest.TestCase):
     def test_the_setup_policy_is_pure(self):
         # The policy decides; it never acts. It may not spawn, read the network
         # or open a file, and it imports nothing from this package at all.
-        path = os.path.join(_SRC, "runner_image_policy.py")
+        path = _module_path("runner_image_policy")
         imported = _imported_top_level_names(path)
         self.assertTrue(
             imported.isdisjoint({"subprocess", "os", "socket", "http", "urllib"}),
             f"the setup policy is not pure: {sorted(imported)}",
         )
         siblings = {
-            os.path.splitext(entry)[0]
-            for entry in os.listdir(_SRC)
-            if entry.endswith(".py") and entry != "__init__.py"
+            leaf for leaf, _dotted, _path in _iter_modules() if leaf != "__init__"
         }
         self.assertTrue(
             imported.isdisjoint(siblings),
@@ -479,7 +623,7 @@ class MemoryReadBoundaryTests(unittest.TestCase):
     )
 
     def test_the_contract_module_does_not_reach_the_memory_seam(self):
-        imported = _imported_top_level_names(os.path.join(_SRC, "contract.py"))
+        imported = _imported_top_level_names(_module_path("contract"))
         self.assertTrue(
             imported.isdisjoint(_MEMORY_SEAM),
             f"hrca.contract reaches the memory seam: {sorted(imported & _MEMORY_SEAM)}",
@@ -487,13 +631,10 @@ class MemoryReadBoundaryTests(unittest.TestCase):
 
     def test_the_projector_is_reached_only_from_the_boundary_and_the_cli(self):
         offenders = []
-        for name in sorted(os.listdir(_SRC)):
-            if not name.endswith(".py"):
-                continue
-            stem = name[:-3]
+        for stem, _dotted, path in _iter_modules():
             if stem in self._PROJECTOR_CALLERS or stem == _DOCS_MODULE:
                 continue
-            imported = _imported_top_level_names(os.path.join(_SRC, name))
+            imported = _imported_top_level_names(path)
             if _DOCS_MODULE in imported:
                 offenders.append(stem)
         self.assertEqual(
@@ -509,13 +650,10 @@ class MemoryReadBoundaryTests(unittest.TestCase):
         allowed = {"boundary", "hook_capture", "memory_store", "memory_cli",
                    "memory_package", "memory_package_cli"}
         offenders = []
-        for name in sorted(os.listdir(_SRC)):
-            if not name.endswith(".py"):
-                continue
-            stem = name[:-3]
+        for stem, _dotted, path in _iter_modules():
             if stem in allowed:
                 continue
-            imported = _imported_top_level_names(os.path.join(_SRC, name))
+            imported = _imported_top_level_names(path)
             if "memory_store" in imported:
                 offenders.append(stem)
         self.assertEqual(
@@ -525,7 +663,7 @@ class MemoryReadBoundaryTests(unittest.TestCase):
     def test_the_query_model_is_a_pure_read_model(self):
         # A query model that could open a file or reach a store could index
         # something the boundary never allowed it to see.
-        path = os.path.join(_SRC, _QUERY_MODULE + ".py")
+        path = _module_path(_QUERY_MODULE)
         imported = _imported_top_level_names(path)
         self.assertTrue(
             imported.isdisjoint(_CAPTURE_SEAM | {"memory_store", "os", "subprocess"}),
@@ -546,7 +684,7 @@ class MemoryReadBoundaryTests(unittest.TestCase):
         # a process primitive, a credential or a provider.
         for name in _PACKAGE_MODULES:
             with self.subTest(module=name):
-                imported = _imported_top_level_names(os.path.join(_SRC, name + ".py"))
+                imported = _imported_top_level_names(_module_path(name))
                 self.assertTrue(
                     imported.isdisjoint(
                         _NETWORK_MODULES
@@ -560,7 +698,7 @@ class MemoryReadBoundaryTests(unittest.TestCase):
     def test_the_revision_model_is_pure_and_has_no_clock(self):
         # A revision model that could open a file, reach a store or read a clock
         # could bind a correction to something the contract never recorded.
-        path = os.path.join(_SRC, _REVISIONS_MODULE + ".py")
+        path = _module_path(_REVISIONS_MODULE)
         imported = _imported_top_level_names(path)
         self.assertTrue(
             imported.isdisjoint(
@@ -581,15 +719,10 @@ class MemoryReadBoundaryTests(unittest.TestCase):
 
     def test_only_the_boundary_reaches_the_revision_model(self):
         offenders = []
-        for name in sorted(os.listdir(_SRC)):
-            if not name.endswith(".py"):
-                continue
-            stem = name[:-3]
+        for stem, _dotted, path in _iter_modules():
             if stem in ("boundary", _REVISIONS_MODULE, "memory_package"):
                 continue
-            if _REVISIONS_MODULE in _imported_top_level_names(
-                os.path.join(_SRC, name)
-            ):
+            if _REVISIONS_MODULE in _imported_top_level_names(path):
                 offenders.append(stem)
         self.assertEqual(
             [], offenders, "these modules import the revision model: %s" % offenders
@@ -597,20 +730,17 @@ class MemoryReadBoundaryTests(unittest.TestCase):
 
     def test_only_the_boundary_reaches_the_query_model(self):
         offenders = []
-        for name in sorted(os.listdir(_SRC)):
-            if not name.endswith(".py"):
-                continue
-            stem = name[:-3]
+        for stem, _dotted, path in _iter_modules():
             if stem in ("boundary", _QUERY_MODULE):
                 continue
-            if _QUERY_MODULE in _imported_top_level_names(os.path.join(_SRC, name)):
+            if _QUERY_MODULE in _imported_top_level_names(path):
                 offenders.append(stem)
         self.assertEqual(
             [], offenders, "these modules import the query model: %s" % offenders
         )
 
     def test_the_boundary_roots_memory_at_the_session_store_base(self):
-        with open(os.path.join(_SRC, "boundary.py"), "r", encoding="utf-8") as fh:
+        with open(_module_path("boundary"), "r", encoding="utf-8") as fh:
             source = fh.read()
         self.assertIn("memory_store.load(session.store_base", source)
         self.assertIn("memory_store.list_runs(session.store_base", source)
@@ -619,7 +749,7 @@ class MemoryReadBoundaryTests(unittest.TestCase):
         # Scoped to the Memory handlers only: the workspace document handler
         # legitimately reads a request path, and conflating the two would make
         # this rule meaningless.
-        path = os.path.join(_SRC, "boundary.py")
+        path = _module_path("boundary")
         with open(path, "r", encoding="utf-8") as fh:
             source = fh.read()
         tree = ast.parse(source)
@@ -837,8 +967,8 @@ class EmojiAuditTests(unittest.TestCase):
 # without depending on it, and it is asserted below. So the table is read the
 # same way every other rule here is: by parsing the source.
 
-_ROUTE_MODULE = os.path.join(_SRC, "test_routes.py")
-_SETUP_MODULE = os.path.join(_SRC, "setup_verification.py")
+_ROUTE_MODULE = _module_path("test_routes")
+_SETUP_MODULE = _module_path("setup_verification")
 
 # Import names a route mechanism must never carry. It is dev tooling that
 # partitions the surface, so it cannot be part of it, and it must not be able
@@ -1026,7 +1156,7 @@ class TestRouteIsolationTests(unittest.TestCase):
         hrca_names = {
             name
             for name in imported
-            if os.path.isfile(os.path.join(_SRC, name + ".py"))
+            if name in _MODULE_LEAVES
         }
         self.assertEqual(set(), hrca_names)
 
@@ -1035,7 +1165,7 @@ class TestRouteIsolationTests(unittest.TestCase):
         hrca_names = {
             name
             for name in imported
-            if os.path.isfile(os.path.join(_SRC, name + ".py"))
+            if name in _MODULE_LEAVES
         }
         self.assertEqual(set(), hrca_names)
 
@@ -1047,8 +1177,8 @@ class TestRouteIsolationTests(unittest.TestCase):
 # identity stays a dependency-light leaf, and twin keeps no second
 # implementation that could drift from it.
 
-_IDENTITY_MODULE = os.path.join(_SRC, "identity.py")
-_TWIN_MODULE = os.path.join(_SRC, "twin.py")
+_IDENTITY_MODULE = _module_path("identity")
+_TWIN_MODULE = _module_path("twin")
 
 # The primitives B1 relocated out of twin.py.
 _MOVED_IDENTITY_SYMBOLS = (
@@ -1137,7 +1267,7 @@ class IdentitySeamTests(unittest.TestCase):
     def test_the_identity_module_imports_no_hrca_module(self):
         imported = _imported_top_level_names(_IDENTITY_MODULE)
         hrca_names = {
-            name for name in imported if os.path.isfile(os.path.join(_SRC, name + ".py"))
+            name for name in imported if name in _MODULE_LEAVES
         }
         self.assertEqual(set(), hrca_names)
 
@@ -1191,11 +1321,8 @@ class IdentitySeamTests(unittest.TestCase):
 
     def test_no_module_added_a_duplicate_digest_helper(self):
         found = set()
-        for name in sorted(os.listdir(_SRC)):
-            if not name.endswith(".py"):
-                continue
-            module = name[:-3]
-            if "hashlib" in _imported_top_level_names(os.path.join(_SRC, name)):
+        for module, _dotted, path in _iter_modules():
+            if "hashlib" in _imported_top_level_names(path):
                 found.add(module)
         self.assertEqual(set(_DIRECT_HASHLIB_MODULES), found)
 
@@ -1208,8 +1335,8 @@ class IdentitySeamTests(unittest.TestCase):
 # being one. ``hrca.twin`` and ``hrca.twin_store`` re-export what they used to
 # own.
 
-_STORAGE_MODULE = os.path.join(_SRC, "storage.py")
-_TWIN_STORE_MODULE = os.path.join(_SRC, "twin_store.py")
+_STORAGE_MODULE = _module_path("storage")
+_TWIN_STORE_MODULE = _module_path("twin_store")
 
 # Privileged or non-generic hosts storage must never reach. ``os`` and ``json``
 # are deliberately absent: resolving a per-user directory and serializing a
@@ -1246,7 +1373,7 @@ class StorageSeamTests(unittest.TestCase):
     def test_the_storage_module_imports_no_hrca_module(self):
         imported = _imported_top_level_names(_STORAGE_MODULE)
         hrca_names = {
-            name for name in imported if os.path.isfile(os.path.join(_SRC, name + ".py"))
+            name for name in imported if name in _MODULE_LEAVES
         }
         self.assertEqual(set(), hrca_names)
 
@@ -1292,13 +1419,10 @@ class StorageSeamTests(unittest.TestCase):
 
     def test_no_module_but_storage_defines_the_application_root(self):
         offenders = []
-        for name in sorted(os.listdir(_SRC)):
-            if not name.endswith(".py"):
-                continue
-            module = name[:-3]
+        for module, _dotted, path in _iter_modules():
             if module in ("storage", "twin_store"):
                 continue
-            if "app_data_dir" in _top_level_definitions(os.path.join(_SRC, name)):
+            if "app_data_dir" in _top_level_definitions(path):
                 offenders.append(module)
         self.assertEqual([], offenders)
 
@@ -1310,7 +1434,7 @@ class StorageSeamTests(unittest.TestCase):
 # registration to the contract's own constant rather than a string that merely
 # spells the same thing.
 
-_BOUNDARY_MODULE = os.path.join(_SRC, "boundary.py")
+_BOUNDARY_MODULE = _module_path("boundary")
 _REGISTRY_ENTRIES_NAME = "_BOUNDARY_HANDLER_ENTRIES"
 _REGISTRY_NAME = "_BOUNDARY_HANDLERS"
 
@@ -1670,6 +1794,192 @@ class ScanFamilyRegistryTests(unittest.TestCase):
         registered = set(_registered_action_names())
         missing = sorted(set(_EXPECTED_SCAN_ACTIONS) - registered)
         self.assertEqual([], missing)
+
+
+# -- discovery and import resolution (R0) --------------------------------
+#
+# The rules above are only as strong as the surface they iterate. These tests
+# are what stops that surface shrinking quietly: the module count is pinned as
+# a floor, every module the old flat scan saw must still be seen, and the
+# resolution machinery is exercised against a nested layout built in a
+# temporary directory — no production module is moved to prove it.
+
+# The number of non-``__init__`` modules the package had when discovery became
+# recursive. It is a *floor*, not an equality: adding a module must not fail
+# this test, but losing one must. A silent drop below this is the failure mode
+# the whole module was rewritten to catch.
+_MINIMUM_MODULE_COUNT = 74
+
+
+class ModuleDiscoveryCoverageTests(unittest.TestCase):
+    """Recursive discovery sees the whole package, and says so loudly."""
+
+    def test_discovery_never_falls_below_the_current_surface(self):
+        self.assertGreaterEqual(
+            len(_MODULES),
+            _MINIMUM_MODULE_COUNT,
+            "recursive discovery found %d modules but the package has at least "
+            "%d; a rule that iterates the discovery is now checking less than "
+            "it did before" % (len(_MODULES), _MINIMUM_MODULE_COUNT),
+        )
+
+    def test_every_module_the_flat_scan_saw_is_still_seen(self):
+        flat = {
+            name[:-3]
+            for name in os.listdir(_SRC)
+            if name.endswith(".py") and name != "__init__.py"
+        }
+        missing = sorted(flat - set(_MODULE_LEAVES))
+        self.assertEqual([], missing, "discovery lost %s" % missing)
+        self.assertEqual(len(flat), _MINIMUM_MODULE_COUNT)
+
+    def test_every_discovered_module_is_a_real_file(self):
+        for dotted, (path, _is_package) in sorted(_MODULES.items()):
+            with self.subTest(module=dotted or "<package root>"):
+                self.assertTrue(os.path.isfile(path), path)
+                self.assertTrue(path.endswith(".py"), path)
+
+    def test_no_two_modules_share_a_leaf_name(self):
+        leaves = [leaf for leaf, _d, _p in _iter_modules()]
+        self.assertEqual(len(leaves), len(set(leaves)))
+
+    def test_the_iteration_covers_every_discovered_module(self):
+        self.assertEqual(
+            sorted(_MODULES), sorted(dotted for _l, dotted, _p in _iter_modules())
+        )
+
+    def test_a_named_module_that_does_not_exist_fails_loudly(self):
+        # A rule that names a module it cannot find must not quietly check
+        # nothing.
+        with self.assertRaises(AssertionError):
+            _module_path("no_such_module_anywhere")
+
+    def test_discovery_skips_only_pycache(self):
+        for dotted in sorted(_MODULES):
+            self.assertNotIn(_PYCACHE_DIRNAME, dotted)
+
+
+class NestedPackageDiscoveryTests(unittest.TestCase):
+    """Discovery and resolution are proved against a nested layout.
+
+    The layout is built in a temporary directory. No production module moves,
+    so this holds the machinery to a nested shape without the relocation this
+    change is a prerequisite for.
+    """
+
+    LAYOUT = (
+        "__init__.py",
+        "scanner.py",
+        "core/__init__.py",
+        "core/identity.py",
+        "core/storage.py",
+        "source/__init__.py",
+        "source/scanner.py",
+        "twin/__init__.py",
+        "twin/twin_store.py",
+    )
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="hrca-r0-layout-")
+        for rel in self.LAYOUT:
+            path = os.path.join(self.root, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _discovered(self):
+        return _discover_modules(self.root)
+
+    def test_a_flat_module_keeps_its_name(self):
+        self.assertIn("scanner", self._discovered())
+
+    def test_a_nested_module_is_named_for_its_path(self):
+        found = self._discovered()
+        self.assertIn("source.scanner", found)
+        self.assertIn("core.identity", found)
+        self.assertIn("twin.twin_store", found)
+
+    def test_a_package_init_is_named_for_its_package(self):
+        found = self._discovered()
+        self.assertIn("source", found)
+        self.assertIn("core", found)
+        self.assertTrue(found["source"][1], "a package must be marked as one")
+        self.assertFalse(found["source.scanner"][1], "a module must not be")
+
+    def test_the_root_init_is_the_root_package(self):
+        found = self._discovered()
+        self.assertIn("", found)
+        self.assertTrue(found[""][1])
+
+
+class RelativeImportResolutionTests(unittest.TestCase):
+    """Relative imports resolve against the importing module's position."""
+
+    def test_a_module_at_the_root_resolves_one_dot_to_the_root(self):
+        self.assertEqual("", _relative_base("scanner", False, 1))
+        self.assertEqual("", _relative_base("scanner", False, 2))
+
+    def test_a_nested_module_resolves_one_dot_to_its_package(self):
+        self.assertEqual("source", _relative_base("source.scanner", False, 1))
+        self.assertEqual("", _relative_base("source.scanner", False, 2))
+
+    def test_a_package_resolves_one_dot_to_itself(self):
+        self.assertEqual("source", _relative_base("source", True, 1))
+        self.assertEqual("", _relative_base("source", True, 2))
+
+    def test_a_deeper_module_walks_up_correctly(self):
+        self.assertEqual("a.b.c", _relative_base("a.b.c.d", False, 1))
+        self.assertEqual("a", _relative_base("a.b.c.d", False, 3))
+        self.assertEqual("", _relative_base("a.b.c.d", False, 4))
+
+    def test_walking_above_the_root_does_not_raise(self):
+        self.assertEqual("", _relative_base("scanner", False, 9))
+
+    def test_a_nested_relative_import_credits_the_dependency_not_the_package(self):
+        # The defect this rework fixes. Read without resolving, the node
+        # ``from ..core import identity`` reports ``core``; every rule of the
+        # form "module X must not import Y" then misses, because ``Y`` is
+        # ``identity``. The nested layout is supplied from the temporary
+        # package above, not from production.
+        discovered = {
+            "core": ("/tmp/does-not-exist/core/__init__.py", True),
+            "core.identity": ("/tmp/does-not-exist/core/identity.py", False),
+        }
+        names = _imported_names_from_source(
+            "from ..core import identity\n", "source.scanner", False, discovered
+        )
+        self.assertIn("identity", names)
+
+    def test_a_nested_sibling_import_credits_the_sibling(self):
+        discovered = {
+            "memory": ("/tmp/x/memory/__init__.py", True),
+            "memory/memory_store": ("/tmp/x", False),
+            "memory.memory_store": ("/tmp/x/memory/memory_store.py", False),
+        }
+        names = _imported_names_from_source(
+            "from . import memory_store\n", "memory.memory_docs", False, discovered
+        )
+        self.assertIn("memory_store", names)
+
+    def test_an_absolute_import_still_reports_its_top_level_name(self):
+        names = _imported_names_from_source("import subprocess\n", "scanner", False)
+        self.assertIn("subprocess", names)
+
+    def test_a_flat_relative_import_is_unchanged(self):
+        # The flat behaviour must be identical to what it was: this is the
+        # shape every existing module uses today.
+        names = _imported_names_from_source("from . import scanner\n", "cli", False)
+        self.assertIn("scanner", names)
+
+    def test_a_symbol_is_not_mistaken_for_a_module(self):
+        names = _imported_names_from_source(
+            "from .contract import ACTION_SCAN\n", "boundary", False
+        )
+        self.assertIn("contract", names)
+        self.assertNotIn("ACTION_SCAN", names)
 
 
 if __name__ == "__main__":
