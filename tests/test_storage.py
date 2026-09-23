@@ -28,7 +28,9 @@ import os
 import unittest
 from unittest import mock
 
-from hrca import storage, twin, twin_store
+from hrca import twin
+from hrca.core import storage
+from hrca.twin import twin_store
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPOSITORY_ROOT = os.path.normpath(os.path.join(_HERE, ".."))
@@ -234,7 +236,7 @@ class DerivedStorePathTests(unittest.TestCase):
         )
 
     def test_memory_store_path(self):
-        from hrca import memory_store
+        from hrca.memory import memory_store
 
         self.assertEqual(
             os.path.join(_CONTROLLED_BASE, "memory", "run_smoke_s-1_run", "run.json"),
@@ -242,7 +244,7 @@ class DerivedStorePathTests(unittest.TestCase):
         )
 
     def test_document_store_path(self):
-        from hrca import version_store
+        from hrca.authoring import version_store
 
         self.assertEqual(
             os.path.join(_CONTROLLED_BASE, "documents", "doc_abc", "document.json"),
@@ -250,7 +252,7 @@ class DerivedStorePathTests(unittest.TestCase):
         )
 
     def test_library_store_path(self):
-        from hrca import library_store
+        from hrca.authoring import library_store
 
         self.assertEqual(
             os.path.join(_CONTROLLED_BASE, "library", "library.json"),
@@ -258,7 +260,7 @@ class DerivedStorePathTests(unittest.TestCase):
         )
 
     def test_provider_config_path(self):
-        from hrca import provider_config
+        from hrca.integrations import provider_config
 
         self.assertEqual(
             os.path.join(_CONTROLLED_BASE, "provider-config.json"),
@@ -266,7 +268,9 @@ class DerivedStorePathTests(unittest.TestCase):
         )
 
     def test_every_store_hangs_off_the_same_supplied_base(self):
-        from hrca import library_store, memory_store, provider_config, version_store
+        from hrca.authoring import library_store, version_store
+        from hrca.integrations import provider_config
+        from hrca.memory import memory_store
 
         for path in (
             twin_store.workspace_store_path(_CONTROLLED_BASE, "ws:abc"),

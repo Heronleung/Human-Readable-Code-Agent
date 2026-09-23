@@ -23,17 +23,11 @@ import shutil
 import tempfile
 import unittest
 
-from hrca import (
-    boundary,
-    contract,
-    memory,
-    memory_docs,
-    memory_store,
-    memory_twin_link,
-    scanner,
-    twin,
-    twin_store,
-)
+from hrca import boundary, memory, twin
+from hrca.core import contract
+from hrca.memory import memory_docs, memory_store
+from hrca.source import scanner
+from hrca.twin import memory_twin_link, twin_store
 
 # The workspace the session is rooted at. The Twin domain hashes this string, so
 # the tests never need a real directory at this path.

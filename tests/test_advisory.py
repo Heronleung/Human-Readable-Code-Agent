@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import advisory
+from hrca.twin import advisory
 
 
 def _ready_proposal():

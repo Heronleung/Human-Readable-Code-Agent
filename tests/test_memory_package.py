@@ -9,6 +9,7 @@ a caller proves it is looking at the one the plan was built against.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shutil
@@ -17,10 +18,12 @@ import tempfile
 import unittest
 import zipfile
 
-from hrca import contract, memory, memory_docs
-from hrca import memory_package as package
-from hrca import memory_revisions as revisions
-from hrca import memory_store
+from hrca import memory
+from hrca.core import contract
+from hrca.memory import memory_docs
+from hrca.memory import memory_package as package
+from hrca.memory import memory_revisions as revisions
+from hrca.memory import memory_store
 
 _SECRET = "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789"
 _PERSONAL = "C:/Users/someone/.ssh/id_rsa"
@@ -41,6 +44,54 @@ def build_store(session_id="s-1"):
         "work_package": {"source_id": "w-1", "title": "Packaging work"}})
     assert error is None, error
     return store
+
+
+_HRCA_ROOT = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src", "hrca")
+)
+
+def _hrca_module(name):
+    """Return the path of an ``hrca`` module wherever it now lives.
+
+    The package is organised by responsibility, so a module is no longer a
+    fixed number of directories below ``src``; it is resolved by name. A
+    compatibility shim is skipped in favour of the implementation it aliases,
+    because these tests are about what a module *does* and a shim does
+    nothing but point at another module.
+    """
+    stem = name[:-3] if name.endswith(".py") else name
+    matches = []
+    for dirpath, dirnames, filenames in os.walk(_HRCA_ROOT):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        if stem + ".py" in filenames:
+            matches.append(os.path.join(dirpath, stem + ".py"))
+        # A responsibility package's front door is its ``__init__``, so a name
+        # that used to be a module may now be a package.
+        if os.path.basename(dirpath) == stem and "__init__.py" in filenames:
+            matches.append(os.path.join(dirpath, "__init__.py"))
+    for path in sorted(matches, key=len, reverse=True):
+        try:
+            tree = ast.parse(open(path, encoding="utf-8").read())
+        except (OSError, SyntaxError):
+            continue
+        alias = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or not node.targets:
+                continue
+            t = node.targets[0]
+            if (isinstance(t, ast.Subscript)
+                    and isinstance(t.value, ast.Attribute)
+                    and t.value.attr == "modules"
+                    and isinstance(t.value.value, ast.Name)
+                    and t.value.value.id == "sys"
+                    and isinstance(t.slice, ast.Name)
+                    and t.slice.id == "__name__"):
+                alias = True
+        if not alias:
+            return path
+    if matches:
+        return matches[0]
+    raise AssertionError("no module named %r in the hrca package" % stem)
 
 
 class PackageTestCase(unittest.TestCase):
@@ -664,7 +715,7 @@ class RecoveryTests(PackageTestCase):
 
 class CliTests(PackageTestCase):
     def run_cli(self, argv):
-        from hrca import memory_package_cli as cli
+        from hrca.cli import memory_package_cli as cli
         return cli.main(argv)
 
     def test_export_backup_inspect_and_recover(self):
@@ -1358,7 +1409,7 @@ class BoundaryTests(PackageTestCase):
         import ast
         here = os.path.dirname(os.path.abspath(__file__))
         source = os.path.normpath(
-            os.path.join(here, "..", "src", "hrca", "memory_package.py")
+            _hrca_module("memory_package")
         )
         with open(source, "r", encoding="utf-8") as handle:
             tree = ast.parse(handle.read())
@@ -1379,7 +1430,7 @@ class BoundaryTests(PackageTestCase):
         import ast
         here = os.path.dirname(os.path.abspath(__file__))
         source = os.path.normpath(
-            os.path.join(here, "..", "src", "hrca", "memory_package.py")
+            _hrca_module("memory_package")
         )
         with open(source, "r", encoding="utf-8") as handle:
             tree = ast.parse(handle.read())

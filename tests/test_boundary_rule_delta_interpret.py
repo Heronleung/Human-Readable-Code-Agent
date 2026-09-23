@@ -14,16 +14,10 @@ import os
 import tempfile
 import unittest
 
-from hrca import (
-    app_package,
-    boundary,
-    contract,
-    delta_verifier,
-    provider,
-    rule_delta,
-    rule_delta_interpret,
-    runtime_handlers,
-)
+from hrca import boundary
+from hrca.core import contract
+from hrca.execution import app_package, delta_verifier, rule_delta, rule_delta_interpret, runtime_handlers
+from hrca.integrations import provider
 
 _REQUIREMENT = "Members receive a 10% discount on quotations."
 _INSUFFICIENT = "Change the pricing rules."
@@ -394,7 +388,7 @@ class BoundaryRuleDeltaInterpretTests(unittest.TestCase):
     def test_transport_error_maps_to_bounded_state(self):
         document_id = self._saved()
         token = self._prepare(document_id)["result"]["token"]
-        from hrca import delta_transport
+        from hrca.execution import delta_transport
 
         transport = FakeDeltaTransport(error=delta_transport.TransportError("timeout"))
         self.session.delta_transport = transport
@@ -410,7 +404,7 @@ class BoundaryRuleDeltaInterpretTests(unittest.TestCase):
         # and a clear recovery instruction.
         document_id = self._saved()
         token = self._prepare(document_id)["result"]["token"]
-        from hrca import delta_transport
+        from hrca.execution import delta_transport
 
         transport = FakeDeltaTransport(
             error=delta_transport.TransportError("credential_rejected")
@@ -490,7 +484,8 @@ class BoundaryRuleDeltaInterpretTests(unittest.TestCase):
     def test_missing_credential_fails_before_transport_construction(self):
         from unittest import mock
 
-        from hrca import credential_store, delta_transport
+        from hrca.execution import delta_transport
+        from hrca.integrations import credential_store
 
         self.session.credential_store = credential_store.FakeCredentialStore()
         document_id = self._saved()
@@ -521,7 +516,8 @@ class BoundaryRuleDeltaInterpretTests(unittest.TestCase):
         # transport with ``sent: false`` and a recovery instruction.
         from unittest import mock
 
-        from hrca import credential_store, delta_transport, provider_config
+        from hrca.execution import delta_transport
+        from hrca.integrations import credential_store, provider_config
 
         profile_id = "a" * 32
         self.session.credential_store = credential_store.FakeCredentialStore()
@@ -565,7 +561,8 @@ class BoundaryRuleDeltaInterpretTests(unittest.TestCase):
         # opaque target) and the single provider request proceeds.
         from unittest import mock
 
-        from hrca import credential_store, delta_transport
+        from hrca.execution import delta_transport
+        from hrca.integrations import credential_store
 
         store = credential_store.FakeCredentialStore()
         store.store(credential_store.TARGET_NAME, "sk-test-secret")

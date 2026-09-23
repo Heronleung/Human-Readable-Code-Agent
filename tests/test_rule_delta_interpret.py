@@ -10,7 +10,7 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 
-from hrca import rule_delta, rule_delta_interpret
+from hrca.execution import rule_delta, rule_delta_interpret
 
 
 def _delta(**overrides):

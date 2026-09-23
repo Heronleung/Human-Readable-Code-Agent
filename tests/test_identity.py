@@ -19,7 +19,8 @@ import json
 import os
 import unittest
 
-from hrca import identity, twin
+from hrca import twin
+from hrca.core import identity
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _NONASCII_FIXTURE = os.path.normpath(

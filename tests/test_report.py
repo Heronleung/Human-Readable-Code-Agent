@@ -6,9 +6,9 @@ import json
 import os
 import unittest
 
-from hrca.planning import build_plan
-from hrca.report import REPORT_VERSION, build_report
-from hrca.scanner import SCHEMA_VERSION, scan_directory
+from hrca.source.planning import build_plan
+from hrca.source.report import REPORT_VERSION, build_report
+from hrca.source.scanner import SCHEMA_VERSION, scan_directory
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.normpath(os.path.join(_HERE, "..", "fixtures"))

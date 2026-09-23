@@ -8,7 +8,7 @@ import os
 import unittest
 from contextlib import redirect_stdout
 
-from hrca.scanner import SCHEMA_VERSION, scan_directory
+from hrca.source.scanner import SCHEMA_VERSION, scan_directory
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.normpath(os.path.join(_HERE, "..", "fixtures"))

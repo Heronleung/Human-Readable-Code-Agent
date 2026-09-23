@@ -7,7 +7,9 @@ import os
 import tempfile
 import unittest
 
-from hrca import boundary, contract, credential_store, provider_config
+from hrca import boundary
+from hrca.core import contract
+from hrca.integrations import credential_store, provider_config
 
 _SECRET_LIKE = "secret-token-abc123"
 

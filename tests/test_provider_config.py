@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 
-from hrca import provider_config
+from hrca.integrations import provider_config
 
 
 def _profile_id() -> str:
@@ -309,7 +309,7 @@ class ProviderConfigPersistenceTests(unittest.TestCase):
         self.assertEqual(loaded_again["model"], "deepseek-flash")
 
     def test_save_canonicalization_preserves_profile_and_target(self):
-        from hrca import credential_store
+        from hrca.integrations import credential_store
 
         cfg = self._alias_config()
         self.assertIsNone(provider_config.save(self.base, cfg))
@@ -400,7 +400,7 @@ class ActiveCredentialTargetTests(unittest.TestCase):
         }
 
     def test_active_profile_target_is_profile_target(self):
-        from hrca import credential_store
+        from hrca.integrations import credential_store
 
         cfg = self._config(profiles=[(self._PID, "Work")], active=self._PID)
         self.assertEqual(
@@ -409,7 +409,7 @@ class ActiveCredentialTargetTests(unittest.TestCase):
         )
 
     def test_legacy_target_when_no_profiles(self):
-        from hrca import credential_store
+        from hrca.integrations import credential_store
 
         self.assertEqual(
             provider_config.active_credential_target(self._config()),
@@ -424,7 +424,7 @@ class ActiveCredentialTargetTests(unittest.TestCase):
         self.assertIsNone(provider_config.active_credential_target(None))
 
     def test_target_is_independent_of_display_name(self):
-        from hrca import credential_store
+        from hrca.integrations import credential_store
 
         before = self._config(profiles=[(self._PID, "Work")], active=self._PID)
         after = self._config(profiles=[(self._PID, "Renamed")], active=self._PID)

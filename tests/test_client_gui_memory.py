@@ -24,8 +24,10 @@ try:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 
-    from hrca import boundary, contract, memory, memory_store
-    from hrca.client import MainWindow, _NAV_LABELS
+    from hrca import boundary, memory
+    from hrca.core import contract
+    from hrca.memory import memory_store
+    from hrca.ui.client import MainWindow, _NAV_LABELS
 
     _QT_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only without PySide6
@@ -141,7 +143,7 @@ class MemorySurfaceTestCase(unittest.TestCase):
 
     def apply_with_origin(self, origin):
         """Load documents with an explicit caller-declared capture origin."""
-        from hrca.client_core import build_get_memory_documents_request
+        from hrca.boundary.client_core import build_get_memory_documents_request
 
         request = build_get_memory_documents_request(
             contract.new_correlation_id(), origin=origin
@@ -189,7 +191,7 @@ class MemorySurfaceTestCase(unittest.TestCase):
         ]
 
     def _rows(self):
-        from hrca.client_core import claim_rows
+        from hrca.boundary.client_core import claim_rows
 
         document_set = self.window._current_memory_document_set()
         document_type = self.window._memory_document_selector.currentData()

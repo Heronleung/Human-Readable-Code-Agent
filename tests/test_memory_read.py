@@ -15,7 +15,10 @@ import shutil
 import tempfile
 import unittest
 
-from hrca import boundary, client_core, contract, memory, memory_docs, memory_store
+from hrca import boundary, memory
+from hrca.boundary import client_core
+from hrca.core import contract
+from hrca.memory import memory_docs, memory_store
 
 _SECRET = "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789"
 _PERSONAL = "C:/Users/someone/.ssh/id_rsa"

@@ -13,7 +13,7 @@ import json
 import os
 import unittest
 
-from hrca import validation_plan, validation_policy
+from hrca.authoring import validation_plan, validation_policy
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))

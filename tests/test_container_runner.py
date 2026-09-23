@@ -19,7 +19,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hrca import app_package, container_runner
+from hrca.execution import app_package, container_runner
 
 
 class _Result:

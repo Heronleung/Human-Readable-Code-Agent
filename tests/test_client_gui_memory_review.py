@@ -23,9 +23,11 @@ try:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 
-    from hrca import boundary, contract, memory, memory_store
-    from hrca.client import MainWindow
-    from hrca.client_core import memory_conflict_choices
+    from hrca import boundary, memory
+    from hrca.core import contract
+    from hrca.memory import memory_store
+    from hrca.ui.client import MainWindow
+    from hrca.boundary.client_core import memory_conflict_choices
 
     _QT_AVAILABLE = True
 except ImportError:  # pragma: no cover - only without PySide6

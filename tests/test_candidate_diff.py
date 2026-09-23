@@ -13,7 +13,7 @@ import os
 import sys
 import unittest
 
-from hrca import candidate_diff
+from hrca.authoring import candidate_diff
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))

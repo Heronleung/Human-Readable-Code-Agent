@@ -16,10 +16,10 @@ import shutil
 import tempfile
 import unittest
 
-from hrca import claude_code_hooks as hooks
-from hrca import hook_capture
+from hrca.memory import claude_code_hooks as hooks
+from hrca.memory import hook_capture
 from hrca import memory
-from hrca import memory_store
+from hrca.memory import memory_store
 
 _ROOT = "C:/synthetic/project"
 _SESSION = "11111111-2222-3333-4444-555555555555"

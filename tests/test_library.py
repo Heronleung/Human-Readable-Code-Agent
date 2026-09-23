@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import document, library
+from hrca.authoring import document, library
 
 _NOW = "2026-09-10T00:00:00+00:00"
 

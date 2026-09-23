@@ -24,13 +24,11 @@ try:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
-    from hrca import boundary, contract, memory, memory_store
-    from hrca.client import MainWindow
-    from hrca.client_core import (
-        MEMORY_MAX_FILTERS,
-        MEMORY_ORDER_RECORDED_TIME,
-        MEMORY_ORDER_RELEVANCE,
-    )
+    from hrca import boundary, memory
+    from hrca.core import contract
+    from hrca.memory import memory_store
+    from hrca.ui.client import MainWindow
+    from hrca.boundary.client_core import MEMORY_MAX_FILTERS, MEMORY_ORDER_RECORDED_TIME, MEMORY_ORDER_RELEVANCE
 
     _QT_AVAILABLE = True
 except ImportError:  # pragma: no cover - only without PySide6

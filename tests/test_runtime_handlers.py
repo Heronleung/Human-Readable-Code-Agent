@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import runtime_handlers
+from hrca.execution import runtime_handlers
 
 
 def _evaluate(form):

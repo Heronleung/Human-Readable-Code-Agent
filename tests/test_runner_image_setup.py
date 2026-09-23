@@ -21,8 +21,8 @@ import subprocess
 import tempfile
 import unittest
 
-from hrca import runner_image_policy as policy
-from hrca import runner_image_setup as setup
+from hrca.execution import runner_image_policy as policy
+from hrca.execution import runner_image_setup as setup
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))
@@ -1128,7 +1128,7 @@ class WriteRecordTests(SetupTestCase):
 
 class CliTests(SetupTestCase):
     def test_the_cli_reports_readiness_and_writes_the_record(self):
-        from hrca import runner_image_setup_cli as cli
+        from hrca.cli import runner_image_setup_cli as cli
 
         base = os.path.join(self.root.path, "evidence")
         os.makedirs(base)
@@ -1154,7 +1154,7 @@ class CliTests(SetupTestCase):
         )
 
     def test_a_usage_error_is_not_reported_as_not_ready(self):
-        from hrca import runner_image_setup_cli as cli
+        from hrca.cli import runner_image_setup_cli as cli
 
         with _CapturedStreams():
             code = cli.main(["nonsense"])
@@ -1162,7 +1162,7 @@ class CliTests(SetupTestCase):
         self.assertNotEqual(cli.EXIT_NOT_READY, code)
 
     def test_the_cli_exits_non_zero_on_a_refused_base(self):
-        from hrca import runner_image_setup_cli as cli
+        from hrca.cli import runner_image_setup_cli as cli
 
         original = setup.RunnerImageSetup
         try:

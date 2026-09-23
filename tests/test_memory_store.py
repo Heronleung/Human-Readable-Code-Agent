@@ -14,7 +14,8 @@ import os
 import tempfile
 import unittest
 
-from hrca import memory, memory_store
+from hrca import memory
+from hrca.memory import memory_store
 
 
 def _session(events, session_id="s-1"):
@@ -82,7 +83,8 @@ class SaveLoadTests(_Base, unittest.TestCase):
         self.assertEqual(first, second)
 
     def test_the_store_namespace_is_distinct_from_twin_and_documents(self):
-        from hrca import twin_store, version_store
+        from hrca.authoring import version_store
+        from hrca.twin import twin_store
 
         self.assertEqual(memory_store.memory_dir(self.base), os.path.join(self.base, "memory"))
         self.assertNotEqual(memory_store.memory_dir(self.base), self.base)

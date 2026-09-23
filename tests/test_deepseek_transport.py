@@ -11,7 +11,8 @@ from __future__ import annotations
 import json
 import unittest
 
-from hrca import advisory, deepseek_transport, provider
+from hrca.integrations import deepseek_transport, provider
+from hrca.twin import advisory
 
 
 def _valid_content():

@@ -13,7 +13,7 @@ import json
 import os
 import unittest
 
-from hrca import claude_code_hooks as hooks
+from hrca.memory import claude_code_hooks as hooks
 from hrca import memory
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +45,52 @@ def only(event, root=_ROOT, **extra):
     events = translate(event, root, **extra)
     assert len(events) == 1, events
     return events[0]
+
+
+_HRCA_ROOT = _SRC
+
+def _hrca_module(name):
+    """Return the path of an ``hrca`` module wherever it now lives.
+
+    The package is organised by responsibility, so a module is no longer a
+    fixed number of directories below ``src``; it is resolved by name. A
+    compatibility shim is skipped in favour of the implementation it aliases,
+    because these tests are about what a module *does* and a shim does
+    nothing but point at another module.
+    """
+    stem = name[:-3] if name.endswith(".py") else name
+    matches = []
+    for dirpath, dirnames, filenames in os.walk(_HRCA_ROOT):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        if stem + ".py" in filenames:
+            matches.append(os.path.join(dirpath, stem + ".py"))
+        # A responsibility package's front door is its ``__init__``, so a name
+        # that used to be a module may now be a package.
+        if os.path.basename(dirpath) == stem and "__init__.py" in filenames:
+            matches.append(os.path.join(dirpath, "__init__.py"))
+    for path in sorted(matches, key=len, reverse=True):
+        try:
+            tree = ast.parse(open(path, encoding="utf-8").read())
+        except (OSError, SyntaxError):
+            continue
+        alias = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or not node.targets:
+                continue
+            t = node.targets[0]
+            if (isinstance(t, ast.Subscript)
+                    and isinstance(t.value, ast.Attribute)
+                    and t.value.attr == "modules"
+                    and isinstance(t.value.value, ast.Name)
+                    and t.value.value.id == "sys"
+                    and isinstance(t.slice, ast.Name)
+                    and t.slice.id == "__name__"):
+                alias = True
+        if not alias:
+            return path
+    if matches:
+        return matches[0]
+    raise AssertionError("no module named %r in the hrca package" % stem)
 
 
 class MappingTests(unittest.TestCase):
@@ -349,7 +395,7 @@ class PrivacyTests(unittest.TestCase):
         self.assertNotIn("t.jsonl", json.dumps(event))
 
     def test_the_adapter_never_opens_a_file(self):
-        with open(os.path.join(_SRC, "claude_code_hooks.py"), "r", encoding="utf-8") as fh:
+        with open(_hrca_module("claude_code_hooks"), "r", encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         called = {
             node.func.id

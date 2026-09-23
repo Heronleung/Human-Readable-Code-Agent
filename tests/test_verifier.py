@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import verifier
+from hrca.execution import verifier
 
 
 def _evidence(variant_id):

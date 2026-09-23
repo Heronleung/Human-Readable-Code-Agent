@@ -14,7 +14,8 @@ from __future__ import annotations
 import os
 import unittest
 
-from hrca import container_runner, runner_image_policy as policy, validation_policy
+from hrca.authoring import validation_policy
+from hrca.execution import container_runner, runner_image_policy as policy
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))

@@ -17,7 +17,7 @@ import os
 import unittest
 from ctypes import wintypes
 
-from hrca import credential_store_win
+from hrca.integrations import credential_store_win
 
 
 class PromptFlagTests(unittest.TestCase):

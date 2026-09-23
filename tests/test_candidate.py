@@ -38,17 +38,11 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from hrca import (
-    candidate,
-    candidate_cli,
-    candidate_diff,
-    candidate_edit,
-    contract,
-    impact_proposal,
-    intent_delta,
-    scanner,
-    twin,
-)
+from hrca import twin
+from hrca.authoring import candidate, candidate_diff, candidate_edit, impact_proposal, intent_delta
+from hrca.cli import candidate_cli
+from hrca.core import contract
+from hrca.source import scanner
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))
@@ -244,6 +238,52 @@ def _resolve_text(text: str, corpus: dict) -> str:
     if text == "RESULT_TEXT":
         return corpus["result"]["text"]
     return text
+
+
+_HRCA_ROOT = os.path.join(SRC, "hrca")
+
+def _hrca_module(name):
+    """Return the path of an ``hrca`` module wherever it now lives.
+
+    The package is organised by responsibility, so a module is no longer a
+    fixed number of directories below ``src``; it is resolved by name. A
+    compatibility shim is skipped in favour of the implementation it aliases,
+    because these tests are about what a module *does* and a shim does
+    nothing but point at another module.
+    """
+    stem = name[:-3] if name.endswith(".py") else name
+    matches = []
+    for dirpath, dirnames, filenames in os.walk(_HRCA_ROOT):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        if stem + ".py" in filenames:
+            matches.append(os.path.join(dirpath, stem + ".py"))
+        # A responsibility package's front door is its ``__init__``, so a name
+        # that used to be a module may now be a package.
+        if os.path.basename(dirpath) == stem and "__init__.py" in filenames:
+            matches.append(os.path.join(dirpath, "__init__.py"))
+    for path in sorted(matches, key=len, reverse=True):
+        try:
+            tree = ast.parse(open(path, encoding="utf-8").read())
+        except (OSError, SyntaxError):
+            continue
+        alias = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or not node.targets:
+                continue
+            t = node.targets[0]
+            if (isinstance(t, ast.Subscript)
+                    and isinstance(t.value, ast.Attribute)
+                    and t.value.attr == "modules"
+                    and isinstance(t.value.value, ast.Name)
+                    and t.value.value.id == "sys"
+                    and isinstance(t.slice, ast.Name)
+                    and t.slice.id == "__name__"):
+                alias = True
+        if not alias:
+            return path
+    if matches:
+        return matches[0]
+    raise AssertionError("no module named %r in the hrca package" % stem)
 
 
 class _Case:
@@ -1109,7 +1149,7 @@ class BoundaryTests(unittest.TestCase):
     _MODULES = ("candidate_edit", "candidate_diff", "candidate", "candidate_cli")
 
     def _source(self, module: str) -> str:
-        with open(os.path.join(SRC, "hrca", module + ".py"), encoding="utf-8") as fh:
+        with open(_hrca_module(module), encoding="utf-8") as fh:
             return fh.read()
 
     def test_no_module_imports_a_write_side_or_network_seam(self):

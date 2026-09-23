@@ -5,7 +5,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from hrca import app_package, boundary, contract, delta_candidate, delta_verifier, rule_delta
+from hrca import boundary
+from hrca.core import contract
+from hrca.execution import app_package, delta_candidate, delta_verifier, rule_delta
 
 
 def _req(action, **overrides):

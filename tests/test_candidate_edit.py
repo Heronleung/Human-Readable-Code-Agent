@@ -14,7 +14,7 @@ import os
 import sys
 import unittest
 
-from hrca import candidate_edit
+from hrca.authoring import candidate_edit
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))

@@ -33,12 +33,8 @@ import unittest
 import uuid
 from unittest import mock
 
-from hrca import (
-    container_runner,
-    validation,
-    validation_plan,
-    validation_policy,
-)
+from hrca.authoring import validation, validation_plan, validation_policy
+from hrca.execution import container_runner
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)

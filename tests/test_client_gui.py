@@ -32,31 +32,10 @@ try:
         QWidget,
     )
 
-    from hrca import contract, style
-    from hrca.client import (
-        BackendSupervisor,
-        CodeView,
-        DocumentView,
-        MainWindow,
-        PythonHighlighter,
-        _NAV_LABELS,
-        _SETTINGS_ACTIVE_LABEL,
-        _SETTINGS_ADD_PROFILE,
-        _SETTINGS_NO_PROFILES,
-        _SETTINGS_RENAME,
-        _SETTINGS_REPLACE,
-    )
-    from hrca.client_core import (
-        CREDENTIAL_ACTION_PENDING,
-        CREDENTIAL_MASK,
-        PROFILE_ACTION_MESSAGES,
-        PROVIDER_STATUS_PENDING,
-        TWIN_AVAILABLE,
-        TWIN_LOADING,
-        TWIN_STALE,
-        VALIDATION_OK,
-        build_request,
-    )
+    from hrca.core import contract
+    from hrca.ui import style
+    from hrca.ui.client import BackendSupervisor, CodeView, DocumentView, MainWindow, PythonHighlighter, _NAV_LABELS, _SETTINGS_ACTIVE_LABEL, _SETTINGS_ADD_PROFILE, _SETTINGS_NO_PROFILES, _SETTINGS_RENAME, _SETTINGS_REPLACE
+    from hrca.boundary.client_core import CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, PROVIDER_STATUS_PENDING, TWIN_AVAILABLE, TWIN_LOADING, TWIN_STALE, VALIDATION_OK, build_request
 
     HAS_PYSIDE6 = True
 except ImportError:  # pragma: no cover - exercised in the no-Qt environment

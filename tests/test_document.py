@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import app_package, document
+from hrca.authoring import document
+from hrca.execution import app_package
 
 _NOW = "2026-09-09T00:00:00+00:00"
 _PACKAGE = app_package.quotation_reference_package()

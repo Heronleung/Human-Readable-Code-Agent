@@ -21,7 +21,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hrca import contract, workspace
+from hrca.core import contract, workspace
 
 
 def _write(path: str, content: str) -> None:
@@ -145,14 +145,14 @@ class BuildTreeTests(unittest.TestCase):
     def test_truncates_at_entry_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
             proj = _make_project(tmp)
-            with mock.patch("hrca.contract.MAX_TREE_ENTRIES", 2):
+            with mock.patch("hrca.core.contract.MAX_TREE_ENTRIES", 2):
                 tree = workspace.build_tree(proj)
             self.assertTrue(tree["truncated"])
 
     def test_respects_depth_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
             proj = _make_project(tmp)
-            with mock.patch("hrca.contract.MAX_TREE_DEPTH", 1):
+            with mock.patch("hrca.core.contract.MAX_TREE_DEPTH", 1):
                 tree = workspace.build_tree(proj)
             pkg = next(n for n in tree["children"] if n["name"] == "pkg")
             self.assertEqual(pkg["children"], [])

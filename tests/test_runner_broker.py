@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import app_package, runner_broker
+from hrca.execution import app_package, runner_broker
 
 
 class FakeRunner:

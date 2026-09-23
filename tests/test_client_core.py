@@ -8,107 +8,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hrca import contract
-from hrca.client_core import (
-    BLOCK_TYPE_LABELS,
-    CREDENTIAL_ACTION_MESSAGES,
-    CREDENTIAL_ACTION_PENDING,
-    CREDENTIAL_FAILURE_MESSAGES,
-    CREDENTIAL_MASK,
-    DELTA_INTERPRET_STATE_LABELS,
-    INTENT_CLASS_LABELS,
-    OPERATION_LABELS,
-    PROFILE_ACTION_MESSAGES,
-    PROFILE_FAILURE_MESSAGES,
-    PROPOSAL_STATE_LABELS,
-    PROVIDER_READINESS_STATE_LABELS,
-    PROVIDER_STATUS_MESSAGES,
-    PROVIDER_UNAVAILABLE,
-    REPOSITORY_UNVERIFIED,
-    TWIN_AVAILABLE,
-    TWIN_CONFLICT,
-    TWIN_EMPTY,
-    TWIN_LOADING,
-    TWIN_STALE,
-    TWIN_UNSUPPORTED,
-    TWIN_STATES,
-    VALIDATION_FAILED,
-    VALIDATION_IDLE,
-    VALIDATION_OK,
-    VALIDATION_RUNNING,
-    LineBuffer,
-    ResponseRouter,
-    behavior_node_label,
-    block_type_label,
-    credential_action_message,
-    delta_interpret_state_label,
-    profile_failure_message,
-    build_add_profile_request,
-    build_compare_draft_request,
-    build_delete_profile_request,
-    build_discard_draft_request,
-    build_fixture_task,
-    build_generate_intent_delta_request,
-    build_get_anchor_request,
-    build_get_code_map_request,
-    build_get_document_request,
-    build_get_draft_request,
-    build_get_profiles_request,
-    build_get_readiness_request,
-    build_get_tree_request,
-    build_get_twin_request,
-    build_interpret_rule_delta_request,
-    build_manage_credential_request,
-    build_open_project_request,
-    build_plan_proposal_request,
-    build_prepare_rule_delta_request,
-    build_remove_credential_request,
-    build_rename_profile_request,
-    build_request,
-    build_reset_draft_request,
-    build_save_draft_request,
-    build_scan_request,
-    build_scan_task,
-    build_set_active_profile_request,
-    build_sync_twin_request,
-    default_fixture_root,
-    format_delta_disclosure,
-    format_delta_interpret_result,
-    format_draft_operations,
-    format_entity_list,
-    format_intent_delta,
-    format_procedural_document,
-    format_proposal,
-    format_provider_readiness,
-    format_twin_projection,
-    format_twin_sync,
-    intent_class_label,
-    is_twin_source_path,
-    operation_label,
-    proposal_state_label,
-    provider_readiness_state_label,
-    provider_status_message,
-    resolve_backend_command,
-    resolve_credential_host_command,
-    twin_state_from_sync,
-)
+from hrca.core import contract
+from hrca.boundary.client_core import BLOCK_TYPE_LABELS, CREDENTIAL_ACTION_MESSAGES, CREDENTIAL_ACTION_PENDING, CREDENTIAL_FAILURE_MESSAGES, CREDENTIAL_MASK, DELTA_INTERPRET_STATE_LABELS, INTENT_CLASS_LABELS, OPERATION_LABELS, PROFILE_ACTION_MESSAGES, PROFILE_FAILURE_MESSAGES, PROPOSAL_STATE_LABELS, PROVIDER_READINESS_STATE_LABELS, PROVIDER_STATUS_MESSAGES, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, TWIN_AVAILABLE, TWIN_CONFLICT, TWIN_EMPTY, TWIN_LOADING, TWIN_STALE, TWIN_UNSUPPORTED, TWIN_STATES, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, LineBuffer, ResponseRouter, behavior_node_label, block_type_label, credential_action_message, delta_interpret_state_label, profile_failure_message, build_add_profile_request, build_compare_draft_request, build_delete_profile_request, build_discard_draft_request, build_fixture_task, build_generate_intent_delta_request, build_get_anchor_request, build_get_code_map_request, build_get_document_request, build_get_draft_request, build_get_profiles_request, build_get_readiness_request, build_get_tree_request, build_get_twin_request, build_interpret_rule_delta_request, build_manage_credential_request, build_open_project_request, build_plan_proposal_request, build_prepare_rule_delta_request, build_remove_credential_request, build_rename_profile_request, build_request, build_reset_draft_request, build_save_draft_request, build_scan_request, build_scan_task, build_set_active_profile_request, build_sync_twin_request, default_fixture_root, format_delta_disclosure, format_delta_interpret_result, format_draft_operations, format_entity_list, format_intent_delta, format_procedural_document, format_proposal, format_provider_readiness, format_twin_projection, format_twin_sync, intent_class_label, is_twin_source_path, operation_label, proposal_state_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, twin_state_from_sync
 
 
-from hrca.client_core import (
-    MEMORY_TWIN_OPENABLE_STATES,
-    MEMORY_TWIN_REFUSED_SUBSTITUTE,
-    build_memory_code_freshness_request,
-    build_memory_code_link_request,
-    memory_freshness_rows,
-    memory_link_rows,
-    memory_twin_actionable_label,
-    memory_twin_candidate_identities,
-    memory_twin_freshness_label,
-    memory_twin_link_is_openable,
-    memory_twin_link_records,
-    memory_twin_open_refusal,
-    memory_twin_selector_for,
-)
+from hrca.boundary.client_core import MEMORY_TWIN_OPENABLE_STATES, MEMORY_TWIN_REFUSED_SUBSTITUTE, build_memory_code_freshness_request, build_memory_code_link_request, memory_freshness_rows, memory_link_rows, memory_twin_actionable_label, memory_twin_candidate_identities, memory_twin_freshness_label, memory_twin_link_is_openable, memory_twin_link_records, memory_twin_open_refusal, memory_twin_selector_for
 
 
 class LineBufferTests(unittest.TestCase):
@@ -265,7 +169,7 @@ class DefaultFixtureRootTests(unittest.TestCase):
         self.assertGreater(len(os.listdir(root)), 0)
 
     def test_default_corpus_produces_nonempty_scanner_evidence(self):
-        from hrca.scanner import scan_directory
+        from hrca.source.scanner import scan_directory
 
         root = default_fixture_root(frozen=False)
         doc = scan_directory(root)
@@ -1038,7 +942,7 @@ class DeltaInterpretClientVocabularyTests(unittest.TestCase):
     """P4.8 client vocabulary: request builders, state labels and formatters."""
 
     def test_state_labels_cover_all_states(self):
-        from hrca import rule_delta_interpret
+        from hrca.execution import rule_delta_interpret
 
         for state in rule_delta_interpret.STATES:
             label = delta_interpret_state_label(state)

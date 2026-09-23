@@ -7,7 +7,7 @@ records for files, symbols, relations, parse errors, and confidence states.
 
 from __future__ import annotations
 
-from .scanner import SCHEMA_VERSION, Scanner, scan_directory
+from .source.scanner import SCHEMA_VERSION, Scanner, scan_directory
 
 __version__ = "0.1.0"
 

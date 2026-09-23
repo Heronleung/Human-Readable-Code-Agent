@@ -13,7 +13,8 @@ import os
 import sys
 import unittest
 
-from hrca import intent_delta, scanner
+from hrca.authoring import intent_delta
+from hrca.source import scanner
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))

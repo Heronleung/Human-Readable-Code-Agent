@@ -19,7 +19,7 @@ try:
     from PySide6.QtGui import QColor, QImage, QPainter
     from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleOption
 
-    from hrca import style
+    from hrca.ui import style
 
     HAS_PYSIDE6 = True
 except ImportError:  # pragma: no cover - exercised in the no-Qt environment

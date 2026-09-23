@@ -26,8 +26,8 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from hrca import setup_verification as verification
-from hrca import setup_verification_cli as cli
+from hrca.cli import setup_verification as verification
+from hrca.cli import setup_verification_cli as cli
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))
@@ -38,6 +38,52 @@ LIVE_MODULES = ("test_candidate_syntax_integration", "test_rule_delta_docker_int
 
 def _imported(name):
     return name in sys.modules
+
+
+_HRCA_ROOT = os.path.join(REPO, "src", "hrca")
+
+def _hrca_module(name):
+    """Return the path of an ``hrca`` module wherever it now lives.
+
+    The package is organised by responsibility, so a module is no longer a
+    fixed number of directories below ``src``; it is resolved by name. A
+    compatibility shim is skipped in favour of the implementation it aliases,
+    because these tests are about what a module *does* and a shim does
+    nothing but point at another module.
+    """
+    stem = name[:-3] if name.endswith(".py") else name
+    matches = []
+    for dirpath, dirnames, filenames in os.walk(_HRCA_ROOT):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        if stem + ".py" in filenames:
+            matches.append(os.path.join(dirpath, stem + ".py"))
+        # A responsibility package's front door is its ``__init__``, so a name
+        # that used to be a module may now be a package.
+        if os.path.basename(dirpath) == stem and "__init__.py" in filenames:
+            matches.append(os.path.join(dirpath, "__init__.py"))
+    for path in sorted(matches, key=len, reverse=True):
+        try:
+            tree = ast.parse(open(path, encoding="utf-8").read())
+        except (OSError, SyntaxError):
+            continue
+        alias = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or not node.targets:
+                continue
+            t = node.targets[0]
+            if (isinstance(t, ast.Subscript)
+                    and isinstance(t.value, ast.Attribute)
+                    and t.value.attr == "modules"
+                    and isinstance(t.value.value, ast.Name)
+                    and t.value.value.id == "sys"
+                    and isinstance(t.slice, ast.Name)
+                    and t.slice.id == "__name__"):
+                alias = True
+        if not alias:
+            return path
+    if matches:
+        return matches[0]
+    raise AssertionError("no module named %r in the hrca package" % stem)
 
 
 class AllowlistTests(unittest.TestCase):
@@ -235,7 +281,7 @@ class EntrypointTests(unittest.TestCase):
         # ``python -m hrca.setup_verification`` would duplicate the module and
         # its guard state. It must refuse loudly rather than exit zero having
         # verified nothing.
-        path = os.path.join(REPO, "src", "hrca", "setup_verification.py")
+        path = _hrca_module("setup_verification")
         with open(path, "r", encoding="utf-8") as handle:
             source = handle.read()
         self.assertIn('if __name__ == "__main__":', source)
@@ -246,8 +292,11 @@ class SingleCopyTests(unittest.TestCase):
     """The guard is only trustworthy if exactly one copy of it is live."""
 
     def test_the_module_under_test_is_the_canonical_one(self):
-        self.assertEqual("hrca.setup_verification", verification.__name__)
-        self.assertIs(verification, sys.modules.get("hrca.setup_verification"))
+        # The canonical name follows the module to its responsibility package.
+        # What is asserted is unchanged: the object under test is the single
+        # registered copy, not a second one loaded under another name.
+        self.assertEqual("hrca.cli.setup_verification", verification.__name__)
+        self.assertIs(verification, sys.modules.get("hrca.cli.setup_verification"))
 
     def test_no_duplicate_of_the_state_module_is_running_as_main(self):
         # The precise hazard this guards: ``python -m hrca.setup_verification``
@@ -289,7 +338,7 @@ class StaticSurfaceTests(unittest.TestCase):
 
     def test_the_selector_imports_no_runner_and_no_network(self):
         imported = self._imports(
-            os.path.join(REPO, "src", "hrca", "setup_verification.py")
+            _hrca_module("setup_verification")
         )
         self.assertTrue(
             imported.isdisjoint(

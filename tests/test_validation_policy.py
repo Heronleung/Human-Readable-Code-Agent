@@ -14,7 +14,8 @@ import os
 import sys
 import unittest
 
-from hrca import app_package, container_runner, delta_verifier, rule_delta, validation_policy
+from hrca.authoring import validation_policy
+from hrca.execution import app_package, container_runner, delta_verifier, rule_delta
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))
@@ -25,6 +26,52 @@ MANIFEST = os.path.join(REPO, "fixtures", "validation", "manifest.json")
 def _corpus() -> dict:
     with open(MANIFEST, encoding="utf-8") as fh:
         return json.load(fh)
+
+
+_HRCA_ROOT = os.path.join(SRC, "hrca")
+
+def _hrca_module(name):
+    """Return the path of an ``hrca`` module wherever it now lives.
+
+    The package is organised by responsibility, so a module is no longer a
+    fixed number of directories below ``src``; it is resolved by name. A
+    compatibility shim is skipped in favour of the implementation it aliases,
+    because these tests are about what a module *does* and a shim does
+    nothing but point at another module.
+    """
+    stem = name[:-3] if name.endswith(".py") else name
+    matches = []
+    for dirpath, dirnames, filenames in os.walk(_HRCA_ROOT):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+        if stem + ".py" in filenames:
+            matches.append(os.path.join(dirpath, stem + ".py"))
+        # A responsibility package's front door is its ``__init__``, so a name
+        # that used to be a module may now be a package.
+        if os.path.basename(dirpath) == stem and "__init__.py" in filenames:
+            matches.append(os.path.join(dirpath, "__init__.py"))
+    for path in sorted(matches, key=len, reverse=True):
+        try:
+            tree = ast.parse(open(path, encoding="utf-8").read())
+        except (OSError, SyntaxError):
+            continue
+        alias = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or not node.targets:
+                continue
+            t = node.targets[0]
+            if (isinstance(t, ast.Subscript)
+                    and isinstance(t.value, ast.Attribute)
+                    and t.value.attr == "modules"
+                    and isinstance(t.value.value, ast.Name)
+                    and t.value.value.id == "sys"
+                    and isinstance(t.slice, ast.Name)
+                    and t.slice.id == "__name__"):
+                alias = True
+        if not alias:
+            return path
+    if matches:
+        return matches[0]
+    raise AssertionError("no module named %r in the hrca package" % stem)
 
 
 class RegistryTests(unittest.TestCase):
@@ -335,7 +382,7 @@ class PurityTests(unittest.TestCase):
 
     def test_the_policy_imports_nothing_that_could_run_or_reach(self):
         with open(
-            os.path.join(SRC, "hrca", "validation_policy.py"), encoding="utf-8"
+            _hrca_module("validation_policy"), encoding="utf-8"
         ) as fh:
             tree = ast.parse(fh.read())
         modules = set()
@@ -351,7 +398,7 @@ class PurityTests(unittest.TestCase):
 
     def test_the_policy_opens_nothing_and_evaluates_nothing(self):
         with open(
-            os.path.join(SRC, "hrca", "validation_policy.py"), encoding="utf-8"
+            _hrca_module("validation_policy"), encoding="utf-8"
         ) as fh:
             tree = ast.parse(fh.read())
         calls = {

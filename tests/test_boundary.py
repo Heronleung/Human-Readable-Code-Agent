@@ -8,17 +8,12 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hrca import (
-    boundary,
-    contract,
-    memory,
-    memory_store,
-    twin,
-    twin_store,
-    workspace,
-)
-from hrca.client_core import build_fixture_task
-from hrca.contract import dumps, loads
+from hrca import boundary, memory, twin
+from hrca.core import contract, workspace
+from hrca.memory import memory_store
+from hrca.twin import twin_store
+from hrca.boundary.client_core import build_fixture_task
+from hrca.core.contract import dumps, loads
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.normpath(os.path.join(_HERE, "..", "fixtures"))

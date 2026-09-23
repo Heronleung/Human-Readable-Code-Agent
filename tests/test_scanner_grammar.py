@@ -20,7 +20,7 @@ import subprocess
 import sys
 import unittest
 
-from hrca import scanner
+from hrca.source import scanner
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))
