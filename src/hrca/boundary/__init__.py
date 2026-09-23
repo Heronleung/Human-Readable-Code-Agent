@@ -230,7 +230,12 @@ def handle_request(request: Any, session: Optional[WorkspaceSession] = None) -> 
 
 
 def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
-    """Validate and dispatch one request envelope to its read-only handler."""
+    """Validate and dispatch one request envelope to its owner's handler.
+
+    Ownership is what this function decides, never authority: some handlers
+    here write a per-workspace store, so "read-only" is a property of an
+    individual action rather than of the dispatcher.
+    """
     if not isinstance(request, dict):
         raise contract.ContractError("invalid_request")
 
@@ -244,7 +249,7 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
     correlation_id = _correlation_id(request)
 
     # A *registered* action dispatches through the handler registry (B3a /
-    # B3b-A / B3b-B / B3b-H). An action the registry owns resolves here and
+    # B3b-A / B3b-B / B3b-H / B4). An action the registry owns resolves here and
     # never reaches the chain below; anything it does not own resolves to
     # ``None`` and falls through unchanged. It is consulted first so that a
     # migrated action has a single owner rather than two.
@@ -254,31 +259,14 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
     elif action == contract.ACTION_OPEN_PROJECT:
         result = _open_project_result(request, session)
     # The actions the registry owns deliberately have no branch here — a
-    # migrated action has exactly one owner, never two. They are ``get_tree``,
-    # ``get_document``, ``list_documents``, ``list_versions``, ``get_candidate``
-    # and ``preview_document``.
-    elif action == contract.ACTION_SYNC_TWIN:
-        result = _sync_twin_result(request, session)
-    elif action == contract.ACTION_GET_TWIN:
-        result = _get_twin_result(request, session)
-    elif action == contract.ACTION_GET_ANCHOR:
-        result = _get_anchor_result(request, session)
-    elif action == contract.ACTION_GET_CODE_MAP:
-        result = _get_code_map_result(request, session)
-    elif action == contract.ACTION_SAVE_DRAFT:
-        result = _save_draft_result(request, session)
-    elif action == contract.ACTION_GET_DRAFT:
-        result = _get_draft_result(request, session)
-    elif action == contract.ACTION_DISCARD_DRAFT:
-        result = _discard_draft_result(request, session)
-    elif action == contract.ACTION_RESET_DRAFT:
-        result = _reset_draft_result(request, session)
-    elif action == contract.ACTION_COMPARE_DRAFT:
-        result = _compare_draft_result(request, session)
-    elif action == contract.ACTION_GENERATE_INTENT_DELTA:
-        result = _generate_intent_delta_result(request, session)
-    elif action == contract.ACTION_PLAN_PROPOSAL:
-        result = _plan_proposal_result(request, session)
+    # migrated action has exactly one owner, never two. What the registry owns
+    # is the *dispatch*, never the authority: every entry names the very handler
+    # this chain used to call, so a migrated action answers exactly as it did.
+    # For that reason nothing here claims the registered set is read-only,
+    # Twin-free, store-free or clock-free — those are per-action facts, and
+    # ``tests/test_architecture.py`` holds them in a declared authority ledger
+    # rather than in a blanket sentence that a later migration would silently
+    # falsify.
     elif action == contract.ACTION_GET_READINESS:
         result = _get_readiness_result(request, session)
     elif action == contract.ACTION_MANAGE_CREDENTIAL:
@@ -337,16 +325,13 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
         result = _prepare_rule_delta_result(request, session)
     elif action == contract.ACTION_INTERPRET_RULE_DELTA:
         result = _interpret_rule_delta_result(request, session)
-    # The six read-only Memory actions are registered above and deliberately
-    # have no branch here. ``append_memory_correction`` — the one Memory action
-    # that writes — stays on the chain, as do the two Memory-Twin bridge
-    # actions further down.
+    # Every Memory action that is registered above has no branch here, and the
+    # two Memory-Twin bridge actions joined them in B4. ``append_memory_
+    # correction`` — the one Memory action that writes — is the only Memory
+    # action still on the chain, and it stays there until its own package says
+    # otherwise.
     elif action == contract.ACTION_MEMORY_CORRECTION:
         result = _append_memory_correction_result(request, session)
-    elif action == contract.ACTION_MEMORY_CODE_LINK:
-        result = _get_memory_code_link_result(request, session)
-    elif action == contract.ACTION_MEMORY_CODE_FRESHNESS:
-        result = _resolve_memory_code_freshness_result(request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -3232,7 +3217,7 @@ def _resolve_memory_code_freshness_result(
     return memory_twin_link.resolve_freshness(link, store, workspace_id)
 
 
-# -- boundary handler registry (B3a / B3b-A / B3b-B) ---------------------
+# -- boundary handler registry (B3a / B3b-A / B3b-B / B3b-H / B4) ---------
 #
 # This module's dispatch has grown one ``elif`` per action, and it must import
 # every capability it can serve. That is why the boundary is the one module
@@ -3240,8 +3225,9 @@ def _resolve_memory_code_freshness_result(
 # without editing the hub itself.
 #
 # The registry is the seam that changes that. B3a proved it on a single action
-# (``get_tree``); B3b-A extended it to the read-only document reads and B3b-B
-# to the read-only Memory reads. Every other action stays on the chain it
+# (``get_tree``); B3b-A extended it to the read-only document reads, B3b-B to
+# the read-only Memory reads, B3b-H to the five scan synonyms, and B4 to the
+# complete thirteen-action Twin family. Every other action stays on the chain it
 # already used. A migrated action has exactly one owner — its registry entry —
 # and no branch here, so the two can never disagree about which handler answers
 # a request.
@@ -3331,17 +3317,24 @@ def _scan_handler(request: Dict[str, Any], session: WorkspaceSession) -> Dict[st
     return _scan_result(request)
 
 
-# The registry's contents: the read-side actions it owns so far. Every entry
-# names its action with the contract's constant rather than a string literal,
-# so a rename in the contract becomes a failing test instead of a silently dead
-# handler, and every handler is a named module-level function — never a lambda,
-# a partial, or an attribute borrowed from another module.
+# The registry's contents. Every entry names its action with the contract's
+# constant rather than a string literal, so a rename in the contract becomes a
+# failing test instead of a silently dead handler, and every handler is a named
+# module-level function — never a lambda, a partial, or an attribute borrowed
+# from another module.
 #
-# These seventeen are read-only: each returns a bounded read-model, writes no
-# store, reaches no Twin, provider, credential, runner or container surface,
-# and reads no clock. ``append_memory_correction`` is the one Memory action
-# that writes and is deliberately *not* here. Everything else stays on the
-# dispatch chain until its own package is authorized.
+# Registration confers no authority. Each entry below names the handler the
+# dispatch chain called for that action before the migration, so the action
+# answers exactly as it did; what moved is *who looks the handler up*. The
+# registered set is therefore **not** read-only, Twin-free, store-free or
+# clock-free, and this comment does not claim it is: those are per-action
+# facts. ``tests/test_architecture.py`` declares them in a hand-authored
+# authority ledger (``reaches_twin``, ``writes_store``, ``reads_clock``,
+# ``reaches_privileged``) that must equal this tuple's action set, and proves
+# no registered action reaches a provider, credential, runner, container or
+# network surface. ``append_memory_correction`` is the one Memory action that
+# writes and is deliberately *not* here. Everything else stays on the dispatch
+# chain until its own package is authorized.
 _BOUNDARY_HANDLER_ENTRIES: Tuple[Tuple[str, "Handler"], ...] = (
     (contract.ACTION_GET_TREE, _get_tree_result),
     (contract.ACTION_GET_DOCUMENT, _get_document_result),
@@ -3360,6 +3353,26 @@ _BOUNDARY_HANDLER_ENTRIES: Tuple[Tuple[str, "Handler"], ...] = (
     (contract.ACTION_ANALYZE, _scan_handler),
     (contract.ACTION_INSPECT, _scan_handler),
     (contract.ACTION_PLAN, _scan_handler),
+    # The complete Twin action family (B4), in the order the dispatch chain
+    # held it: the P3.3 Triple-Twin protocol, the P3.4 editable Code Map draft
+    # and Intent Delta protocol, the P4.1 proposal planner, and the M4.5/v2b
+    # Memory-Twin bridge. Four contract groups, one family, one migration:
+    # ``sync_twin`` writes the Twin store the other three groups read, so
+    # registering the readers without the writer would leave the registry
+    # depending on a store only the chain could create.
+    (contract.ACTION_SYNC_TWIN, _sync_twin_result),
+    (contract.ACTION_GET_TWIN, _get_twin_result),
+    (contract.ACTION_GET_ANCHOR, _get_anchor_result),
+    (contract.ACTION_GET_CODE_MAP, _get_code_map_result),
+    (contract.ACTION_SAVE_DRAFT, _save_draft_result),
+    (contract.ACTION_GET_DRAFT, _get_draft_result),
+    (contract.ACTION_DISCARD_DRAFT, _discard_draft_result),
+    (contract.ACTION_RESET_DRAFT, _reset_draft_result),
+    (contract.ACTION_COMPARE_DRAFT, _compare_draft_result),
+    (contract.ACTION_GENERATE_INTENT_DELTA, _generate_intent_delta_result),
+    (contract.ACTION_PLAN_PROPOSAL, _plan_proposal_result),
+    (contract.ACTION_MEMORY_CODE_LINK, _get_memory_code_link_result),
+    (contract.ACTION_MEMORY_CODE_FRESHNESS, _resolve_memory_code_freshness_result),
 )
 
 # Built at import, so a duplicate or a non-callable entry is a startup failure.

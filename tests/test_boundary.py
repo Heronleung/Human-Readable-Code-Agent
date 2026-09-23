@@ -10,7 +10,7 @@ from unittest import mock
 
 from hrca import boundary, memory, twin
 from hrca.core import contract, workspace
-from hrca.memory import memory_store
+from hrca.memory import memory_docs, memory_store
 from hrca.twin import twin_store
 from hrca.boundary.client_core import build_fixture_task
 from hrca.core.contract import dumps, loads
@@ -836,9 +836,32 @@ _EXPECTED_REGISTRY = (
     (contract.ACTION_ANALYZE, boundary._scan_handler),
     (contract.ACTION_INSPECT, boundary._scan_handler),
     (contract.ACTION_PLAN, boundary._scan_handler),
+    # The complete Twin action family (B4): the P3.3 Triple-Twin protocol, the
+    # P3.4 editable Code Map draft / Intent Delta protocol, the P4.1 proposal
+    # planner and the M4.5/v2b Memory-Twin bridge — thirteen actions from four
+    # contract groups, migrated as one unit because ``sync_twin`` writes the
+    # store the other three groups read.
+    (contract.ACTION_SYNC_TWIN, boundary._sync_twin_result),
+    (contract.ACTION_GET_TWIN, boundary._get_twin_result),
+    (contract.ACTION_GET_ANCHOR, boundary._get_anchor_result),
+    (contract.ACTION_GET_CODE_MAP, boundary._get_code_map_result),
+    (contract.ACTION_SAVE_DRAFT, boundary._save_draft_result),
+    (contract.ACTION_GET_DRAFT, boundary._get_draft_result),
+    (contract.ACTION_DISCARD_DRAFT, boundary._discard_draft_result),
+    (contract.ACTION_RESET_DRAFT, boundary._reset_draft_result),
+    (contract.ACTION_COMPARE_DRAFT, boundary._compare_draft_result),
+    (contract.ACTION_GENERATE_INTENT_DELTA, boundary._generate_intent_delta_result),
+    (contract.ACTION_PLAN_PROPOSAL, boundary._plan_proposal_result),
+    (contract.ACTION_MEMORY_CODE_LINK, boundary._get_memory_code_link_result),
+    (contract.ACTION_MEMORY_CODE_FRESHNESS,
+     boundary._resolve_memory_code_freshness_result),
 )
 
-# Actions that look read-only and are deliberately held back, with the reason.
+# Actions a reader might expect in the registry and that are deliberately held
+# back, with the reason. B4 moved the whole Twin family out of this table: the
+# three entries it held (``sync_twin``, and the two Memory-Twin bridges) are now
+# registered, and the reasons that remain are authority reasons, not family
+# reasons.
 _HELD_BACK = {
     contract.ACTION_OPEN_PROJECT: "it mutates in-memory session state",
     contract.ACTION_DOCUMENT_SAVE: "it writes the version store",
@@ -847,9 +870,79 @@ _HELD_BACK = {
     contract.ACTION_GET_PACKAGE: "package/runner group",
     contract.ACTION_GET_READINESS: "provider/credential seam",
     contract.ACTION_MEMORY_CORRECTION: "the one writing Memory action",
-    contract.ACTION_SYNC_TWIN: "Twin family, held for B4",
-    contract.ACTION_MEMORY_CODE_LINK: "Memory-Twin bridge, held for B4",
-    contract.ACTION_MEMORY_CODE_FRESHNESS: "Memory-Twin bridge, held for B4",
+}
+
+# -- the registered authority ledger (B4) ---------------------------------
+#
+# Registering an action confers no authority: every entry in
+# ``_BOUNDARY_HANDLER_ENTRIES`` names the handler the dispatch chain called
+# before the migration, so a migrated action answers exactly as it did. What is
+# *not* true is that the registered set is read-only — ``sync_twin`` writes the
+# Twin store, three draft actions write the draft store, and two actions read a
+# clock. This ledger is where those facts live, per action, instead of in a
+# blanket sentence that a later migration would silently falsify.
+#
+# It is hand-authored from reading each handler, not generated from the code:
+# ``tests/test_architecture.py`` reads this table *statically* (that module
+# imports nothing from ``hrca``) and independently derives the same four facts
+# from each handler's boundary-local call closure. A handler that grows a store
+# write, a clock read or a Twin reach without this table changing is a failing
+# test, and so is a table entry the closure cannot account for.
+
+# The four authority facts a registered action may carry. A name absent from an
+# action's entry is declared False for that action.
+AUTHORITY_NAMES = frozenset(
+    {"reaches_twin", "writes_store", "reads_clock", "reaches_privileged"}
+)
+
+# No registered action carries ``reaches_privileged``. It is declared here so
+# the vocabulary is complete and so the privileged-surface invariant in
+# ``tests/test_architecture.py`` has a name to reject.
+PRIVILEGED_AUTHORITY = "reaches_privileged"
+
+_REGISTERED_AUTHORITY = {
+    # Registered by B3a / B3b-A: the read-only workspace and document reads.
+    contract.ACTION_GET_TREE: frozenset(),
+    contract.ACTION_GET_DOCUMENT: frozenset(),
+    contract.ACTION_DOCUMENT_LIST: frozenset(),
+    contract.ACTION_DOCUMENT_LIST_VERSIONS: frozenset(),
+    contract.ACTION_DOCUMENT_GET_CANDIDATE: frozenset(),
+    contract.ACTION_DOCUMENT_PREVIEW: frozenset(),
+    # Registered by B3b-B: the read-only Memory reads.
+    contract.ACTION_MEMORY_DOCUMENTS: frozenset(),
+    contract.ACTION_MEMORY_RECORD: frozenset(),
+    contract.ACTION_MEMORY_SEARCH: frozenset(),
+    contract.ACTION_MEMORY_RESUME: frozenset(),
+    contract.ACTION_MEMORY_HISTORY: frozenset(),
+    contract.ACTION_MEMORY_EFFECTIVE: frozenset(),
+    # Registered by B3b-H: the five scan synonyms.
+    contract.ACTION_SCAN: frozenset(),
+    contract.ACTION_READ: frozenset(),
+    contract.ACTION_ANALYZE: frozenset(),
+    contract.ACTION_INSPECT: frozenset(),
+    contract.ACTION_PLAN: frozenset(),
+    # Registered by B4. ``sync_twin`` reconciles and persists the Twin store and
+    # stamps it with the current time — the one action in the family that
+    # produces the evidence the others read.
+    contract.ACTION_SYNC_TWIN: frozenset(
+        {"reaches_twin", "writes_store", "reads_clock"}
+    ),
+    contract.ACTION_GET_TWIN: frozenset({"reaches_twin"}),
+    contract.ACTION_GET_ANCHOR: frozenset({"reaches_twin"}),
+    contract.ACTION_GET_CODE_MAP: frozenset({"reaches_twin"}),
+    # ``save_draft`` writes the per-workspace draft store and stamps it.
+    contract.ACTION_SAVE_DRAFT: frozenset(
+        {"reaches_twin", "writes_store", "reads_clock"}
+    ),
+    contract.ACTION_GET_DRAFT: frozenset({"reaches_twin"}),
+    # Discard and reset remove the saved draft; neither reads a clock.
+    contract.ACTION_DISCARD_DRAFT: frozenset({"reaches_twin", "writes_store"}),
+    contract.ACTION_RESET_DRAFT: frozenset({"reaches_twin", "writes_store"}),
+    contract.ACTION_COMPARE_DRAFT: frozenset({"reaches_twin"}),
+    contract.ACTION_GENERATE_INTENT_DELTA: frozenset({"reaches_twin"}),
+    contract.ACTION_PLAN_PROPOSAL: frozenset({"reaches_twin"}),
+    contract.ACTION_MEMORY_CODE_LINK: frozenset({"reaches_twin"}),
+    contract.ACTION_MEMORY_CODE_FRESHNESS: frozenset({"reaches_twin"}),
 }
 
 
@@ -888,8 +981,10 @@ class BoundaryHandlerRegistryTests(unittest.TestCase):
         self.assertEqual(_EXPECTED_REGISTRY, boundary._BOUNDARY_HANDLER_ENTRIES)
 
     def test_no_other_allowed_action_is_registered(self):
-        # These twelve are registered, and the remaining 49 allowed actions are
-        # still on the chain they always used.
+        # Exactly the actions ``_EXPECTED_REGISTRY`` names are registered, and
+        # every other allowed action is still on the chain it always used. The
+        # counts are derived rather than written down: this comment used to name
+        # them, and went stale at two of the four migrations that followed.
         registered = {
             action
             for action in contract.ALLOWED_ACTIONS
@@ -912,28 +1007,28 @@ class BoundaryHandlerRegistryTests(unittest.TestCase):
                 )
 
     def test_no_memory_action_that_writes_is_registered(self):
-        # The Memory group is read-only by construction. The one action that
-        # appends to a store must never drift in because its neighbours did.
+        # The Memory read group is read-only by construction, and B4 registered
+        # the two Memory-Twin bridge actions alongside the Twin family. The one
+        # action that appends to a Memory store must never drift in because its
+        # neighbours did.
         self.assertIsNone(
             boundary._BOUNDARY_HANDLERS.resolve(contract.ACTION_MEMORY_CORRECTION)
         )
-        for action in (
-            contract.ACTION_MEMORY_CODE_LINK,
-            contract.ACTION_MEMORY_CODE_FRESHNESS,
-        ):
-            with self.subTest(action=action):
-                self.assertIsNone(boundary._BOUNDARY_HANDLERS.resolve(action))
 
-    def test_no_twin_provider_or_execution_action_is_registered(self):
+    def test_no_privileged_action_is_registered(self):
+        # The registry owns dispatch, never authority. These actions carry a
+        # privilege — a provider request, a credential, an isolated runner, a
+        # container — that the registered set must never hold, and no Twin
+        # action is among them any more: B4 migrated the family that does not.
         for action in (
-            contract.ACTION_SYNC_TWIN,
-            contract.ACTION_GET_TWIN,
-            contract.ACTION_GET_ANCHOR,
-            contract.ACTION_GET_CODE_MAP,
-            contract.ACTION_MEMORY_CODE_LINK,
             contract.ACTION_RUN_PACKAGE,
             contract.ACTION_PLAN_ADVISORY,
+            contract.ACTION_PREPARE_ADVISORY,
             contract.ACTION_MANAGE_CREDENTIAL,
+            contract.ACTION_REMOVE_CREDENTIAL,
+            contract.ACTION_GET_READINESS,
+            contract.ACTION_RULE_DELTA_RUN,
+            contract.ACTION_INTERPRET_RULE_DELTA,
         ):
             with self.subTest(action=action):
                 self.assertIsNone(boundary._BOUNDARY_HANDLERS.resolve(action))
@@ -1634,6 +1729,360 @@ class BoundaryRegisteredScanTests(unittest.TestCase):
         for action in _SCAN_FAMILY:
             with self.subTest(action=action):
                 self.assertIn(action, boundary._BOUNDARY_HANDLERS.actions())
+
+
+# -- the registered Twin family (B4) --------------------------------------
+#
+# Thirteen actions from four contract groups, migrated as one unit. Like the
+# read, Memory-read and scan classes above, these go through
+# ``handle_request`` so they exercise the registry: the architecture tests prove
+# no legacy ``elif`` claims them, and these prove they still answer exactly as
+# they did. The four groups are named here so a member drifting out of its group
+# is a failing test rather than a quietly shrunken family.
+
+_TWIN_FAMILY = (
+    contract.ACTION_SYNC_TWIN,
+    contract.ACTION_GET_TWIN,
+    contract.ACTION_GET_ANCHOR,
+    contract.ACTION_GET_CODE_MAP,
+    contract.ACTION_SAVE_DRAFT,
+    contract.ACTION_GET_DRAFT,
+    contract.ACTION_DISCARD_DRAFT,
+    contract.ACTION_RESET_DRAFT,
+    contract.ACTION_COMPARE_DRAFT,
+    contract.ACTION_GENERATE_INTENT_DELTA,
+    contract.ACTION_PLAN_PROPOSAL,
+    contract.ACTION_MEMORY_CODE_LINK,
+    contract.ACTION_MEMORY_CODE_FRESHNESS,
+)
+
+# ``(action, handler)`` in the order the registry holds them, so an entry that
+# stops naming the handler the chain used to call is caught here.
+_TWIN_FAMILY_HANDLERS = (
+    (contract.ACTION_SYNC_TWIN, boundary._sync_twin_result),
+    (contract.ACTION_GET_TWIN, boundary._get_twin_result),
+    (contract.ACTION_GET_ANCHOR, boundary._get_anchor_result),
+    (contract.ACTION_GET_CODE_MAP, boundary._get_code_map_result),
+    (contract.ACTION_SAVE_DRAFT, boundary._save_draft_result),
+    (contract.ACTION_GET_DRAFT, boundary._get_draft_result),
+    (contract.ACTION_DISCARD_DRAFT, boundary._discard_draft_result),
+    (contract.ACTION_RESET_DRAFT, boundary._reset_draft_result),
+    (contract.ACTION_COMPARE_DRAFT, boundary._compare_draft_result),
+    (contract.ACTION_GENERATE_INTENT_DELTA, boundary._generate_intent_delta_result),
+    (contract.ACTION_PLAN_PROPOSAL, boundary._plan_proposal_result),
+    (contract.ACTION_MEMORY_CODE_LINK, boundary._get_memory_code_link_result),
+    (contract.ACTION_MEMORY_CODE_FRESHNESS,
+     boundary._resolve_memory_code_freshness_result),
+)
+
+# The actions that reach the accepted repository root, so they refuse with
+# ``project_not_open`` on a session that has accepted none. The two bridge
+# actions are not among them: they resolve their entity against the session's
+# Twin *store*, not the root.
+_TWIN_FAMILY_ROOT_SCOPED = (
+    contract.ACTION_SYNC_TWIN,
+    contract.ACTION_GET_TWIN,
+    contract.ACTION_GET_ANCHOR,
+    contract.ACTION_GET_CODE_MAP,
+    contract.ACTION_SAVE_DRAFT,
+    contract.ACTION_GET_DRAFT,
+    contract.ACTION_DISCARD_DRAFT,
+    contract.ACTION_RESET_DRAFT,
+    contract.ACTION_COMPARE_DRAFT,
+    contract.ACTION_GENERATE_INTENT_DELTA,
+    contract.ACTION_PLAN_PROPOSAL,
+)
+
+
+class BoundaryRegisteredTwinFamilyTests(unittest.TestCase):
+    """The thirteen Twin-family actions, end to end through the registry."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store_base = self._tmp.name
+        self.session = boundary.WorkspaceSession(store_base=self.store_base)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _do(self, action, **overrides):
+        return boundary.handle_request(_twin_request(action, **overrides), self.session)
+
+    def _open_sync(self):
+        open_env = self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        self.assertTrue(open_env["ok"])
+        sync_env = self._do(contract.ACTION_SYNC_TWIN, task={})
+        self.assertTrue(sync_env["ok"])
+        return sync_env
+
+    def _blocks(self):
+        return self._do(contract.ACTION_GET_CODE_MAP)["result"]["blocks"]
+
+    def _purpose_operation(self, value="entry point for the service"):
+        blocks = self._blocks()
+        module_id = next(
+            block["block_id"]
+            for block in blocks
+            if block.get("block_type") == "entity"
+            and (block.get("payload") or {}).get("kind") == "module"
+            and (block.get("payload") or {}).get("locator") == "app.service"
+        )
+        purpose_id = next(
+            block["block_id"]
+            for block in blocks
+            if block.get("block_type") == "purpose"
+            and block.get("parent_id") == module_id
+        )
+        return {
+            "op": "replace_description",
+            "target_block_id": purpose_id,
+            "proposed_text": value,
+        }
+
+    def _seed_link_record(self):
+        """Store one Memory run holding a ``code_entity_link`` for a real symbol."""
+        events = [
+            {"event_type": "run_started", "source_event_id": "e1", "payload": {}},
+            {
+                "event_type": "run_progress",
+                "source_event_id": "e2",
+                "payload": {},
+                "paths": ["app/service.py"],
+                "code_entities": [
+                    {"path": "app/service.py", "symbol": "app.service.Service.handle"}
+                ],
+            },
+            {
+                "event_type": "run_terminated",
+                "source_event_id": "e3",
+                "outcome": "completed",
+                "payload": {},
+            },
+            {"event_type": "stream_ended", "source_event_id": "e4", "payload": {}},
+        ]
+        store, error, _ = memory.ingest_session(
+            {
+                "adapter": "smoke",
+                "session_id": "s-1",
+                "events": events,
+                "project": {"source_id": "p-1", "name": "P1"},
+                "work_package": {"source_id": "w-1", "title": "W1"},
+            }
+        )
+        self.assertIsNone(error, error)
+        run_id = store["agent_run"]["id"]
+        self.assertIsNone(memory_store.save(self.store_base, run_id, store))
+        return run_id, store["code_entity_links"][0]["id"]
+
+    # -- what the registry owns ------------------------------------------
+
+    def test_the_family_is_the_union_of_four_contract_groups(self):
+        union = (
+            contract.TWIN_ACTIONS
+            | contract.DRAFT_ACTIONS
+            | contract.PROPOSAL_ACTIONS
+            | contract.MEMORY_CODE_LINK_ACTIONS
+        )
+        self.assertEqual(union, set(_TWIN_FAMILY))
+        self.assertEqual(13, len(_TWIN_FAMILY))
+
+    def test_every_family_action_is_registered(self):
+        registered = boundary._BOUNDARY_HANDLERS.actions()
+        for action in _TWIN_FAMILY:
+            with self.subTest(action=action):
+                self.assertIn(action, registered)
+
+    def test_every_family_entry_is_the_existing_handler(self):
+        # Migration moved dispatch, never authority: the object the registry
+        # answers with is the very function the chain called before B4.
+        for action, handler in _TWIN_FAMILY_HANDLERS:
+            with self.subTest(action=action):
+                self.assertIs(handler, boundary._BOUNDARY_HANDLERS.resolve(action))
+                self.assertIs(handler, getattr(boundary, handler.__name__))
+
+    def test_every_family_action_answers_through_the_registry(self):
+        # The direct proof of the seam, for every member: replace the registry
+        # entry and watch the replacement answer. If the legacy chain still
+        # owned one of these, the real handler would answer instead.
+        for action in _TWIN_FAMILY:
+            with self.subTest(action=action):
+                with mock.patch.dict(
+                    boundary._BOUNDARY_HANDLERS._handlers,
+                    {action: lambda request, session: {"probed": request.get("action")}},
+                ):
+                    env = self._do(action)
+                self.assertTrue(env["ok"], env)
+                self.assertEqual({"probed": action}, env["result"])
+
+    # -- the actions still answer ----------------------------------------
+
+    def test_sync_twin_synchronizes_and_persists(self):
+        sync_env = self._open_sync()
+        self.assertEqual("synchronized", sync_env["result"]["state"])
+        self.assertTrue(sync_env["result"]["persisted"])
+        self.assertGreater(sync_env["result"]["counts"]["artifacts"], 0)
+
+    def test_get_twin_returns_a_projection_bundle(self):
+        self._open_sync()
+        env = self._do(
+            contract.ACTION_GET_TWIN, task={"selector": "app/service.py"}
+        )
+        self.assertTrue(env["ok"], env)
+        self.assertEqual("app/service.py", env["result"]["projection"]["path"])
+
+    def test_get_anchor_navigates_a_behavior_node(self):
+        self._open_sync()
+        bundle = self._do(
+            contract.ACTION_GET_TWIN, task={"selector": "app.service.Service.handle"}
+        )["result"]
+        node_id = bundle["behavior_nodes"][0]["id"]
+        env = self._do(contract.ACTION_GET_ANCHOR, task={"node_id": node_id})
+        self.assertTrue(env["ok"], env)
+        self.assertTrue(env["result"]["available"])
+
+    def test_get_code_map_returns_blocks_and_entities(self):
+        self._open_sync()
+        env = self._do(contract.ACTION_GET_CODE_MAP)
+        self.assertTrue(env["ok"], env)
+        self.assertTrue(env["result"]["blocks"])
+        self.assertTrue(env["result"]["entities"])
+        self.assertIsNone(env["result"]["draft"])
+
+    def test_save_draft_persists_and_get_draft_reads_it_back(self):
+        self._open_sync()
+        save_env = self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={"operations": [self._purpose_operation()]},
+        )
+        self.assertTrue(save_env["ok"], save_env)
+        self.assertTrue(save_env["result"]["persisted"])
+        get_env = self._do(contract.ACTION_GET_DRAFT)
+        self.assertTrue(get_env["ok"], get_env)
+        self.assertEqual(save_env["result"]["draft"], get_env["result"]["draft"])
+
+    def test_compare_draft_lists_the_typed_operations(self):
+        self._open_sync()
+        self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={"operations": [self._purpose_operation()]},
+        )
+        env = self._do(contract.ACTION_COMPARE_DRAFT)
+        self.assertTrue(env["ok"], env)
+        self.assertEqual(1, len(env["result"]["operations"]))
+
+    def test_generate_intent_delta_and_plan_proposal(self):
+        self._open_sync()
+        self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={"operations": [self._purpose_operation()]},
+        )
+        delta_env = self._do(contract.ACTION_GENERATE_INTENT_DELTA)
+        self.assertTrue(delta_env["ok"], delta_env)
+        self.assertFalse(delta_env["result"]["no_change"])
+        proposal_env = self._do(contract.ACTION_PLAN_PROPOSAL)
+        self.assertTrue(proposal_env["ok"], proposal_env)
+        self.assertEqual("ready", proposal_env["result"]["state"])
+
+    def test_discard_draft_removes_the_saved_draft(self):
+        self._open_sync()
+        self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={"operations": [self._purpose_operation()]},
+        )
+        env = self._do(contract.ACTION_DISCARD_DRAFT)
+        self.assertTrue(env["ok"], env)
+        self.assertTrue(env["result"]["discarded"])
+        self.assertIsNone(env["result"]["draft"])
+        # With no saved draft left, the read reports absence rather than a
+        # stale copy of what was discarded.
+        self.assertEqual(
+            "draft_not_found", self._do(contract.ACTION_GET_DRAFT)["error"]["code"]
+        )
+
+    def test_reset_draft_removes_the_saved_operations(self):
+        self._open_sync()
+        self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={"operations": [self._purpose_operation()]},
+        )
+        env = self._do(contract.ACTION_RESET_DRAFT)
+        self.assertTrue(env["ok"], env)
+        self.assertTrue(env["result"]["reset"])
+        self.assertIsNone(env["result"]["draft"])
+        self.assertEqual(
+            "draft_not_found",
+            self._do(contract.ACTION_COMPARE_DRAFT)["error"]["code"],
+        )
+
+    # -- the bridge, which reaches Twin on Memory's behalf ----------------
+
+    def test_the_memory_code_twin_bridge_binds_and_resolves_freshness(self):
+        self._open_sync()
+        run_id, record_id = self._seed_link_record()
+        link_env = self._do(
+            contract.ACTION_MEMORY_CODE_LINK,
+            entity_id="artifact:method:app.service.Service.handle",
+            entity_kind="method",
+            run_id=run_id,
+            record_id=record_id,
+            kind=memory_docs.LINK_CODE_ENTITY,
+        )
+        self.assertTrue(link_env["ok"], link_env)
+        fresh_env = self._do(
+            contract.ACTION_MEMORY_CODE_FRESHNESS, **link_env["result"]
+        )
+        self.assertTrue(fresh_env["ok"], fresh_env)
+        self.assertEqual("current", fresh_env["result"]["freshness"])
+
+    # -- refusals ---------------------------------------------------------
+
+    def test_a_root_scoped_family_action_refuses_without_a_project_root(self):
+        for action in _TWIN_FAMILY_ROOT_SCOPED:
+            with self.subTest(action=action):
+                env = self._do(action, task={})
+                self.assertFalse(env["ok"], env)
+                self.assertEqual("project_not_open", env["error"]["code"])
+
+    def test_the_draft_actions_refuse_when_no_draft_exists(self):
+        self._open_sync()
+        for action in (
+            contract.ACTION_GET_DRAFT,
+            contract.ACTION_COMPARE_DRAFT,
+            contract.ACTION_GENERATE_INTENT_DELTA,
+            contract.ACTION_PLAN_PROPOSAL,
+        ):
+            with self.subTest(action=action):
+                env = self._do(action)
+                self.assertFalse(env["ok"], env)
+                self.assertEqual("draft_not_found", env["error"]["code"])
+
+    def test_the_twin_reads_refuse_an_identity_the_evidence_does_not_hold(self):
+        self._open_sync()
+        twin_env = self._do(
+            contract.ACTION_GET_TWIN, task={"selector": "no.such.entity"}
+        )
+        self.assertEqual("twin_not_found", twin_env["error"]["code"])
+        anchor_env = self._do(
+            contract.ACTION_GET_ANCHOR, task={"node_id": "behavior:nope:nope:0"}
+        )
+        self.assertEqual("twin_not_found", anchor_env["error"]["code"])
+
+    def test_a_draft_operation_the_baseline_does_not_hold_is_refused(self):
+        self._open_sync()
+        env = self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={
+                "operations": [
+                    {
+                        "op": "replace_description",
+                        "target_block_id": "no-such-block",
+                        "proposed_text": "x",
+                    }
+                ]
+            },
+        )
+        self.assertFalse(env["ok"], env)
+        self.assertEqual("draft_invalid", env["error"]["code"])
 
 
 if __name__ == "__main__":

@@ -1622,6 +1622,152 @@ def _legacy_action_names():
     return names
 
 
+# -- the registered authority ledger (B4) --------------------------------
+#
+# Registering an action confers no authority: every registry entry names the
+# handler the dispatch chain called before the migration. What is *not* true is
+# that the registered set is read-only — B4 registered handlers that write a
+# per-workspace store and handlers that read a clock. Those facts are declared
+# per action in ``tests/test_boundary.py``'s ``_REGISTERED_AUTHORITY``, which is
+# hand-authored by reading each handler, and derived here independently from the
+# code being registered. The two must agree in both directions.
+
+# The four authority facts a registered action may carry.
+_AUTHORITY_NAMES = frozenset(
+    {"reaches_twin", "writes_store", "reads_clock", "reaches_privileged"}
+)
+
+# The Twin family, named by module. ``advisory`` is deliberately in this set
+# *and* excluded from the family below: it lives in the Twin package and carries
+# a provider request, which is why the family stops short of it.
+_TWIN_TOKENS = frozenset(
+    {"twin", "twin_store", "codemap", "codemap_draft", "proposal",
+     "memory_twin_link", "advisory"}
+)
+
+# Calls that persist to a store. ``save`` is the canonical one; the drafts use
+# their own names because the draft store has its own entry points.
+_STORE_WRITE_TOKENS = frozenset(
+    {"save", "save_draft", "discard_draft", "save_revision", "restore_version",
+     "ensure_library", "add_revision"}
+)
+
+# The boundary reads the clock through exactly one helper.
+_CLOCK_TOKENS = frozenset({"_now_iso"})
+
+# Surfaces no registered action may reach. These are the privilege boundaries
+# the whole registry design exists to keep untouched: a provider request, a
+# credential, an isolated runner or container, and a network primitive.
+# ``app_package`` is deliberately absent — a read-only registered action
+# legitimately reads that module's fixture descriptor, and the execution surface
+# is ``container_runner`` / ``runner_broker`` / ``runtime_handlers``.
+_PRIVILEGED_TOKENS = frozenset(
+    {
+        "deepseek", "deepseek_transport", "provider", "provider_config",
+        "credential_store", "credential_store_win", "credential_sheet_win",
+        "credential_host", "container_runner", "runner_broker",
+        "runtime_handlers", "rule_delta", "rule_delta_interpret",
+        "delta_transport", "delta_candidate", "delta_verifier",
+        "candidate_package", "verifier",
+        "socket", "urllib", "http", "ssl", "requests",
+    }
+)
+
+_TEST_BOUNDARY_MODULE = os.path.join(_HERE, "test_boundary.py")
+
+
+def _top_level_functions(path):
+    """Return ``{function name: AST node}`` for a module's top-level functions."""
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    return {
+        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+    }
+
+
+def _referenced_names(node):
+    """Return every name a subtree reads, by identifier or by attribute."""
+    names = set()
+    for item in ast.walk(node):
+        if isinstance(item, ast.Name):
+            names.add(item.id)
+        elif isinstance(item, ast.Attribute):
+            names.add(item.attr)
+    return names
+
+
+def _boundary_closure(entry, functions):
+    """Return ``entry`` plus every boundary-local function it can call.
+
+    Bounded on purpose: it walks only functions defined in the boundary module
+    and stops at its edge. See the note in ``TwinFamilyRegistryTests``.
+    """
+    seen, pending = set(), [entry]
+    while pending:
+        name = pending.pop()
+        node = functions.get(name)
+        if node is None or name in seen:
+            continue
+        seen.add(name)
+        pending.extend(n for n in _referenced_names(node) if n in functions)
+    return seen
+
+
+def _closure_tokens(entry, functions):
+    """Return every name reachable from ``entry`` within the boundary module."""
+    tokens = set()
+    for name in _boundary_closure(entry, functions):
+        tokens |= _referenced_names(functions[name])
+    return tokens
+
+
+def _registered_authority_ledger():
+    """Return ``{ACTION_*: frozenset(authority names)}`` from test_boundary.py.
+
+    Read statically rather than imported: this module imports nothing from
+    ``hrca``, and a test module that imported another test module would make
+    one suite's collection depend on another's.
+    """
+    with open(_TEST_BOUNDARY_MODULE, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    value = _top_level_value(tree, "_REGISTERED_AUTHORITY")
+    if not isinstance(value, ast.Dict):
+        return None
+    ledger = {}
+    for key, declared in zip(value.keys, value.values):
+        if not isinstance(key, ast.Attribute) or not isinstance(key.value, ast.Name):
+            return None
+        if key.value.id != "contract":
+            return None
+        node = declared
+        if isinstance(node, ast.Call) and node.args:
+            node = node.args[0]
+        names = set()
+        if isinstance(node, (ast.Set, ast.Tuple, ast.List)):
+            for element in node.elts:
+                if isinstance(element, ast.Constant):
+                    names.add(element.value)
+        ledger[key.attr] = frozenset(names)
+    return ledger
+
+
+def _derived_authority(functions):
+    """Return the authority facts the registered handlers actually reference."""
+    derived = {}
+    probes = (
+        ("reaches_twin", _TWIN_TOKENS),
+        ("writes_store", _STORE_WRITE_TOKENS),
+        ("reads_clock", _CLOCK_TOKENS),
+        ("reaches_privileged", _PRIVILEGED_TOKENS),
+    )
+    for action_node, handler_node in _registry_entry_nodes():
+        tokens = _closure_tokens(handler_node.id, functions)
+        derived[action_node.attr] = frozenset(
+            name for name, probe in probes if tokens & probe
+        )
+    return derived
+
+
 class BoundaryRegistryIsolationTests(unittest.TestCase):
     """The registry searches for nothing and names its action exactly."""
 
@@ -1710,21 +1856,20 @@ class BoundaryRegistryIsolationTests(unittest.TestCase):
         still_chained = registered & _legacy_action_names()
         self.assertEqual(set(), still_chained)
 
-    def test_no_registered_action_is_twin_owned(self):
-        # The Twin family is held for B4. Nothing may drift into the registry
-        # because it happened to look read-only.
-        groups, consts = _contract_action_groups()
-        twin_family = set()
-        for group in (
-            "TWIN_ACTIONS",
-            "DRAFT_ACTIONS",
-            "PROPOSAL_ACTIONS",
-            "MEMORY_CODE_LINK_ACTIONS",
-        ):
-            twin_family |= groups[group]
-        for name in _registered_action_names():
-            with self.subTest(action=name):
-                self.assertNotIn(consts[name], twin_family)
+    def test_no_registered_action_reaches_a_privileged_surface(self):
+        # B4 replaced the family-exclusion rule that used to live here. What
+        # replaces it is not a weaker rule but a differently stated one: the
+        # registry owns *dispatch*, never authority, so a registered action is
+        # permitted to be a Twin-family action — and is never permitted to
+        # carry a privilege. The per-action authority facts are pinned in
+        # ``TwinFamilyRegistryTests``; this is the one that must never relax.
+        functions = _top_level_functions(_BOUNDARY_MODULE)
+        for action_node, handler_node in _registry_entry_nodes():
+            with self.subTest(action=action_node.attr):
+                self.assertEqual(
+                    set(),
+                    _closure_tokens(handler_node.id, functions) & _PRIVILEGED_TOKENS,
+                )
 
     def test_unregistered_actions_keep_their_legacy_branch(self):
         registered = set(_registered_action_names())
@@ -1864,6 +2009,203 @@ class ScanFamilyRegistryTests(unittest.TestCase):
         registered = set(_registered_action_names())
         missing = sorted(set(_EXPECTED_SCAN_ACTIONS) - registered)
         self.assertEqual([], missing)
+
+
+# -- the Twin action family (B4) -----------------------------------------
+#
+# Thirteen actions from four contract groups, moved into the registry as one
+# unit. The family is not an invented grouping: it is exactly the union of the
+# four groups below, which is the same union the guard that used to exclude them
+# was stated over. It moves as one because ``sync_twin`` writes the store the
+# other three groups read — registering the readers without the writer would
+# leave the registry holding handlers whose evidence only the chain could
+# produce.
+#
+# What is *not* claimed here is that a registered action is read-only. The
+# authority of each registered action is declared in the ledger and checked
+# against the code, and the one privilege rule that must never relax — no
+# provider, credential, runner, container or network reach — is checked
+# independently of the ledger.
+
+_TWIN_FAMILY_GROUPS = (
+    "TWIN_ACTIONS",
+    "DRAFT_ACTIONS",
+    "PROPOSAL_ACTIONS",
+    "MEMORY_CODE_LINK_ACTIONS",
+)
+
+_EXPECTED_TWIN_FAMILY = (
+    "ACTION_SYNC_TWIN",
+    "ACTION_GET_TWIN",
+    "ACTION_GET_ANCHOR",
+    "ACTION_GET_CODE_MAP",
+    "ACTION_SAVE_DRAFT",
+    "ACTION_GET_DRAFT",
+    "ACTION_DISCARD_DRAFT",
+    "ACTION_RESET_DRAFT",
+    "ACTION_COMPARE_DRAFT",
+    "ACTION_GENERATE_INTENT_DELTA",
+    "ACTION_PLAN_PROPOSAL",
+    "ACTION_MEMORY_CODE_LINK",
+    "ACTION_MEMORY_CODE_FRESHNESS",
+)
+
+# The registered handlers that predate B4: six document reads, six Memory reads
+# and the scan adapter. B4 added thirteen, and they are all distinct — it needed
+# no adapter because every family handler already matched the registry shape.
+_REGISTERED_HANDLERS_BEFORE_B4 = frozenset(
+    {
+        "_get_tree_result", "_get_document_result", "_list_documents_result",
+        "_list_versions_result", "_get_candidate_result",
+        "_preview_document_result", "_get_memory_documents_result",
+        "_get_memory_record_result", "_search_memory_result",
+        "_memory_resume_result", "_get_memory_history_result",
+        "_resolve_memory_effective_result", "_scan_handler",
+    }
+)
+
+
+class TwinFamilyRegistryTests(unittest.TestCase):
+    """The whole Twin family is registered, and its authority is declared."""
+
+    def test_the_family_is_exactly_the_union_of_four_groups(self):
+        groups, consts = _contract_action_groups()
+        union = set()
+        for group in _TWIN_FAMILY_GROUPS:
+            union |= groups[group]
+        self.assertEqual({consts[name] for name in _EXPECTED_TWIN_FAMILY}, union)
+        self.assertEqual(13, len(_EXPECTED_TWIN_FAMILY))
+
+    def test_every_family_member_is_registered(self):
+        registered = set(_registered_action_names())
+        missing = sorted(set(_EXPECTED_TWIN_FAMILY) - registered)
+        self.assertEqual([], missing)
+
+    def test_no_family_member_keeps_a_legacy_branch(self):
+        still_chained = set(_EXPECTED_TWIN_FAMILY) & _legacy_action_names()
+        self.assertEqual(set(), still_chained)
+
+    def test_no_family_group_comparator_remains(self):
+        # The branches were deleted, not narrowed. A group comparator would
+        # still own actions the registry also owns, and the per-action check
+        # above cannot see inside a group.
+        chained = _legacy_action_names()
+        for group in _TWIN_FAMILY_GROUPS:
+            with self.subTest(group=group):
+                self.assertNotIn(group, chained)
+
+    def test_the_advisory_group_is_not_in_the_family(self):
+        # ``plan_advisory`` performs a provider request. Advisory is
+        # provider-family authority that happens to live in the Twin package,
+        # which is exactly why the family union has never included it.
+        groups, consts = _contract_action_groups()
+        family = {consts[name] for name in _EXPECTED_TWIN_FAMILY}
+        self.assertEqual(set(), groups["ADVISORY_ACTIONS"] & family)
+        registered = set(_registered_action_names())
+        for name in ("ACTION_PREPARE_ADVISORY", "ACTION_PLAN_ADVISORY"):
+            with self.subTest(action=name):
+                self.assertNotIn(consts[name], family)
+                self.assertNotIn(name, registered)
+
+    def test_the_family_added_no_adapter(self):
+        # Every family handler already matched the registry's signature, so the
+        # migration needed no adapter and no shim. The registered handler set is
+        # exactly the pre-B4 handlers plus thirteen distinct family handlers,
+        # and the scan adapter is still the only adapter — and still the only
+        # handler several entries share.
+        pairs = _registry_entry_nodes()
+        handlers = {handler.id for _, handler in pairs}
+        family_handlers = {
+            handler.id
+            for action_node, handler in pairs
+            if action_node.attr in _EXPECTED_TWIN_FAMILY
+        }
+        self.assertEqual(len(_EXPECTED_TWIN_FAMILY), len(family_handlers))
+        self.assertEqual(_REGISTERED_HANDLERS_BEFORE_B4 | family_handlers, handlers)
+        self.assertNotIn("_scan_handler", family_handlers)
+        self.assertEqual(5, sum(1 for _, h in pairs if h.id == "_scan_handler"))
+
+    def test_the_authority_ledger_covers_exactly_the_registered_set(self):
+        ledger = _registered_authority_ledger()
+        self.assertIsNotNone(
+            ledger, "_REGISTERED_AUTHORITY could not be read from test_boundary.py"
+        )
+        self.assertEqual(set(_registered_action_names()), set(ledger))
+
+    def test_every_ledger_declaration_uses_the_authority_vocabulary(self):
+        ledger = _registered_authority_ledger()
+        self.assertIsNotNone(ledger)
+        for action, declaration in sorted(ledger.items()):
+            with self.subTest(action=action):
+                self.assertEqual(set(), set(declaration) - _AUTHORITY_NAMES)
+
+    def test_the_ledger_matches_the_handler_closures(self):
+        # Independent derivation. The ledger is hand-authored by reading each
+        # handler; this derives the same four facts from the code being
+        # registered. A handler that gains a store write, a clock read or a Twin
+        # reach without the ledger changing fails here — and so does a ledger
+        # entry the closure cannot account for.
+        ledger = _registered_authority_ledger()
+        self.assertIsNotNone(ledger)
+        derived = _derived_authority(_top_level_functions(_BOUNDARY_MODULE))
+        self.assertEqual(set(derived), set(ledger))
+        for action in sorted(derived):
+            with self.subTest(action=action):
+                self.assertEqual(derived[action], ledger[action])
+
+    def test_the_declared_family_authority_is_what_the_code_does(self):
+        # The three facts the family migration made visible, stated once as
+        # prose the ledger must agree with: one writer of the Twin store, three
+        # writers of the draft store, two clock readers.
+        ledger = _registered_authority_ledger()
+        self.assertIsNotNone(ledger)
+        writers = sorted(
+            action for action in _EXPECTED_TWIN_FAMILY
+            if "writes_store" in ledger[action]
+        )
+        clock_readers = sorted(
+            action for action in _EXPECTED_TWIN_FAMILY
+            if "reads_clock" in ledger[action]
+        )
+        twin_reachers = [
+            action for action in _EXPECTED_TWIN_FAMILY
+            if "reaches_twin" in ledger[action]
+        ]
+        self.assertEqual(
+            sorted(["ACTION_SYNC_TWIN", "ACTION_SAVE_DRAFT",
+                    "ACTION_DISCARD_DRAFT", "ACTION_RESET_DRAFT"]),
+            writers,
+        )
+        self.assertEqual(
+            sorted(["ACTION_SAVE_DRAFT", "ACTION_SYNC_TWIN"]), clock_readers
+        )
+        self.assertEqual(len(_EXPECTED_TWIN_FAMILY), len(twin_reachers))
+
+    def test_no_registered_action_reaches_a_privileged_surface(self):
+        # The one authority rule that must never relax, checked twice: once
+        # against the declared ledger and once against the closures themselves,
+        # so a ledger that agreed with a drifting handler could not hide it.
+        ledger = _registered_authority_ledger()
+        self.assertIsNotNone(ledger)
+        for action, declaration in sorted(ledger.items()):
+            with self.subTest(action=action, source="ledger"):
+                self.assertNotIn("reaches_privileged", declaration)
+        functions = _top_level_functions(_BOUNDARY_MODULE)
+        for action_node, handler_node in _registry_entry_nodes():
+            with self.subTest(action=action_node.attr, source="closure"):
+                self.assertEqual(
+                    set(),
+                    _closure_tokens(handler_node.id, functions) & _PRIVILEGED_TOKENS,
+                )
+        for name in (
+            "ACTION_RUN_PACKAGE",
+            "ACTION_PLAN_ADVISORY",
+            "ACTION_MANAGE_CREDENTIAL",
+            "ACTION_RULE_DELTA_RUN",
+            "ACTION_INTERPRET_RULE_DELTA",
+        ):
+            with self.subTest(action=name, source="not registered"):
+                self.assertNotIn(name, set(_registered_action_names()))
 
 
 # -- discovery and import resolution (R0) --------------------------------
