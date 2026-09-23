@@ -36,7 +36,8 @@ import socket
 import urllib.parse
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from ..twin import advisory
+from ..core.storage import dumps
+from . import advisory_contract
 from . import deepseek
 from . import provider
 
@@ -180,10 +181,10 @@ class DeepSeekProvider(provider.Provider):
         model: str = deepseek.DEFAULT_MODEL,
         credential_getter: Optional[Callable[[], Optional[str]]] = None,
         http_post: Optional[Callable[..., Tuple[int, bytes]]] = None,
-        timeout: float = advisory.TIMEOUT_SECONDS,
-        max_output_tokens: int = advisory.MAX_OUTPUT_TOKENS,
-        max_request_bytes: int = advisory.MAX_REQUEST_BYTES,
-        max_context_items: int = advisory.MAX_CONTEXT_ITEMS,
+        timeout: float = advisory_contract.TIMEOUT_SECONDS,
+        max_output_tokens: int = advisory_contract.MAX_OUTPUT_TOKENS,
+        max_request_bytes: int = advisory_contract.MAX_REQUEST_BYTES,
+        max_context_items: int = advisory_contract.MAX_CONTEXT_ITEMS,
     ) -> None:
         if not deepseek.is_allowed_model(model):
             raise ValueError("invalid model")
@@ -255,15 +256,15 @@ class DeepSeekProvider(provider.Provider):
         payload = _parse_json_content(content)
         if payload is None:
             raise TransportError("invalid_output")
-        reason = advisory.validate_advisory_payload(payload)
+        reason = advisory_contract.validate_advisory_payload(payload)
         if reason is not None:
             raise TransportError("invalid_output")
 
-        normalized = advisory.normalize_payload(payload)
+        normalized = advisory_contract.normalize_payload(payload)
         # ``content`` is deliberately the *sanitized* advisory object, never the
         # raw model output, so no source-derived text or hidden reasoning can be
         # retained or logged downstream.
-        content = advisory.dumps(normalized)
+        content = dumps(normalized)
         usage = None
         try:
             data = json.loads(body.decode("utf-8"))

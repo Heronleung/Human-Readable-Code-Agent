@@ -2208,6 +2208,209 @@ class TwinFamilyRegistryTests(unittest.TestCase):
                 self.assertNotIn(name, set(_registered_action_names()))
 
 
+# -- the provider-payload contract seam (B-R2) ---------------------------
+#
+# The advisory provider-payload contract lives with the provider seam
+# (``hrca.integrations.advisory_contract``), not with the capability that
+# consumes it, because the *transport* needs it too and a seam must not depend
+# on a capability. Before B-R2 ``hrca.integrations.deepseek_transport`` reached
+# into ``hrca.twin.advisory`` for it, so the one module that opens a socket and
+# reads a credential dragged in the Code Map domain.
+#
+# The direction this restores is the one the rule-delta path already had:
+# ``hrca.execution.delta_transport`` takes its payload contract from
+# ``hrca.execution.rule_delta_interpret``, its own package. ``execution ->
+# integrations`` is the *retained* direction — an adapter implementing the
+# host's provider protocol — and is declared below rather than removed.
+
+_PAYLOAD_CONTRACT_MODULE = _module_path("advisory_contract")
+_ADVISORY_MODULE = _module_path("advisory")
+
+# What a stdlib leaf may import: ``future`` for the postponed annotations every
+# module here is written under, ``typing`` for the annotations themselves, and
+# nothing else — no I/O, clock, store, socket, credential or provider client.
+_CONTRACT_ALLOWED_IMPORTS = frozenset({"__future__", "typing"})
+
+_MOVED_CONTRACT_SYMBOLS = (
+    "ADVISORY_SCHEMA_VERSION",
+    "MAX_REQUEST_BYTES",
+    "MAX_CONTEXT_ITEMS",
+    "MAX_OUTPUT_TOKENS",
+    "MAX_PROVIDER_FIELD_CHARS",
+    "MAX_PROVIDER_LIST_ITEMS",
+    "MAX_PLAN_SUGGESTIONS",
+    "TIMEOUT_SECONDS",
+    "valid_string_list",
+    "valid_plan_suggestions",
+    "validate_advisory_payload",
+    "normalize_payload",
+)
+
+# The moved symbols that must have exactly one implementation each.
+_MOVED_CONTRACT_FUNCTIONS = (
+    "valid_string_list",
+    "valid_plan_suggestions",
+    "validate_advisory_payload",
+    "normalize_payload",
+)
+
+# What stayed Twin-domain: the disclosure decision and the vocabulary it reports
+# through. A contract move must not have taken any of it.
+_ADVISORY_DOMAIN_FUNCTIONS = (
+    "is_secret_like",
+    "entity_anchors",
+    "slice_excerpt",
+    "build_context",
+    "advisory_token_for",
+    "build_provider_request",
+    "assemble_result",
+    "deterministic_authority",
+)
+
+# The only integrations leaves ``hrca.execution`` may reach: the neutral provider
+# protocol an adapter implements, and the fixed provider identity it speaks.
+_RETAINED_EXECUTION_TO_INTEGRATIONS = frozenset({"deepseek", "provider"})
+
+
+def _leaves_in(package):
+    """Return the module leaves belonging to ``package``."""
+    return {
+        leaf
+        for leaf, dotted in _MODULE_LEAVES.items()
+        if dotted == package or dotted.startswith(package + ".")
+    }
+
+
+def _reachable_leaves(start_leaf):
+    """Return every module leaf reachable from ``start_leaf`` by import.
+
+    A walk over leaves, which the discovery already makes unambiguous: a leaf
+    names exactly one implementation, which is the property ``_MODULE_LEAVES``
+    asserts when it is built.
+    """
+    seen, pending = set(), [start_leaf]
+    while pending:
+        leaf = pending.pop()
+        if leaf in seen:
+            continue
+        dotted = _MODULE_LEAVES.get(leaf)
+        if dotted is None:
+            continue
+        seen.add(leaf)
+        for imported in _imported_top_level_names(_MODULES[dotted][0]):
+            if imported in _MODULE_LEAVES and imported not in seen:
+                pending.append(imported)
+    return seen
+
+
+class ProviderPayloadContractSeamTests(unittest.TestCase):
+    """The payload contract is the seam's, and no integration reaches Twin."""
+
+    # -- the direction that had to close ---------------------------------
+
+    def test_no_integrations_module_imports_a_twin_module(self):
+        twin_leaves = _leaves_in("twin")
+        for _leaf, dotted, path in _iter_modules():
+            if not dotted.startswith("integrations"):
+                continue
+            with self.subTest(module=dotted):
+                imported = _imported_top_level_names(path)
+                self.assertEqual(set(), imported & twin_leaves,
+                                 sorted(imported & twin_leaves))
+
+    def test_no_integrations_module_imports_twin_by_any_spelling(self):
+        # ``from ..twin import x``, ``from .. import twin`` and an aliased
+        # ``from .. import twin as t`` all have to be caught.
+        for _leaf, dotted, path in _iter_modules():
+            if not dotted.startswith("integrations"):
+                continue
+            with self.subTest(module=dotted):
+                self.assertEqual(set(), _imported_from(path, "twin"))
+                self.assertEqual([], _imported_bindings(path, "twin"))
+
+    def test_the_transport_reaches_no_twin_module(self):
+        self.assertEqual(set(), _reachable_leaves("deepseek_transport") & _leaves_in("twin"))
+
+    def test_the_transport_reaches_the_contract_it_needs(self):
+        # The rule above is not vacuous: the transport really does reach the
+        # provider seam for its payload contract.
+        self.assertIn("advisory_contract", _reachable_leaves("deepseek_transport"))
+
+    # -- the contract module's own shape ---------------------------------
+
+    def test_the_contract_module_is_a_stdlib_leaf(self):
+        self.assertEqual(
+            _CONTRACT_ALLOWED_IMPORTS,
+            _imported_top_level_names(_PAYLOAD_CONTRACT_MODULE),
+        )
+
+    def test_the_contract_module_reaches_no_other_hrca_module(self):
+        imported = _imported_top_level_names(_PAYLOAD_CONTRACT_MODULE)
+        self.assertEqual(
+            set(), {name for name in imported if name in _MODULE_LEAVES}
+        )
+
+    def test_the_contract_module_owns_every_moved_symbol(self):
+        defined = _top_level_definitions(_PAYLOAD_CONTRACT_MODULE)
+        self.assertEqual([], sorted(set(_MOVED_CONTRACT_SYMBOLS) - defined))
+
+    def test_only_the_contract_module_implements_the_moved_functions(self):
+        for name in _MOVED_CONTRACT_FUNCTIONS:
+            definers = sorted(
+                dotted
+                for _leaf, dotted, path in _iter_modules()
+                if name in _top_level_definitions(path)
+            )
+            with self.subTest(name=name):
+                self.assertEqual(["integrations.advisory_contract"], definers)
+
+    # -- the domain module's side of the seam ----------------------------
+
+    def test_the_advisory_module_re_exports_the_whole_contract(self):
+        reexported = _imported_from(_ADVISORY_MODULE, "advisory_contract")
+        self.assertEqual([], sorted(set(_MOVED_CONTRACT_SYMBOLS) - reexported))
+
+    def test_the_advisory_module_defines_none_of_the_moved_functions(self):
+        defined = _top_level_definitions(_ADVISORY_MODULE)
+        self.assertEqual(
+            [], sorted(set(_MOVED_CONTRACT_FUNCTIONS) & defined)
+        )
+
+    def test_the_advisory_module_kept_its_domain(self):
+        defined = _top_level_definitions(_ADVISORY_MODULE)
+        self.assertEqual([], sorted(set(_ADVISORY_DOMAIN_FUNCTIONS) - defined))
+
+    def test_the_advisory_module_reuses_the_canonical_serializer(self):
+        # Its private ``dumps`` was a byte-identical copy of the canonical one;
+        # it is now the canonical one. This is the only serializer this change
+        # folded, and only because the seam's payload serialization ran through
+        # it — the wider consolidation is deliberately not begun.
+        self.assertNotIn("dumps", _top_level_definitions(_ADVISORY_MODULE))
+
+    # -- the retained boundary -------------------------------------------
+
+    def test_execution_to_integrations_is_the_retained_adapter_set(self):
+        # The package's own leaf is excluded: ``from ..integrations import x``
+        # reports the package node as well as the module, and a docstring-only
+        # ``__init__`` is not a capability. Every *module* reached is checked.
+        integrations_leaves = _leaves_in("integrations") - {"integrations"}
+        offenders = {}
+        touched = set()
+        for _leaf, dotted, path in _iter_modules():
+            if not dotted.startswith("execution"):
+                continue
+            reached = _imported_top_level_names(path) & integrations_leaves
+            touched |= reached
+            extra = reached - _RETAINED_EXECUTION_TO_INTEGRATIONS
+            if extra:
+                offenders[dotted] = sorted(extra)
+        self.assertEqual({}, offenders)
+        # And the rule is not vacuous: both retained edges are really there.
+        self.assertEqual(
+            set(_RETAINED_EXECUTION_TO_INTEGRATIONS), touched
+        )
+
+
 # -- discovery and import resolution (R0) --------------------------------
 #
 # The rules above are only as strong as the surface they iterate. These tests
