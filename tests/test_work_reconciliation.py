@@ -21,11 +21,20 @@ from __future__ import annotations
 
 import ast
 import copy
+import io
 import json
 import os
+import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 
+from hrca.authoring import validation, validation_plan, validation_policy
 from hrca.authoring import work_reconciliation
+from hrca.cli import work_reconciliation_cli as cli
+from hrca.core import identity
+from hrca.source import scanner
+from hrca import twin
+from hrca.twin import memory_twin_link, twin_store
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(_HERE, ".."))
@@ -480,5 +489,378 @@ class PurityTests(unittest.TestCase):
                     self.assertNotIn(fragment, name.lower(), name)
 
 
+# -- the offline operator adapter (P5-E2/B) -------------------------------
+#
+# The composition above is a pure leaf on purpose, which puts three
+# responsibilities in exactly one other place: reading stores, invoking the
+# *owners'* gates, and writing the record. These tests hold that adapter to
+# them, and hold the composition's two literal verdict tokens to the modules
+# that own them.
+
+_ACCEPTED_FINGERPRINT = "2" * 64
+# The corpus is published at generation 2, so the revision the change was
+# accepted against is a real earlier one. A generation of 0 is not a revision
+# this product ever produces, and the composition refuses it.
+_OBSERVED_GENERATION = 2
+_ACCEPTED_GENERATION = 1
+
+
+def _attempt_document(candidate_id, state="passed"):
+    attempt = {
+        "schema_version": validation.VALIDATION_ATTEMPT_SCHEMA_VERSION,
+        "generator": validation.VALIDATION_ATTEMPT_GENERATOR,
+        "state": state,
+        "approved": False,
+        "adopted": False,
+        "applied": False,
+        "ordinal": 1,
+        "candidate_id": candidate_id,
+    }
+    attempt["attempt_id"] = validation.attempt_id_for(attempt)
+    return attempt
+
+
+def _result_document(candidate_id, plan_id, state="passed"):
+    """A schema-valid validation result, assembled without running anything."""
+    result = {
+        "schema_version": validation.VALIDATION_RESULT_SCHEMA_VERSION,
+        "generator": validation.VALIDATION_RESULT_GENERATOR,
+        "result_id": "",
+        "plan_id": plan_id,
+        "candidate_id": candidate_id,
+        "policy_version": validation_policy.POLICY_VERSION,
+        "state": state,
+        "evidence_complete": state == validation.STATE_PASSED,
+        "checks": [{"check_id": "check:quotation_reference"}],
+        "attempts": [_attempt_document(candidate_id, state)],
+        "approved": False,
+        "adopted": False,
+        "applied": False,
+        "mutation_surface": validation._mutation_surface(),
+    }
+    result["result_id"] = validation.result_id_for(result)
+    return result
+
+
+def _plan_document(candidate_id, edit_id, intent_id, proposal_id, binding_fingerprint):
+    plan = {
+        "schema_version": validation_plan.VALIDATION_PLAN_SCHEMA_VERSION,
+        "generator": validation_plan.VALIDATION_PLAN_GENERATOR,
+        "plan_id": "",
+        "policy_version": validation_policy.POLICY_VERSION,
+        "candidate": {
+            "candidate_id": candidate_id,
+            "edit_id": edit_id,
+            "intent_delta_id": intent_id,
+            "proposal_id": proposal_id,
+            "binding_fingerprint": binding_fingerprint,
+        },
+        "checks": [],
+        "executable": False,
+        "applied": False,
+    }
+    plan["plan_id"] = validation_plan.plan_id_for(plan)
+    return plan
+
+
+class AdapterCase(unittest.TestCase):
+    """A scanned corpus, its authoritative Twin store, and the three documents."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = self.tmp.name
+        self.root = os.path.join(self.base, "corpus")
+        os.makedirs(os.path.join(self.root, "pkg"))
+        with open(os.path.join(self.root, "pkg", "mod.py"), "w", encoding="utf-8") as h:
+            h.write("def f():\n    return 1\n")
+        self.workspace_id, self.store = self._publish()
+        self.entity_id, self.entity_kind = self._an_artifact()
+        self.candidate_id = "candidate:" + "a" * 64
+        self.plan = _plan_document(
+            self.candidate_id, "edit:" + "b" * 64, "intent:" + "c" * 64,
+            "impact:" + "d" * 64, "bind:" + "e" * 64,
+        )
+        self.result = _result_document(self.candidate_id, self.plan["plan_id"])
+        self.link = self._link(self.store["workspace_revision"]["scan_generation"])
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _publish(self):
+        document = scanner.scan_directory(self.root)
+        fingerprints = {}
+        for record in document.get("files", []):
+            path = record.get("path")
+            if isinstance(path, str) and path.endswith((".py", ".pyi")):
+                with open(os.path.join(self.root, path), "rb") as handle:
+                    fingerprints[path] = twin.fingerprint_bytes(handle.read())
+        workspace_id = identity.workspace_id_for(self.root)
+        store = twin.build_store(
+            document, fingerprints, workspace_id, _OBSERVED_GENERATION, "T"
+        )
+        self.assertIsNone(twin_store.save(self.base, workspace_id, store))
+        return workspace_id, store
+
+    def _an_artifact(self):
+        for artifact in self.store["artifacts"]:
+            if artifact.get("locator"):
+                return artifact["id"], artifact["kind"]
+        raise AssertionError("the corpus produced no symbol artifact")
+
+    def _link(self, recorded_revision):
+        return {
+            "link_schema_version": "1.0.0",
+            "workspace_id": self.workspace_id,
+            "entity_id": self.entity_id,
+            "entity_kind": self.entity_kind,
+            "memory_run_id": "run:smoke:s-1:run",
+            "memory_record_id": "evidence:run:smoke:s-1:run:" + "f" * 32,
+            "recorded_revision": recorded_revision,
+        }
+
+    def _write(self, name, document):
+        path = os.path.join(self.base, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(document, handle)
+        return path
+
+    def _argv(self, declared="applied", accepted=None, result=None, link=None, **extra):
+        accepted = accepted or (_ACCEPTED_GENERATION, _ACCEPTED_FINGERPRINT)
+        argv = {
+            "--result": self._write("result.json", result or self.result),
+            "--plan": self._write("plan.json", self.plan),
+            "--link": self._write("link.json", link or self.link),
+            "--twin-store": self.base,
+            "--workspace-id": self.workspace_id,
+            "--accepted-generation": str(accepted[0]),
+            "--accepted-fingerprint": accepted[1],
+            "--run-id": "run:smoke:s-1:run",
+            "--record-id": self.link["memory_record_id"],
+            "--actor": "heron",
+            "--decided-at": "2026-01-01T00:00:00Z",
+            "--declared": declared,
+            "--base": os.path.join(self.base, "out"),
+        }
+        argv.update(extra)
+        return argv
+
+    def _run(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main([item for pair in sorted(argv.items())
+                             for item in pair])
+        return code, out.getvalue(), err.getvalue()
+
+    def _records(self):
+        directory = os.path.join(self.base, "out", "reconciliations")
+        if not os.path.isdir(directory):
+            return []
+        return sorted(os.listdir(directory))
+
+
+class AdapterTests(AdapterCase):
+    """The adapter reads stores, invokes the owners and writes one record."""
+
+    def test_the_supplied_documents_are_sound_before_anything_is_recorded(self):
+        # If these were not sound the adapter's refusals would be vacuous.
+        self.assertIsNone(validation.validate_result(self.result))
+        self.assertIsNone(validation_plan.migrate_plan(self.plan)[1])
+        self.assertEqual(
+            memory_twin_link.FRESHNESS_CURRENT,
+            memory_twin_link.resolve_freshness(
+                self.link, self.store, self.workspace_id
+            )["freshness"],
+        )
+
+    def test_a_complete_change_is_recorded_and_exits_zero(self):
+        code, out, err = self._run(self._argv())
+        self.assertEqual(cli.EXIT_OK, code, err)
+        record = json.loads(out)
+        self.assertEqual(work_reconciliation.STATE_COMPLETE, record["state"])
+        self.assertIs(True, record["complete"])
+        self.assertIsNone(work_reconciliation.validate_reconciliation(record))
+        self.assertEqual(
+            [record["reconcile_id"].split(":", 1)[1] + ".json"], self._records()
+        )
+
+    def test_the_written_record_is_the_printed_one(self):
+        code, out, _ = self._run(self._argv())
+        self.assertEqual(cli.EXIT_OK, code)
+        with open(
+            os.path.join(self.base, "out", "reconciliations", self._records()[0]),
+            encoding="utf-8",
+        ) as handle:
+            written = json.load(handle)
+        self.assertEqual(json.loads(out), written)
+
+    def test_the_record_binds_the_revision_the_store_actually_holds(self):
+        code, out, _ = self._run(self._argv())
+        self.assertEqual(cli.EXIT_OK, code)
+        record = json.loads(out)
+        revision = self.store["workspace_revision"]
+        self.assertEqual(
+            {
+                "workspace_id": revision["workspace_id"],
+                "scan_generation": revision["scan_generation"],
+                "baseline_fingerprint": revision["baseline_fingerprint"],
+            },
+            record["observed"],
+        )
+        self.assertEqual(self.plan["candidate"]["candidate_id"],
+                         record["acceptance"]["candidate_id"])
+
+    def test_a_second_identical_run_writes_no_second_record(self):
+        first = self._run(self._argv())
+        second = self._run(self._argv())
+        self.assertEqual(cli.EXIT_OK, first[0])
+        self.assertEqual(cli.EXIT_OK, second[0])
+        self.assertEqual(first[1], second[1])
+        self.assertEqual(1, len(self._records()))
+
+    def test_declaring_no_application_with_an_unmoved_baseline_completes(self):
+        code, out, err = self._run(
+            self._argv(
+                declared="not_applied",
+                accepted=(self.store["workspace_revision"]["scan_generation"],
+                          self.store["workspace_revision"]["baseline_fingerprint"]),
+            )
+        )
+        self.assertEqual(cli.EXIT_OK, code, err)
+        self.assertEqual(work_reconciliation.STATE_COMPLETE, json.loads(out)["state"])
+
+    def test_declaring_application_beside_an_unmoved_baseline_is_a_non_success(self):
+        code, out, err = self._run(
+            self._argv(
+                declared="applied",
+                accepted=(self.store["workspace_revision"]["scan_generation"],
+                          self.store["workspace_revision"]["baseline_fingerprint"]),
+            )
+        )
+        self.assertEqual(cli.EXIT_NOT_COMPLETE, code, err)
+        record = json.loads(out)
+        self.assertEqual(work_reconciliation.STATE_APPLICATION_UNCONFIRMED, record["state"])
+        self.assertIs(False, record["complete"])
+
+    def test_a_stale_link_is_a_non_success_the_owner_reported(self):
+        generation = self.store["workspace_revision"]["scan_generation"]
+        stale = self._link(generation - 1)
+        self.assertEqual(
+            memory_twin_link.FRESHNESS_STALE,
+            memory_twin_link.resolve_freshness(
+                stale, self.store, self.workspace_id
+            )["freshness"],
+        )
+        code, out, err = self._run(self._argv(link=stale))
+        self.assertEqual(cli.EXIT_NOT_COMPLETE, code, err)
+        self.assertEqual(work_reconciliation.STATE_FRESHNESS_LOST, json.loads(out)["state"])
+
+    def test_a_link_for_another_workspace_is_a_non_success(self):
+        other = dict(self.link, workspace_id="ws:" + "9" * 64)
+        code, out, err = self._run(self._argv(link=other))
+        self.assertEqual(cli.EXIT_NOT_COMPLETE, code, err)
+        self.assertEqual(work_reconciliation.STATE_FRESHNESS_LOST, json.loads(out)["state"])
+
+
+class AdapterRefusalTests(AdapterCase):
+    """An unsound or absent input is refused, and nothing is written."""
+
+    def _refused(self, argv):
+        code, out, err = self._run(argv)
+        self.assertEqual(cli.EXIT_REFUSED, code)
+        self.assertEqual("", out)
+        self.assertTrue(err.startswith("refused: "), err)
+        self.assertEqual([], self._records())
+        return err.strip()
+
+    def test_an_unsound_result_document_is_refused(self):
+        broken = dict(self.result, evidence_complete=False)
+        broken["result_id"] = validation.result_id_for(broken)
+        self.assertIsNotNone(validation.validate_result(broken))
+        self._refused(self._argv(result=broken))
+
+    def test_a_result_that_never_passed_is_bound_rather_than_refused(self):
+        # A sound result whose state is not a pass is *not* a refusal: the
+        # record must be produced and must say why it is not complete.
+        failed = _result_document(self.candidate_id, self.plan["plan_id"], "failed")
+        self.assertIsNone(validation.validate_result(failed))
+        code, out, err = self._run(self._argv(result=failed))
+        self.assertEqual(cli.EXIT_NOT_COMPLETE, code, err)
+        self.assertEqual(
+            work_reconciliation.STATE_VALIDATION_NOT_ACCEPTED,
+            json.loads(out)["state"],
+        )
+
+    def test_a_plan_that_is_not_a_mapping_is_refused(self):
+        # Written under its own name: `_argv` writes the sound plan, so an
+        # override that reused that path would be clobbered before the run.
+        argv = self._argv()
+        argv["--plan"] = self._write("bad-plan.json", [1, 2, 3])
+        self._refused(argv)
+
+    def test_a_missing_twin_store_is_refused(self):
+        argv = self._argv()
+        argv["--twin-store"] = os.path.join(self.base, "empty")
+        self._refused(argv)
+
+    def test_no_acceptance_is_ever_inferred(self):
+        argv = self._argv()
+        argv["--actor"] = ""
+        self._refused(argv)
+
+    def test_a_result_id_that_does_not_match_its_content_is_refused(self):
+        tampered = dict(self.result, result_id="result:" + "0" * 64)
+        self._refused(self._argv(result=tampered))
+
+    def test_the_adapter_writes_nothing_outside_its_base(self):
+        # The documents are written by `_argv` before the snapshot is taken, so
+        # the only thing the run can add is its own output directory. The store
+        # path comes from the store's own public constructor rather than a
+        # guessed layout, and the corpus is read back byte for byte.
+        argv = self._argv()
+        store_path = twin_store.workspace_store_path(self.base, self.workspace_id)
+        with open(store_path, "rb") as handle:
+            before_store = handle.read()
+        before_corpus = sorted(os.listdir(self.root))
+        before_base = set(os.listdir(self.base))
+        code, _, _ = self._run(argv)
+        self.assertEqual(cli.EXIT_OK, code)
+        self.assertEqual(before_corpus, sorted(os.listdir(self.root)))
+        with open(store_path, "rb") as handle:
+            self.assertEqual(before_store, handle.read())
+        self.assertEqual({"out"}, set(os.listdir(self.base)) - before_base)
+
+
+class OwnerVocabularyPinTests(unittest.TestCase):
+    """The composition's two literal tokens are held to the modules that own them.
+
+    It must not import those modules — that is what keeps it a leaf — so the two
+    verdict tokens it compares against are literals here. Pinning them to their
+    owners turns a silent duplication into a guarded one: a re-pin that moved
+    either value fails here rather than quietly changing every record's answer.
+    """
+
+    def test_the_passing_validation_token_is_the_validations_own(self):
+        self.assertEqual(validation.STATE_PASSED, work_reconciliation.STATE_PASSED)
+
+    def test_the_current_freshness_token_is_the_links_own(self):
+        self.assertEqual(
+            memory_twin_link.FRESHNESS_CURRENT, work_reconciliation.FRESHNESS_CURRENT
+        )
+
+    def test_the_current_freshness_token_is_not_one_of_the_failure_verdicts(self):
+        # A pin that only compared `current` to itself would not notice the
+        # token drifting into the failure set.
+        self.assertNotIn(
+            work_reconciliation.FRESHNESS_CURRENT,
+            {
+                memory_twin_link.FRESHNESS_STALE,
+                memory_twin_link.FRESHNESS_HISTORICAL,
+                memory_twin_link.FRESHNESS_MISSING,
+                memory_twin_link.FRESHNESS_UNSUPPORTED,
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
+
