@@ -6,7 +6,22 @@ execution at scan time.
 
 ## Layout
 
-- `src/hrca/` — the scanner package (`scanner.py` is the core; `cli.py` the CLI).
+- `src/hrca/` — the package, organised into **responsibility packages**:
+  `core/` (the contract, identity, storage, visual tokens and workspace policy),
+  `source/` (the deterministic scanner), `authoring/` (the P5.x product surface:
+  intent, impact, candidate edit and diff, the document and version authority,
+  validation, and the controlled-change reconciliation record), `execution/` (the
+  accepted runner and its packages), `integrations/` (the provider and credential
+  seam), `memory/`, `twin/`, `boundary/`, `cli/` and `ui/`. A few modules stay at
+  the package root: `source_evidence.py`, `__main__.py`, and the compatibility
+  shims that keep the documented `python -m hrca.X` entrypoints and the console
+  scripts resolving after the reorganisation. **A module name mentioned below is
+  a module name, never a path relative to `src/hrca/`: it is a leaf inside one of
+  those packages, a package's own front door, or one of those root modules.** The
+  minimum agent working
+  surface is `source/` plus `core/identity`: the scan entrypoint `hrca-scan`
+  reaches exactly one module, and every other capability is reached only through
+  the backend host, the desktop client, or an offline operator CLI.
   The M4.1 Developer Memory contract is `memory.py` (pure domain),
   `memory_store.py` (sole storage owner) and `memory_cli.py` (offline replay).
   The M4.2 Claude Code port is `claude_code_hooks.py` (adapter: the only module
