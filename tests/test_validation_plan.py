@@ -819,6 +819,263 @@ class PureValidationTests(unittest.TestCase):
                     validation.STATE_TIMED_OUT, table[app_package.STATE_TIMEOUT]
                 )
 
+    # -- the result contract: passing evidence is not approval -----------
+    #
+    # ``validate_result`` is where the four claims that keep a passing record
+    # from being read as an approval are enforced: ``evidence_complete`` is true
+    # only when every check passed, every result pins the three flags false, the
+    # whole mutation surface is declared false, and every embedded attempt is
+    # itself valid. Until now all of that was asserted only behind the container
+    # gate.
+
+    def _result(self, state=validation.STATE_PASSED, attempts=None, **overrides):
+        if attempts is None:
+            attempts = [self._attempt()]
+        result = {
+            "schema_version": validation.VALIDATION_RESULT_SCHEMA_VERSION,
+            "generator": validation.VALIDATION_RESULT_GENERATOR,
+            "state": state,
+            "approved": False,
+            "adopted": False,
+            "applied": False,
+            "evidence_complete": state == validation.STATE_PASSED,
+            "mutation_surface": validation._mutation_surface(),
+            "checks": [
+                {"check_id": "check:%d" % index} for index in range(len(attempts))
+            ],
+            "attempts": attempts,
+        }
+        result.update(overrides)
+        result["result_id"] = validation.result_id_for(result)
+        return result
+
+    def test_a_well_formed_result_validates(self):
+        self.assertIsNone(validation.validate_result(self._result()))
+        self.assertIsNone(
+            validation.validate_result(self._result(state=validation.STATE_FAILED))
+        )
+
+    def test_a_non_mapping_result_is_refused(self):
+        for value in ("x", 5, [], None):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    "result is not a mapping", validation.validate_result(value)
+                )
+
+    def test_a_wrong_result_schema_or_generator_is_refused(self):
+        cases = (
+            ({"schema_version": "9.9.9"}, "unsupported schema_version"),
+            ({"generator": "someone-else"}, "unknown result generator"),
+        )
+        for overrides, reason in cases:
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    reason, validation.validate_result(self._result(**overrides))
+                )
+
+    def test_an_unknown_result_state_is_refused(self):
+        self.assertEqual(
+            "unknown result state",
+            validation.validate_result(self._result(state="probably_fine")),
+        )
+
+    def test_a_result_that_approves_adopts_or_applies_is_refused(self):
+        # The claim in one line: a validation result is evidence, never an
+        # approval, an adoption or an application of anything.
+        for field in ("approved", "adopted", "applied"):
+            with self.subTest(field=field):
+                self.assertEqual(
+                    "result must not approve, adopt or apply",
+                    validation.validate_result(self._result(**{field: True})),
+                )
+
+    def test_evidence_complete_must_match_the_state_in_both_directions(self):
+        # A passing result that denies it has complete evidence is refused...
+        self.assertEqual(
+            "evidence_complete does not match the overall state",
+            validation.validate_result(
+                self._result(state=validation.STATE_PASSED, evidence_complete=False)
+            ),
+        )
+        # ...and so is a non-passing result that claims it.
+        for state in (
+            validation.STATE_FAILED,
+            validation.STATE_TIMED_OUT,
+            validation.STATE_CANCELLED,
+            validation.STATE_REFUSED,
+            validation.STATE_UNAVAILABLE,
+            validation.STATE_UNKNOWN,
+        ):
+            with self.subTest(state=state):
+                self.assertEqual(
+                    "evidence_complete does not match the overall state",
+                    validation.validate_result(
+                        self._result(state=state, evidence_complete=True)
+                    ),
+                )
+
+    def test_a_missing_or_malformed_mutation_surface_is_refused(self):
+        for surface in (None, "x", [], 5):
+            with self.subTest(surface=surface):
+                self.assertEqual(
+                    "missing or malformed mutation_surface",
+                    validation.validate_result(
+                        self._result(mutation_surface=surface)
+                    ),
+                )
+
+    def test_a_mutation_surface_that_omits_a_boundary_is_refused(self):
+        surface = validation._mutation_surface()
+        surface.pop(sorted(surface)[0])
+        self.assertEqual(
+            "mutation_surface does not declare every named boundary",
+            validation.validate_result(self._result(mutation_surface=surface)),
+        )
+
+    def test_a_mutation_surface_that_declares_anything_true_is_refused(self):
+        # Every one of the named boundaries, one at a time: a result may not
+        # claim any of them happened.
+        for key in sorted(validation._mutation_surface()):
+            surface = validation._mutation_surface()
+            surface[key] = True
+            with self.subTest(key=key):
+                self.assertEqual(
+                    "mutation_surface declares a non-false %s" % key,
+                    validation.validate_result(self._result(mutation_surface=surface)),
+                )
+
+    def test_a_result_without_checks_is_refused(self):
+        for checks in ([], "x", None):
+            with self.subTest(checks=checks):
+                self.assertEqual(
+                    "result carries no checks",
+                    validation.validate_result(
+                        self._result(checks=checks, attempts=[])
+                    ),
+                )
+
+    def test_a_result_must_carry_one_attempt_per_check(self):
+        cases = ((2, [self._attempt()]), (1, []), (1, "x"))
+        for check_count, attempts in cases:
+            with self.subTest(checks=check_count, attempts=len(attempts) if isinstance(attempts, list) else attempts):
+                self.assertEqual(
+                    "result does not carry one attempt per check",
+                    validation.validate_result(
+                        self._result(
+                            checks=[{"check_id": "c%d" % i} for i in range(check_count)],
+                            attempts=attempts,
+                        )
+                    ),
+                )
+
+    def test_a_result_carrying_an_invalid_attempt_is_refused(self):
+        # The embedded attempt is re-validated, so a result cannot smuggle an
+        # attempt past its own gate.
+        self.assertEqual(
+            "a result attempt is not valid",
+            validation.validate_result(
+                self._result(attempts=[self._attempt(ordinal=0)])
+            ),
+        )
+
+    def test_a_result_with_a_missing_or_malformed_id_is_refused(self):
+        for identity in (None, "", "no-prefix"):
+            with self.subTest(identity=identity):
+                result = self._result()
+                result["result_id"] = identity
+                self.assertEqual(
+                    "missing or malformed result_id",
+                    validation.validate_result(result),
+                )
+
+    def test_a_result_id_that_does_not_match_the_content_is_refused(self):
+        # The tamper has to change the content without tripping an earlier
+        # rule, or this would be asserting the wrong refusal: a check id is
+        # carried into the identity but validated by nothing else.
+        result = self._result()
+        result["checks"][0]["check_id"] = "check:tampered"
+        self.assertEqual(
+            "result_id does not match the result content",
+            validation.validate_result(result),
+        )
+
+    def test_the_accepted_manifest_pins_the_result_and_attempt_versions(self):
+        corpus = _corpus()
+        self.assertEqual(
+            corpus["result_schema_version"], validation.VALIDATION_RESULT_SCHEMA_VERSION
+        )
+        self.assertEqual(
+            corpus["attempt_schema_version"], validation.VALIDATION_ATTEMPT_SCHEMA_VERSION
+        )
+
+    # -- stream facts ----------------------------------------------------
+
+    def test_stream_facts_hashes_and_counts_bytes(self):
+        facts = validation._stream_facts(b"hello")
+        self.assertEqual(5, facts["bytes"])
+        self.assertEqual(len(facts["sha256"]), 64)
+        # The same bytes are the same fact, and different bytes are not.
+        self.assertEqual(facts, validation._stream_facts(bytearray(b"hello")))
+        self.assertNotEqual(facts, validation._stream_facts(b"hello!"))
+
+    def test_stream_facts_treats_an_absent_stream_as_absent_not_empty(self):
+        # The distinction the evidence record depends on: a stream that was not
+        # captured is not a stream that was captured and happened to be empty.
+        for value in (None, "not bytes", 5, ["x"]):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    {"sha256": None, "bytes": None},
+                    validation._stream_facts(value),
+                )
+        # The SHA-256 of the empty string, stated here rather than computed, so
+        # the expectation is not read back out of the implementation.
+        self.assertEqual(
+            {
+                "sha256": "e3b0c44298fc1c149afbf4c8996fb924"
+                          "27ae41e4649b934ca495991b7852b855",
+                "bytes": 0,
+            },
+            validation._stream_facts(b""),
+        )
+
+    # -- the mutation surface --------------------------------------------
+
+    def test_the_mutation_surface_declares_every_boundary_false(self):
+        surface = validation._mutation_surface()
+        self.assertEqual(set(validation._MUTATION_SURFACE_KEYS), set(surface))
+        self.assertEqual(len(validation._MUTATION_SURFACE_KEYS), len(surface))
+        for key, value in sorted(surface.items()):
+            with self.subTest(key=key):
+                self.assertIs(False, value)
+
+    def test_the_mutation_surface_names_the_boundaries_the_contract_names(self):
+        # Named individually rather than echoed from the tuple, so a boundary
+        # silently disappearing from the declared surface fails here.
+        surface = validation._mutation_surface()
+        for boundary in (
+            "accepted_source",
+            "candidate",
+            "git_index",
+            "git_ref",
+            "branch",
+            "commit",
+            "worktree",
+            "twin_state",
+            "memory",
+            "approval",
+            "adoption",
+            "application",
+            "provider_request",
+            "credential",
+            "network",
+            "remote",
+            "protocol_action",
+            "ui",
+        ):
+            with self.subTest(boundary=boundary):
+                self.assertIn(boundary, surface)
+                self.assertIs(False, surface[boundary])
+
 
 if __name__ == "__main__":
     unittest.main()
