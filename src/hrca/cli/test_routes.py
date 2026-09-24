@@ -182,6 +182,7 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
     ROUTE_CORE: (
         # structural invariants
         "test_architecture",
+        "test_app_entry",
         "test_provider_seam",
         "test_test_routes",
         # shared identity primitives (B1)
@@ -288,6 +289,7 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
     ROUTE_SETUP: tuple(setup_verification.ALLOWED_MODULES),
     ROUTE_FULL: (
         "test_advisory",
+        "test_app_entry",
         "test_app_package",
         "test_architecture",
         "test_boundary",
