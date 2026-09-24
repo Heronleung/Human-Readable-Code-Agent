@@ -1,0 +1,410 @@
+{
+  "corpus": "reconciliation",
+  "notes": [
+    "Every expectation in this file was written by hand from the P5-E2 acceptance criteria, not produced by running the builder. A case says what the controlled-change record must answer; the test then holds the implementation to it.",
+    "The base bundle below is the canonical success shape: one Memory run and record, one P5.x identity chain through intent, proposal, edit, candidate, plan and policy version, one passing evidence-complete validation, one explicit acceptance, one declared application outcome, the accepted revision, the revision observed after the rescan, and one current Memory link freshness verdict.",
+    "The base bundle's identities are invented but shaped: each carries the prefix its owner actually emits (run:, evidence:, intent:, impact:, edit:, candidate:, bind:, plan:, result:, ws:) and the two digests are 64 hex characters, so a case that changes one is changing an identity of the right shape rather than an arbitrary string.",
+    "A case names one or two mutations: set applies a dotted path, drop removes a whole group. Nothing else about the base changes, so a case states exactly what it is about.",
+    "The refusal expectations are written out literally, including the code-owned name the reason interpolates. An expectation that repeats the implementation's own constants would prove nothing.",
+    "The final two cases differ only in which way the declaration and the observation disagree, because the record must report a contradiction in either direction and must not prefer the operator's word."
+  ],
+  "base": {
+    "work_package": {
+      "run_id": "run:smoke:s-1:run",
+      "record_id": "evidence:run:smoke:s-1:run:a84b8fb2bf924fdf855936a224bfc833"
+    },
+    "change": {
+      "intent_delta_id": "intent:5f1c0d2e3a4b5c6d7e8f9012abcdef34567890abcdef1234567890abcdef1234",
+      "proposal_id": "impact:0a1b2c3d4e5f60718293a4b5c6d7e8f9012abcdef34567890abcdef1234567",
+      "edit_id": "edit:1122334455667788990011223344556677889900112233445566778899001122",
+      "candidate_id": "candidate:aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+      "binding_fingerprint": "bind:9988776655443322110099887766554433221100998877665544332211009988",
+      "plan_id": "plan:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "policy_version": "1.0.0"
+    },
+    "validation": {
+      "result_id": "result:feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface",
+      "plan_id": "plan:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+      "candidate_id": "candidate:aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+      "policy_version": "1.0.0",
+      "state": "passed",
+      "evidence_complete": true
+    },
+    "acceptance": {
+      "actor": "heron",
+      "decision": "accepted",
+      "decided_at": "2026-01-01T00:00:00Z",
+      "candidate_id": "candidate:aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+    },
+    "application": {
+      "declared": "applied"
+    },
+    "accepted_revision": {
+      "workspace_id": "ws:1111111111111111111111111111111111111111111111111111111111111111",
+      "scan_generation": 1,
+      "baseline_fingerprint": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    "observed": {
+      "workspace_id": "ws:1111111111111111111111111111111111111111111111111111111111111111",
+      "scan_generation": 2,
+      "baseline_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "freshness": {
+      "verdict": "current",
+      "entity_id": "artifact:method:app.service.Service.handle"
+    }
+  },
+  "cases": [
+    {
+      "case": "complete_applied",
+      "expect": {
+        "result": "record",
+        "state": "complete",
+        "complete": true,
+        "reason_code": "acceptance_and_observed_baseline_agree"
+      }
+    },
+    {
+      "case": "complete_not_applied",
+      "set": {
+        "application.declared": "not_applied",
+        "observed.baseline_fingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+        "observed.scan_generation": 1
+      },
+      "expect": {
+        "result": "record",
+        "state": "complete",
+        "complete": true,
+        "reason_code": "acceptance_and_observed_baseline_agree"
+      }
+    },
+    {
+      "case": "validation_refused",
+      "set": {"validation.state": "refused"},
+      "expect": {
+        "result": "record",
+        "state": "validation_not_accepted",
+        "complete": false,
+        "reason_code": "validation_is_not_a_passing_complete_result"
+      }
+    },
+    {
+      "case": "validation_unknown",
+      "set": {"validation.state": "unknown"},
+      "expect": {
+        "result": "record",
+        "state": "validation_not_accepted",
+        "complete": false,
+        "reason_code": "validation_is_not_a_passing_complete_result"
+      }
+    },
+    {
+      "case": "validation_failed",
+      "set": {"validation.state": "failed"},
+      "expect": {
+        "result": "record",
+        "state": "validation_not_accepted",
+        "complete": false,
+        "reason_code": "validation_is_not_a_passing_complete_result"
+      }
+    },
+    {
+      "case": "validation_timed_out",
+      "set": {"validation.state": "timed_out"},
+      "expect": {
+        "result": "record",
+        "state": "validation_not_accepted",
+        "complete": false,
+        "reason_code": "validation_is_not_a_passing_complete_result"
+      }
+    },
+    {
+      "case": "validation_evidence_incomplete",
+      "set": {"validation.evidence_complete": false},
+      "expect": {
+        "result": "record",
+        "state": "validation_not_accepted",
+        "complete": false,
+        "reason_code": "validation_is_not_a_passing_complete_result"
+      }
+    },
+    {
+      "case": "validation_state_not_a_string",
+      "set": {"validation.state": 7},
+      "expect": {
+        "result": "refused",
+        "error": "an identity is missing or malformed: validation.state"
+      }
+    },
+    {
+      "case": "acceptance_absent",
+      "drop": ["acceptance"],
+      "expect": {
+        "result": "record",
+        "state": "awaiting_acceptance",
+        "complete": false,
+        "reason_code": "no_explicit_acceptance_has_been_recorded"
+      }
+    },
+    {
+      "case": "acceptance_null",
+      "set": {"acceptance": null},
+      "expect": {
+        "result": "record",
+        "state": "awaiting_acceptance",
+        "complete": false,
+        "reason_code": "no_explicit_acceptance_has_been_recorded"
+      }
+    },
+    {
+      "case": "acceptance_rejected",
+      "set": {"acceptance.decision": "rejected"},
+      "expect": {
+        "result": "record",
+        "state": "acceptance_refused",
+        "complete": false,
+        "reason_code": "the_recorded_decision_is_not_an_acceptance"
+      }
+    },
+    {
+      "case": "freshness_stale",
+      "set": {"freshness.verdict": "stale"},
+      "expect": {
+        "result": "record",
+        "state": "freshness_lost",
+        "complete": false,
+        "reason_code": "the_memory_link_no_longer_describes_current_authority"
+      }
+    },
+    {
+      "case": "freshness_missing",
+      "set": {"freshness.verdict": "missing"},
+      "expect": {
+        "result": "record",
+        "state": "freshness_lost",
+        "complete": false,
+        "reason_code": "the_memory_link_no_longer_describes_current_authority"
+      }
+    },
+    {
+      "case": "freshness_historical",
+      "set": {"freshness.verdict": "historical"},
+      "expect": {
+        "result": "record",
+        "state": "freshness_lost",
+        "complete": false,
+        "reason_code": "the_memory_link_no_longer_describes_current_authority"
+      }
+    },
+    {
+      "case": "freshness_unsupported",
+      "set": {"freshness.verdict": "unsupported"},
+      "expect": {
+        "result": "record",
+        "state": "freshness_lost",
+        "complete": false,
+        "reason_code": "the_memory_link_no_longer_describes_current_authority"
+      }
+    },
+    {
+      "case": "crossed_validation_candidate",
+      "set": {
+        "validation.candidate_id": "candidate:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expect": {
+        "result": "record",
+        "state": "identity_conflict",
+        "complete": false,
+        "reason_code": "supplied_identities_do_not_agree"
+      }
+    },
+    {
+      "case": "crossed_plan_id",
+      "set": {
+        "validation.plan_id": "plan:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expect": {
+        "result": "record",
+        "state": "identity_conflict",
+        "complete": false,
+        "reason_code": "supplied_identities_do_not_agree"
+      }
+    },
+    {
+      "case": "crossed_policy_version",
+      "set": {"validation.policy_version": "9.9.9"},
+      "expect": {
+        "result": "record",
+        "state": "identity_conflict",
+        "complete": false,
+        "reason_code": "supplied_identities_do_not_agree"
+      }
+    },
+    {
+      "case": "acceptance_names_another_candidate",
+      "set": {
+        "acceptance.candidate_id": "candidate:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expect": {
+        "result": "record",
+        "state": "identity_conflict",
+        "complete": false,
+        "reason_code": "supplied_identities_do_not_agree"
+      }
+    },
+    {
+      "case": "observation_of_another_workspace",
+      "set": {
+        "observed.workspace_id": "ws:9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "expect": {
+        "result": "record",
+        "state": "identity_conflict",
+        "complete": false,
+        "reason_code": "supplied_identities_do_not_agree"
+      }
+    },
+    {
+      "case": "declared_applied_baseline_unmoved",
+      "set": {
+        "observed.baseline_fingerprint": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "expect": {
+        "result": "record",
+        "state": "application_unconfirmed",
+        "complete": false,
+        "reason_code": "declared_outcome_contradicts_the_observed_baseline"
+      }
+    },
+    {
+      "case": "declared_not_applied_baseline_moved",
+      "set": {"application.declared": "not_applied"},
+      "expect": {
+        "result": "record",
+        "state": "application_unconfirmed",
+        "complete": false,
+        "reason_code": "declared_outcome_contradicts_the_observed_baseline"
+      }
+    },
+    {
+      "case": "bundle_not_a_mapping",
+      "literal": "not a mapping",
+      "expect": {
+        "result": "refused",
+        "error": "reconciliation evidence is not a mapping"
+      }
+    },
+    {
+      "case": "required_group_missing",
+      "drop": ["change"],
+      "expect": {
+        "result": "refused",
+        "error": "a required evidence group is missing or malformed: change"
+      }
+    },
+    {
+      "case": "required_group_malformed",
+      "set": {"freshness": "current"},
+      "expect": {
+        "result": "refused",
+        "error": "a required evidence group is missing or malformed: freshness"
+      }
+    },
+    {
+      "case": "identity_without_its_prefix",
+      "set": {"change.edit_id": "not-an-edit"},
+      "expect": {
+        "result": "refused",
+        "error": "an identity is missing or malformed: change.edit_id"
+      }
+    },
+    {
+      "case": "run_id_without_its_prefix",
+      "set": {"work_package.run_id": "smoke:s-1:run"},
+      "expect": {
+        "result": "refused",
+        "error": "an identity is missing or malformed: work_package.run_id"
+      }
+    },
+    {
+      "case": "baseline_fingerprint_truncated",
+      "set": {"observed.baseline_fingerprint": "3333"},
+      "expect": {
+        "result": "refused",
+        "error": "an identity is missing or malformed: observed.baseline_fingerprint"
+      }
+    },
+    {
+      "case": "baseline_fingerprint_not_hex",
+      "set": {"accepted_revision.baseline_fingerprint": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"},
+      "expect": {
+        "result": "refused",
+        "error": "an identity is missing or malformed: accepted_revision.baseline_fingerprint"
+      }
+    },
+    {
+      "case": "workspace_id_truncated",
+      "set": {"observed.workspace_id": "ws:1111"},
+      "expect": {
+        "result": "refused",
+        "error": "an identity is missing or malformed: observed.workspace_id"
+      }
+    },
+    {
+      "case": "scan_generation_not_an_integer",
+      "set": {"observed.scan_generation": "2"},
+      "expect": {
+        "result": "refused",
+        "error": "an identity is missing or malformed: observed.scan_generation"
+      }
+    },
+    {
+      "case": "scan_generation_below_one",
+      "set": {"accepted_revision.scan_generation": 0},
+      "expect": {
+        "result": "refused",
+        "error": "an identity is missing or malformed: accepted_revision.scan_generation"
+      }
+    },
+    {
+      "case": "acceptance_not_a_mapping",
+      "set": {"acceptance": "accepted"},
+      "expect": {
+        "result": "refused",
+        "error": "the acceptance is not a mapping"
+      }
+    },
+    {
+      "case": "acceptance_without_an_actor",
+      "set": {"acceptance.actor": ""},
+      "expect": {
+        "result": "refused",
+        "error": "an identity is missing or malformed: acceptance.actor"
+      }
+    },
+    {
+      "case": "acceptance_candidate_without_its_prefix",
+      "set": {"acceptance.candidate_id": "d"},
+      "expect": {
+        "result": "refused",
+        "error": "an identity is missing or malformed: acceptance.candidate_id"
+      }
+    },
+    {
+      "case": "unknown_decision",
+      "set": {"acceptance.decision": "maybe"},
+      "expect": {
+        "result": "refused",
+        "error": "the acceptance decision is not recognised"
+      }
+    },
+    {
+      "case": "unknown_declared_outcome",
+      "set": {"application.declared": "probably"},
+      "expect": {
+        "result": "refused",
+        "error": "the declared application outcome is not recognised"
+      }
+    }
+  ]
+}

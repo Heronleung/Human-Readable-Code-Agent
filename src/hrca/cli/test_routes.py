@@ -224,6 +224,8 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         # validation planning and policy (neither invokes the runner)
         "test_validation_plan",
         "test_validation_policy",
+        # the controlled-change reconciliation record (pure composition)
+        "test_work_reconciliation",
         # rule-delta contract, interpretation and independent verification
         "test_rule_delta",
         "test_rule_delta_interpret",
@@ -374,6 +376,7 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_verifier",
         "test_version_store",
         "test_visual_tokens",
+        "test_work_reconciliation",
         "test_workspace",
     ),
 }
