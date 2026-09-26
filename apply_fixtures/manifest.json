@@ -1,0 +1,398 @@
+{
+ "generator": "apply-fixture-oracle",
+ "schema_version": "1.0.0",
+ "note": "Hand-authored expectations for the source application coordinator. Each case names mutations by intent and states what the coordinator must answer; the runner holds the implementation to this file and never re-derives an expectation from the builder.",
+ "expect_keys": [
+  "state",
+  "reason_code",
+  "error",
+  "outcome",
+  "pre_image_written",
+  "temporary_written",
+  "target_written",
+  "record_persisted",
+  "target_after"
+ ],
+ "cases": [
+  {
+   "case": "plan_ready",
+   "mode": "plan",
+   "mutations": [],
+   "expect": {
+    "state": "ready_for_approval",
+    "reason_code": "every_non_approval_fact_is_exact",
+    "target_written": false,
+    "pre_image_written": false,
+    "temporary_written": false,
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_root_substituted_with_the_same_relative_file",
+   "mode": "plan",
+   "mutations": [{ "kind": "point_root_at_other" }],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_apply_root_is_not_the_accepted_workspace",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_root_moved_after_the_accepted_scan",
+   "mode": "plan",
+   "mutations": [{ "kind": "move_project_root" }],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_apply_root_is_not_the_accepted_workspace",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_root_is_a_git_working_tree",
+   "mode": "plan",
+   "mutations": [{ "kind": "make_root_a_git_tree" }],
+   "expect": {
+    "error": "the apply root is inside a Git working tree",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_predecessor_drifted",
+   "mode": "plan",
+   "mutations": [{ "kind": "rewrite_target" }],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_live_predecessor_is_not_the_expected_one",
+    "target_after": "drifted"
+   }
+  },
+  {
+   "case": "plan_candidate_file_tampered",
+   "mode": "plan",
+   "mutations": [{ "kind": "rewrite_candidate_file" }],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_candidate_bytes_do_not_agree_between_their_two_sources",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_canonical_edit_text_changed",
+   "mode": "plan",
+   "mutations": [{ "kind": "rewrite_edit_text" }],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_candidate_bytes_do_not_agree_between_their_two_sources",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_validation_did_not_pass",
+   "mode": "plan",
+   "mutations": [
+    { "kind": "set_evidence", "path": "validation.state", "value": "failed" }
+   ],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_validation_result_is_not_a_passing_complete_one",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_validation_evidence_incomplete",
+   "mode": "plan",
+   "mutations": [
+    { "kind": "set_evidence", "path": "validation.evidence_complete", "value": false }
+   ],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_validation_result_is_not_a_passing_complete_one",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_baseline_is_not_the_accepted_revision",
+   "mode": "plan",
+   "mutations": [
+    {
+     "kind": "set_evidence",
+     "path": "accepted_revision.baseline_fingerprint",
+     "value": "9999999999999999999999999999999999999999999999999999999999999999"
+    }
+   ],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_bound_baseline_is_not_the_accepted_revision",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_identities_do_not_describe_one_change",
+   "mode": "plan",
+   "mutations": [
+    {
+     "kind": "set_evidence",
+     "path": "validation.candidate_id",
+     "value": "candidate:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+   ],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_supplied_identities_do_not_describe_one_change",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_target_path_is_absolute",
+   "mode": "plan",
+   "mutations": [{ "kind": "widen_path_absolute" }],
+   "expect": {
+    "error": "absolute paths are not accepted",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_target_path_is_not_authorized_by_the_proposal",
+   "mode": "plan",
+   "mutations": [{ "kind": "unauthorized_path" }],
+   "expect": {
+    "error": "the bound proposal does not authorize that exact path",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_target_is_a_symlink",
+   "mode": "plan",
+   "mutations": [{ "kind": "symlink_target" }],
+   "expect": {
+    "error": "the target is or passes through a symbolic link",
+    "target_after": "link"
+   }
+  },
+  {
+   "case": "plan_target_has_a_second_hard_link",
+   "mode": "plan",
+   "mutations": [{ "kind": "hardlink_target" }],
+   "expect": {
+    "error": "the target has more than one hard link",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "plan_target_is_not_a_regular_file",
+   "mode": "plan",
+   "mutations": [{ "kind": "replace_target_with_directory" }],
+   "expect": {
+    "error": "the target is not a regular file",
+    "target_after": "directory"
+   }
+  },
+  {
+   "case": "plan_target_is_absent",
+   "mode": "plan",
+   "mutations": [{ "kind": "remove_target" }],
+   "expect": {
+    "error": "the target file is absent",
+    "target_after": "absent"
+   }
+  },
+  {
+   "case": "plan_target_is_not_utf8",
+   "mode": "plan",
+   "mutations": [{ "kind": "binary_target" }],
+   "expect": {
+    "error": "the target is not UTF-8 text",
+    "target_after": "binary"
+   }
+  },
+  {
+   "case": "plan_evidence_is_not_a_mapping",
+   "mode": "plan",
+   "mutations": [{ "kind": "replace_evidence", "value": [] }],
+   "expect": { "error": "apply evidence is not a mapping" }
+  },
+  {
+   "case": "plan_evidence_group_missing",
+   "mode": "plan",
+   "mutations": [{ "kind": "drop_evidence_group", "group": "proposal" }],
+   "expect": { "error": "a required evidence group is missing or malformed: proposal" }
+  },
+  {
+   "case": "plan_identity_is_malformed",
+   "mode": "plan",
+   "mutations": [
+    { "kind": "set_evidence", "path": "change.candidate_id", "value": "not-a-candidate" }
+   ],
+   "expect": { "error": "an identity is missing or malformed: change.candidate_id" }
+  },
+  {
+   "case": "plan_apply_root_is_not_a_directory",
+   "mode": "plan",
+   "mutations": [{ "kind": "point_root_at_missing" }],
+   "expect": { "error": "the apply root is not a usable directory" }
+  },
+  {
+   "case": "apply_applied_and_observed_bytes_only",
+   "mode": "apply",
+   "mutations": [],
+   "expect": {
+    "state": "applied_observed_bytes",
+    "reason_code": "observed_bytes_equal_the_approved_candidate",
+    "outcome": "candidate",
+    "pre_image_written": true,
+    "temporary_written": true,
+    "target_written": true,
+    "record_persisted": true,
+    "target_after": "candidate"
+   }
+  },
+  {
+   "case": "apply_without_a_receipt",
+   "mode": "apply",
+   "mutations": [{ "kind": "drop_receipt" }],
+   "expect": {
+    "state": "refused_missing_approval",
+    "reason_code": "no_accepted_receipt_was_supplied",
+    "pre_image_written": false,
+    "temporary_written": false,
+    "target_written": false,
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "apply_with_a_rejected_receipt",
+   "mode": "apply",
+   "mutations": [{ "kind": "reject_receipt" }],
+   "expect": {
+    "state": "refused_missing_approval",
+    "reason_code": "no_accepted_receipt_was_supplied",
+    "pre_image_written": false,
+    "temporary_written": false,
+    "target_written": false,
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "apply_with_a_malformed_receipt",
+   "mode": "apply",
+   "mutations": [{ "kind": "drop_receipt_field", "field": "actor" }],
+   "expect": {
+    "error": "the approval receipt is missing or malformed: actor",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "apply_with_an_unknown_decision",
+   "mode": "apply",
+   "mutations": [{ "kind": "set_receipt", "field": "decision", "value": "maybe" }],
+   "expect": {
+    "error": "the receipt decision is not recognised",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "apply_with_a_receipt_for_a_different_predecessor",
+   "mode": "apply",
+   "mutations": [
+    {
+     "kind": "set_receipt",
+     "field": "predecessor_sha256",
+     "value": "8888888888888888888888888888888888888888888888888888888888888888"
+    }
+   ],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_receipt_does_not_authorize_these_exact_facts",
+    "pre_image_written": false,
+    "temporary_written": false,
+    "target_written": false,
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "apply_with_a_receipt_for_a_different_candidate",
+   "mode": "apply",
+   "mutations": [
+    {
+     "kind": "set_receipt",
+     "field": "candidate_id",
+     "value": "candidate:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+   ],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_receipt_does_not_authorize_these_exact_facts",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "apply_replay_with_the_recovery_path_taken",
+   "mode": "apply",
+   "mutations": [{ "kind": "pre_create_recovery_path" }],
+   "expect": {
+    "error": "the recovery path already exists",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "apply_replay_of_an_already_recorded_application",
+   "mode": "apply",
+   "mutations": [{ "kind": "record_claims_application" }],
+   "expect": {
+    "error": "this application has already been recorded",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "apply_custody_base_inside_the_apply_root",
+   "mode": "apply",
+   "mutations": [{ "kind": "custody_inside_apply_root" }],
+   "expect": {
+    "error": "the custody base is inside the apply root",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "apply_stale_world_outranks_a_present_receipt",
+   "mode": "apply",
+   "mutations": [{ "kind": "rewrite_target" }],
+   "expect": {
+    "state": "refused_stale_or_mismatched",
+    "reason_code": "the_live_predecessor_is_not_the_expected_one",
+    "target_after": "drifted"
+   }
+  },
+  {
+   "case": "apply_replace_reported_success_but_wrote_the_predecessor",
+   "mode": "apply",
+   "mutations": [{ "kind": "patch_replace", "mode": "predecessor" }],
+   "expect": {
+    "state": "application_not_effective",
+    "reason_code": "a_write_was_attempted_and_observed_bytes_equal_the_predecessor",
+    "outcome": "predecessor",
+    "target_after": "predecessor"
+   }
+  },
+  {
+   "case": "apply_replace_wrote_neither_approved_byte_string",
+   "mode": "apply",
+   "mutations": [{ "kind": "patch_replace", "mode": "neither" }],
+   "expect": {
+    "state": "recovery_required",
+    "reason_code": "observed_bytes_equal_neither_and_a_verified_pre_image_is_available",
+    "outcome": "neither",
+    "target_after": "neither"
+   }
+  },
+  {
+   "case": "apply_replace_failed_outright",
+   "mode": "apply",
+   "mutations": [{ "kind": "patch_replace", "mode": "fail" }],
+   "expect": {
+    "state": "application_unknown",
+    "reason_code": "the atomic replacement failed",
+    "target_after": "predecessor"
+   }
+  }
+ ]
+}

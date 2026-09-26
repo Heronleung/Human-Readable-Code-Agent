@@ -227,6 +227,11 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_validation_policy",
         # the controlled-change reconciliation record (pure composition)
         "test_work_reconciliation",
+        # the source application coordinator: plan, apply, and the mutation
+        # matrix that proves each check cannot be skipped
+        "test_source_apply",
+        "test_source_apply_cli",
+        "test_source_apply_mutations",
         # rule-delta contract, interpretation and independent verification
         "test_rule_delta",
         "test_rule_delta_interpret",
@@ -366,6 +371,9 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_scanner_grammar",
         "test_setup_verification",
         "test_setup_verification_guard",
+        "test_source_apply",
+        "test_source_apply_cli",
+        "test_source_apply_mutations",
         "test_source_evidence",
         "test_storage",
         "test_style",
