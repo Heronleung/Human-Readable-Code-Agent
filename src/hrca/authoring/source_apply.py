@@ -93,6 +93,16 @@ review-envelope verdict, and its limitations say so.
 What a record proves, and what it does not
 ------------------------------------------
 
+The receipt is gated on two shape facts before anything else in it is read: it
+must declare the supported receipt schema version **exactly**, and its decision
+timestamp must be a strict RFC 3339 date-time with an explicit zone. Neither gate
+authenticates anyone. They make the receipt's *meaning* checkable, so a version
+nobody understands is never read as though it were this one, and a decision is
+always placeable on a timeline. The value supplied is the value bound — nothing
+is normalized, defaulted or migrated — and the calendar is checked
+arithmetically rather than by the interpreter's own date parser, so the gate does
+not change behaviour with the Python version.
+
 The receipt is **client-declared provenance**. Its digest makes it tamper-evident
 after the fact and bound to this one application; it does **not** authenticate
 the author, prove a human wrote it, or resist any process running as the same
@@ -104,6 +114,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import tempfile
 from typing import Any, Dict, Optional, Tuple
@@ -211,6 +222,12 @@ REASON_IDENTITY_INVALID = "an identity is missing or malformed: %s"
 REASON_MODE_UNKNOWN = "the requested mode is not recognised"
 REASON_RECEIPT_NOT_MAPPING = "the approval receipt is not a mapping"
 REASON_RECEIPT_INVALID = "the approval receipt is missing or malformed: %s"
+REASON_RECEIPT_VERSION_UNSUPPORTED = (
+    "the approval receipt does not declare the supported schema version"
+)
+REASON_RECEIPT_TIMESTAMP_INVALID = (
+    "the decision timestamp is not an RFC 3339 date-time with an explicit zone"
+)
 REASON_DECISION_UNKNOWN = "the receipt decision is not recognised"
 REASON_EDIT_UNSOUND = "the bound edit request is not a valid one"
 REASON_EDIT_MISSING = "the bound edit request carries no replacement operation"
@@ -431,6 +448,55 @@ def _text(value: Any) -> bool:
 
 def _generation(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and value >= 1
+
+
+# A strict RFC 3339 date-time: four-digit year, month and day, a case-insensitive
+# T, a mandatory hour, minute and second, optional fractional seconds, and an
+# explicit zone that is either Z or a numeric offset. Nothing here is optional:
+# a date alone, a naive local time, or any other shape is not a decision
+# timestamp a reviewer can place on a timeline.
+_RFC3339_PATTERN = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?"
+    r"([Zz]|[+-]\d{2}:\d{2})$"
+)
+
+# Leap years are handled separately, so February is the only length that moves.
+_MONTH_LENGTHS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
+def _is_rfc3339(value: Any) -> bool:
+    """Return whether a value is a strict RFC 3339 date-time with an explicit zone.
+
+    The calendar is checked arithmetically rather than by the interpreter's own
+    date parser, because that parser's strictness has changed between Python
+    versions and a receipt gate whose behaviour depends on the interpreter is
+    not a gate. Nothing here reads a clock, and nothing normalizes the value:
+    the text supplied is the text that is bound, so a caller cannot have one
+    timestamp validated and a different one recorded.
+    """
+    if not isinstance(value, str):
+        return False
+    match = _RFC3339_PATTERN.match(value)
+    if match is None:
+        return False
+    year, month, day, hour, minute, second = (
+        int(group) for group in match.groups()[:6]
+    )
+    zone = match.group(7)
+
+    if not 1 <= month <= 12:
+        return False
+    length = _MONTH_LENGTHS[month - 1]
+    if month == 2 and year % 4 == 0 and (year % 100 != 0 or year % 400 == 0):
+        length = 29
+    if not 1 <= day <= length:
+        return False
+    if hour > 23 or minute > 59 or second > 60:
+        return False
+    if zone not in ("Z", "z"):
+        if int(zone[1:3]) > 23 or int(zone[4:6]) > 59:
+            return False
+    return True
 
 
 # -- root identity ---------------------------------------------------------
@@ -783,12 +849,28 @@ def _bind_receipt(receipt: Any) -> Dict[str, Any]:
     """Bind the receipt's shape, or refuse it. Presence is the caller's business."""
     if not isinstance(receipt, dict):
         raise _Refusal(REASON_RECEIPT_NOT_MAPPING)
+
+    # The version gate comes first, before any other field is interpreted. An
+    # absent, non-string, blank, older or future version is refused rather than
+    # assumed to mean this contract: a receipt is read by the schema it
+    # declares, and a version nobody understands is not a version 1.0.0.
+    version = receipt.get("receipt_schema_version")
+    if not isinstance(version, str) or version != RECEIPT_SCHEMA_VERSION:
+        raise _Refusal(REASON_RECEIPT_VERSION_UNSUPPORTED)
+
     for field in _RECEIPT_FIELDS:
         if field == "scan_generation":
             # A generation is an integer, and is checked as one below.
             continue
         if not _text(receipt.get(field)):
             raise _Refusal(REASON_RECEIPT_INVALID % field)
+
+    # A decision timestamp is an audit fact: it has to be placeable on a
+    # timeline, so it carries seconds and an explicit zone. The value is bound
+    # exactly as supplied and is never normalized.
+    if not _is_rfc3339(receipt["decided_at"]):
+        raise _Refusal(REASON_RECEIPT_TIMESTAMP_INVALID)
+
     if receipt.get("decision") not in DECISIONS:
         raise _Refusal(REASON_DECISION_UNKNOWN)
     for field in _RECEIPT_HEX_FIELDS:
@@ -1358,6 +1440,8 @@ __all__ = [
     "REASON_MODE_UNKNOWN",
     "REASON_RECEIPT_NOT_MAPPING",
     "REASON_RECEIPT_INVALID",
+    "REASON_RECEIPT_VERSION_UNSUPPORTED",
+    "REASON_RECEIPT_TIMESTAMP_INVALID",
     "REASON_DECISION_UNKNOWN",
     "REASON_EDIT_UNSOUND",
     "REASON_EDIT_MISSING",

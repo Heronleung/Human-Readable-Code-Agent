@@ -110,6 +110,21 @@ def _world_module():
 WORLD = _world_module()
 
 
+def _conform_receipt(world):
+    """Complete the fixture's default receipt with the version it predates.
+
+    The fixture world predates the receipt version gate, so its default receipt
+    carries fourteen fields and no ``receipt_schema_version``. The harness
+    completes it here rather than the fixture doing so, because a receipt is an
+    operator-authored artifact and the harness stands in for the operator.
+    Correcting the fixture default is one line, needs its own authorization, and
+    is recorded as an outstanding item rather than taken silently.
+    """
+    world.receipt["receipt_schema_version"] = source_apply.RECEIPT_SCHEMA_VERSION
+    world.receipt_bytes = (json.dumps(world.receipt, indent=1) + "\n").encode("utf-8")
+    return world
+
+
 def _target_matches(world, expectation):
     """Return whether the target's live state matches a named expectation."""
     target = world.target()
@@ -165,7 +180,7 @@ class OracleTests(unittest.TestCase):
     def _run_case(self, case):
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        world = WORLD.build(root)
+        world = _conform_receipt(WORLD.build(root))
 
         stand_in = None
         drop_receipt = False
@@ -425,7 +440,7 @@ class LeafTests(unittest.TestCase):
     def test_the_module_imports_only_its_named_leaves(self):
         plain, local = self._imports_of(MODULE)
         self.assertEqual(
-            plain, {"__future__", "json", "os", "stat", "tempfile", "typing"}
+            plain, {"__future__", "json", "os", "re", "stat", "tempfile", "typing"}
         )
         # Submodule probes name no file and are not dependencies; the modules
         # this file actually reaches are the ones that resolve.

@@ -39,13 +39,25 @@ def _world_module():
 WORLD = _world_module()
 
 
+def _conform_receipt(world):
+    """Complete the fixture's default receipt with the version it predates.
+
+    The fixture world predates the receipt version gate; the harness stands in
+    for the operator who authors a receipt, so it completes one here. Correcting
+    the fixture default needs its own authorization.
+    """
+    world.receipt["receipt_schema_version"] = source_apply.RECEIPT_SCHEMA_VERSION
+    world.receipt_bytes = (json.dumps(world.receipt, indent=1) + "\n").encode("utf-8")
+    return world
+
+
 class CliTests(unittest.TestCase):
     maxDiff = None
 
     def _world(self):
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        world = WORLD.build(root)
+        world = _conform_receipt(WORLD.build(root))
         evidence = os.path.join(root, "evidence.json")
         with open(evidence, "w", encoding="utf-8") as handle:
             json.dump(world.evidence, handle)

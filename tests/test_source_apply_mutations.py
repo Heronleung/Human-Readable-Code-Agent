@@ -14,6 +14,7 @@ asserts the target's bytes, which is the property that actually matters.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import tempfile
@@ -38,6 +39,36 @@ def _world_module():
 
 WORLD = _world_module()
 
+# A marker meaning "this key is absent", so a test can remove a field rather
+# than set it to a value that merely looks empty.
+_MISSING = object()
+
+
+def _conform_receipt(world):
+    """Complete the fixture's default receipt with the version it predates.
+
+    The fixture world predates the receipt version gate, so its default receipt
+    carries fourteen fields and no ``receipt_schema_version``. The harness
+    completes it here rather than the fixture doing so, because a receipt is an
+    operator-authored artifact and the harness stands in for the operator.
+    Correcting the fixture default is one line, needs its own authorization, and
+    is recorded as an outstanding item rather than taken silently.
+    """
+    world.receipt["receipt_schema_version"] = source_apply.RECEIPT_SCHEMA_VERSION
+    world.receipt_bytes = (json.dumps(world.receipt, indent=1) + "\n").encode("utf-8")
+    return world
+
+
+def _receipt(world, **overrides):
+    """Return a conformant receipt with the named fields overridden or removed."""
+    receipt = dict(world.receipt)
+    for key, value in overrides.items():
+        if value is _MISSING:
+            receipt.pop(key, None)
+        else:
+            receipt[key] = value
+    return receipt
+
 
 class MutationTests(unittest.TestCase):
     maxDiff = None
@@ -45,7 +76,7 @@ class MutationTests(unittest.TestCase):
     def _world(self):
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        return WORLD.build(root)
+        return _conform_receipt(WORLD.build(root))
 
     def _plan(self, world):
         return source_apply.plan_application(world.evidence, world.apply_root)
@@ -296,6 +327,219 @@ class MutationTests(unittest.TestCase):
         self.assertEqual(reason, source_apply.REASON_RECOVERY_PATH_TAKEN)
         self.assertEqual(WORLD.target_sha256(world), before)
         self.assertEqual(world.read(world.pre_image_path()), standing)
+
+
+class ReceiptBindingTests(unittest.TestCase):
+    """The receipt's two shape gates, and the no-write property of each refusal.
+
+    A receipt must declare the supported receipt schema version exactly, and its
+    decision timestamp must be a strict RFC 3339 date-time with an explicit zone.
+    Every failure is a *binding refusal*, raised before any write-capable path,
+    that leaves the source and the custody base untouched — never a state, and
+    never something the coordinator can round to missing approval or to a stale
+    world. Neither gate authenticates anyone: they make the receipt's meaning
+    checkable, and what is bound is the text supplied, unnormalized.
+    """
+
+    maxDiff = None
+
+    def _world(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        return _conform_receipt(WORLD.build(root))
+
+    def _invoke(self, world, receipt):
+        return source_apply.apply_application(
+            world.evidence,
+            world.apply_root,
+            world.custody,
+            receipt,
+            json.dumps(receipt, indent=1).encode("utf-8"),
+        )
+
+    def _assert_untouched(self, world, before):
+        """A refusal proves it wrote nothing, anywhere."""
+        self.assertEqual(WORLD.target_sha256(world), before, "the target moved")
+        self.assertFalse(os.path.exists(world.pre_image_path()), "a pre-image exists")
+        self.assertFalse(os.path.isdir(world.record_dir()), "a record directory exists")
+        self.assertEqual(sorted(os.listdir(world.custody)), [], "custody is not empty")
+        for name in sorted(os.listdir(world.project)):
+            self.assertFalse(
+                name.startswith(source_apply.TEMP_PREFIX), "a temporary was left"
+            )
+
+    def _expect_refusal(self, world, receipt, token):
+        before = WORLD.target_sha256(world)
+        record, reason = self._invoke(world, receipt)
+        self.assertIsNone(record, "expected a refusal, got a record")
+        self.assertEqual(reason, token)
+        self._assert_untouched(world, before)
+
+    def _expect_applied(self, world, receipt):
+        record, reason = self._invoke(world, receipt)
+        self.assertIsNone(reason)
+        self.assertEqual(record["state"], source_apply.STATE_APPLIED)
+        self.assertEqual(WORLD.target_sha256(world), world.candidate_sha256)
+        return record
+
+    # -- success paths ------------------------------------------------------
+
+    def test_an_exact_version_and_a_utc_timestamp_bind_and_apply(self):
+        world = self._world()
+        receipt = _receipt(
+            world,
+            receipt_schema_version="1.0.0",
+            decided_at="2026-09-27T00:00:00Z",
+        )
+        record = self._expect_applied(world, receipt)
+        acceptance = record["acceptance"]
+        self.assertEqual(acceptance["decided_at"], "2026-09-27T00:00:00Z")
+        self.assertEqual(acceptance["receipt_provenance"], "client_declared")
+        self.assertTrue(acceptance["receipt_canonical_sha256"])
+        self.assertTrue(acceptance["receipt_raw_sha256"])
+
+    def test_an_explicit_offset_timestamp_binds_and_applies(self):
+        for stamp in (
+            "2026-09-27T08:30:00+08:00",
+            "2026-09-27T00:00:00-05:30",
+            "2026-09-27T00:00:00.500Z",
+            "2026-09-27t00:00:00z",
+        ):
+            with self.subTest(stamp=stamp):
+                world = self._world()
+                record = self._expect_applied(world, _receipt(world, decided_at=stamp))
+                self.assertEqual(record["acceptance"]["decided_at"], stamp)
+
+    def test_a_valid_timestamp_is_bound_verbatim_and_never_normalized(self):
+        """Two spellings of one instant are two receipts, not one.
+
+        If the coordinator normalized the timestamp before hashing, these would
+        share a canonical digest. They must not: the text validated is the text
+        recorded, and the text hashed.
+        """
+        digests = []
+        for stamp in ("2026-09-27T00:00:00Z", "2026-09-27T00:00:00+00:00"):
+            world = self._world()
+            record = self._expect_applied(world, _receipt(world, decided_at=stamp))
+            self.assertEqual(record["acceptance"]["decided_at"], stamp)
+            digests.append(record["acceptance"]["receipt_canonical_sha256"])
+        self.assertNotEqual(digests[0], digests[1])
+
+    # -- version refusals --------------------------------------------------
+
+    def test_a_missing_version_refuses(self):
+        world = self._world()
+        self._expect_refusal(
+            world,
+            _receipt(world, receipt_schema_version=_MISSING),
+            source_apply.REASON_RECEIPT_VERSION_UNSUPPORTED,
+        )
+
+    def test_a_non_string_or_blank_version_refuses(self):
+        for value in (1, 1.0, True, None, [], {"version": "1.0.0"}, "", "   "):
+            with self.subTest(value=value):
+                world = self._world()
+                self._expect_refusal(
+                    world,
+                    _receipt(world, receipt_schema_version=value),
+                    source_apply.REASON_RECEIPT_VERSION_UNSUPPORTED,
+                )
+
+    def test_an_unsupported_or_future_version_refuses(self):
+        for value in ("1.0.1", "1.1.0", "2.0.0", "9.9.9", "1.0", "1.0.0.0",
+                      "1.0.0 ", " 1.0.0", "V1.0.0"):
+            with self.subTest(value=value):
+                world = self._world()
+                self._expect_refusal(
+                    world,
+                    _receipt(world, receipt_schema_version=value),
+                    source_apply.REASON_RECEIPT_VERSION_UNSUPPORTED,
+                )
+
+    # -- timestamp refusals ------------------------------------------------
+
+    def test_a_naive_timestamp_refuses(self):
+        for stamp in ("2026-09-27T00:00:00", "2026-09-27T00:00:00.500"):
+            with self.subTest(stamp=stamp):
+                world = self._world()
+                self._expect_refusal(
+                    world,
+                    _receipt(world, decided_at=stamp),
+                    source_apply.REASON_RECEIPT_TIMESTAMP_INVALID,
+                )
+
+    def test_a_date_only_timestamp_refuses(self):
+        for stamp in ("2026-09-27", "2026-09-27Z", "20260927"):
+            with self.subTest(stamp=stamp):
+                world = self._world()
+                self._expect_refusal(
+                    world,
+                    _receipt(world, decided_at=stamp),
+                    source_apply.REASON_RECEIPT_TIMESTAMP_INVALID,
+                )
+
+    def test_malformed_calendar_offset_and_blank_timestamps_refuse(self):
+        for stamp in (
+            "2026-02-30T00:00:00Z",        # an impossible calendar date
+            "2025-02-29T00:00:00Z",        # not a leap year
+            "2026-13-01T00:00:00Z",        # an impossible month
+            "2026-09-31T00:00:00Z",        # a month with no such day
+            "2026-09-27T24:00:00Z",        # an impossible hour
+            "2026-09-27T00:60:00Z",        # an impossible minute
+            "2026-09-27T00:00:61Z",        # an impossible second
+            "2026-09-27T00:00:00+25:00",   # an invalid offset hour
+            "2026-09-27T00:00:00+00:60",   # an invalid offset minute
+            "2026-09-27T00:00:00+0800",    # an offset with no separator
+            "2026-09-27T00:00:00",         # naive, repeated for the subtest name
+            "2026-09-27 00:00:00Z",        # a space where the T belongs
+            "2026-09-27T00:00Z",           # no seconds
+            "2026-09-27T00:00:00 UTC",     # a zone name is not an offset
+            "   ",                         # whitespace only
+            "not-a-timestamp",
+        ):
+            with self.subTest(stamp=stamp):
+                world = self._world()
+                self._expect_refusal(
+                    world,
+                    _receipt(world, decided_at=stamp),
+                    source_apply.REASON_RECEIPT_TIMESTAMP_INVALID,
+                )
+
+    def test_an_absent_or_empty_timestamp_is_a_field_failure(self):
+        """An absent field is a presence failure, not a format one.
+
+        The distinction matters to a reader: nothing was supplied to parse, so
+        the reason names the missing field rather than judging its shape.
+        """
+        world = self._world()
+        before = WORLD.target_sha256(world)
+        for value in (_MISSING, ""):
+            with self.subTest(value=value):
+                record, reason = self._invoke(
+                    world, _receipt(world, decided_at=value)
+                )
+                self.assertIsNone(record)
+                self.assertEqual(
+                    reason, source_apply.REASON_RECEIPT_INVALID % "decided_at"
+                )
+        self._assert_untouched(world, before)
+
+    def test_a_refusal_is_never_a_state(self):
+        """Requirement C: never missing approval, never a stale world."""
+        world = self._world()
+        before = WORLD.target_sha256(world)
+        record, reason = self._invoke(
+            world, _receipt(world, decided_at="2026-09-27")
+        )
+        self.assertIsNone(record)
+        self.assertNotIn(
+            reason,
+            (
+                source_apply.REASON_REFUSED_MISSING_APPROVAL,
+                source_apply.REASON_REFUSED_STALE,
+            ),
+        )
+        self._assert_untouched(world, before)
 
 
 if __name__ == "__main__":
