@@ -981,7 +981,12 @@ def _record(
         }.get(state, REASON_UNKNOWN),
         "applied": state == STATE_APPLIED,
         "approval_inferred": False,
-        "record_persisted": False,
+        # A record's self-description is derived from its own write surface, so
+        # the two cannot contradict each other: a record that says it was
+        # persisted is one whose write surface says its bytes were written.
+        # Keeping them independent is exactly how the persisted copy came to
+        # claim ``record_persisted`` false while the record sat on disk.
+        "record_persisted": write_surface["record_written"],
         "persistence_reason": None,
         "work_package": dict(evidence["work_package"]),
         "change": dict(evidence["change"]),
@@ -1377,16 +1382,23 @@ def apply_application(
     else:
         state, code = STATE_RECOVERY_REQUIRED, REASON_RECOVERY_REQUIRED
 
+    # The record is assembled with what will be true of it once the write lands,
+    # and those are the exact bytes written. That is not optimism: the write is
+    # atomic, so a record that exists carries precisely this content, and a write
+    # that fails leaves no record at all. A failure is therefore reported as an
+    # *outcome* — only the returned copy is amended — never by persisting a file
+    # that says it was not persisted, which is a different claim entirely. The
+    # target observation stands as observed either way, and nothing is retried,
+    # repaired or restored.
     record = _record(
         state, code, MODE_APPLY, evidence, apply_id, digests, bound,
-        _write_surface(True, True, replaced, False), observation, recovery,
+        _write_surface(True, True, replaced, True), observation, recovery,
     )
     write_reason = _write_new(record_path, (dumps(record) + "\n").encode("utf-8"))
-    record["record_persisted"] = write_reason is None
-    record["persistence_reason"] = write_reason
-    record["write_surface"] = _write_surface(
-        True, True, replaced, write_reason is None
-    )
+    if write_reason is not None:
+        record["write_surface"] = _write_surface(True, True, replaced, False)
+        record["record_persisted"] = record["write_surface"]["record_written"]
+        record["persistence_reason"] = write_reason
     return record, None
 
 

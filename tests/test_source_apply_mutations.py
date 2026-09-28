@@ -44,21 +44,6 @@ WORLD = _world_module()
 _MISSING = object()
 
 
-def _conform_receipt(world):
-    """Complete the fixture's default receipt with the version it predates.
-
-    The fixture world predates the receipt version gate, so its default receipt
-    carries fourteen fields and no ``receipt_schema_version``. The harness
-    completes it here rather than the fixture doing so, because a receipt is an
-    operator-authored artifact and the harness stands in for the operator.
-    Correcting the fixture default is one line, needs its own authorization, and
-    is recorded as an outstanding item rather than taken silently.
-    """
-    world.receipt["receipt_schema_version"] = source_apply.RECEIPT_SCHEMA_VERSION
-    world.receipt_bytes = (json.dumps(world.receipt, indent=1) + "\n").encode("utf-8")
-    return world
-
-
 def _receipt(world, **overrides):
     """Return a conformant receipt with the named fields overridden or removed."""
     receipt = dict(world.receipt)
@@ -76,7 +61,7 @@ class MutationTests(unittest.TestCase):
     def _world(self):
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        return _conform_receipt(WORLD.build(root))
+        return WORLD.build(root)
 
     def _plan(self, world):
         return source_apply.plan_application(world.evidence, world.apply_root)
@@ -346,7 +331,7 @@ class ReceiptBindingTests(unittest.TestCase):
     def _world(self):
         root = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        return _conform_receipt(WORLD.build(root))
+        return WORLD.build(root)
 
     def _invoke(self, world, receipt):
         return source_apply.apply_application(
@@ -540,6 +525,146 @@ class ReceiptBindingTests(unittest.TestCase):
             ),
         )
         self._assert_untouched(world, before)
+
+
+class RecordPersistenceTests(unittest.TestCase):
+    """What the record says about itself, and what is actually on disk.
+
+    A successful application used to persist a copy that described itself as
+    *not* persisted: the record was serialized before its own write outcome was
+    folded in, so the bytes on disk contradicted the record the coordinator
+    returned. These hold the repair to the two properties that matter — the
+    file is the record that was returned, and a write that fails is reported as
+    an outcome rather than as content on disk.
+    """
+
+    maxDiff = None
+
+    def _world(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        return WORLD.build(root)
+
+    def _apply(self, world):
+        return source_apply.apply_application(
+            world.evidence,
+            world.apply_root,
+            world.custody,
+            world.receipt,
+            world.receipt_bytes,
+        )
+
+    def _record_files(self, world):
+        directory = world.record_dir()
+        if not os.path.isdir(directory):
+            return []
+        return sorted(os.listdir(directory))
+
+    def test_the_persisted_record_is_the_record_that_was_returned(self):
+        world = self._world()
+        record, reason = self._apply(world)
+        self.assertIsNone(reason)
+        self.assertEqual(record["state"], source_apply.STATE_APPLIED)
+        self.assertIs(record["record_persisted"], True)
+        surface = record["write_surface"]
+        self.assertIs(surface["target_written"], True)
+        self.assertIs(surface["pre_image_written"], True)
+        self.assertIs(surface["temporary_written"], True)
+        self.assertIs(surface["record_written"], True)
+        files = self._record_files(world)
+        self.assertEqual(len(files), 1)
+        # The name is the apply identity, so the file is content-addressed.
+        body = record["apply_id"].split(":", 1)[1]
+        self.assertEqual(files[0], body + ".json")
+        with open(os.path.join(world.record_dir(), files[0]), "rb") as handle:
+            persisted = json.loads(handle.read().decode("utf-8"))
+        self.assertEqual(persisted, record)
+        self.assertIsNone(source_apply.validate_apply_record(persisted))
+
+    def test_a_record_that_could_not_be_persisted_is_never_claimed_persisted(self):
+        world = self._world()
+        with mock.patch.object(
+            source_apply,
+            "_write_new",
+            return_value=source_apply.REASON_CUSTODY_UNWRITABLE,
+        ):
+            record, reason = self._apply(world)
+        self.assertIsNone(reason)
+        # The replacement did happen, and the observation reports it truthfully.
+        self.assertEqual(record["state"], source_apply.STATE_APPLIED)
+        self.assertEqual(record["observation"]["sha256"], world.candidate_sha256)
+        self.assertEqual(WORLD.target_sha256(world), world.candidate_sha256)
+        # The *outcome* carries the failure. Nothing on disk claims it, which is
+        # a different statement from a record whose content says it failed.
+        self.assertIs(record["record_persisted"], False)
+        self.assertIs(record["write_surface"]["record_written"], False)
+        self.assertIs(record["write_surface"]["target_written"], True)
+        self.assertEqual(
+            record["persistence_reason"], source_apply.REASON_CUSTODY_UNWRITABLE
+        )
+        self.assertEqual(self._record_files(world), [])
+        # No retry, no repair, no restore: the pre-image still holds the
+        # predecessor and the target still holds the candidate.
+        self.assertEqual(
+            WORLD.sha256_hex(world.read(world.pre_image_path())),
+            world.predecessor_sha256,
+        )
+        self.assertIsNone(source_apply.validate_apply_record(record))
+
+    def test_the_self_description_never_contradicts_the_write_surface(self):
+        outcomes = []
+
+        world = self._world()
+        outcomes.append(("applied", self._apply(world)[0]))
+
+        world = self._world()
+        outcomes.append(
+            (
+                "plan",
+                source_apply.plan_application(world.evidence, world.apply_root)[0],
+            )
+        )
+
+        world = self._world()
+        outcomes.append(
+            (
+                "missing_approval",
+                source_apply.apply_application(
+                    world.evidence, world.apply_root, world.custody, None, None
+                )[0],
+            )
+        )
+
+        world = self._world()
+        outcomes.append(
+            (
+                "stale",
+                source_apply.apply_application(
+                    world.evidence,
+                    world.apply_root,
+                    world.custody,
+                    _receipt(world, candidate_sha256="0" * 64),
+                    world.receipt_bytes,
+                )[0],
+            )
+        )
+
+        world = self._world()
+        with mock.patch.object(
+            source_apply,
+            "_replace_target",
+            return_value=(False, source_apply.REASON_REPLACE_FAILED),
+        ):
+            outcomes.append(("unknown", self._apply(world)[0]))
+
+        for label, record in outcomes:
+            with self.subTest(outcome=label):
+                self.assertIsNotNone(record)
+                self.assertIs(
+                    record["record_persisted"],
+                    record["write_surface"]["record_written"],
+                )
+                self.assertIsNone(source_apply.validate_apply_record(record))
 
 
 if __name__ == "__main__":

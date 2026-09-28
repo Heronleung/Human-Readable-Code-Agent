@@ -319,6 +319,9 @@ def build(root: str) -> World:
     }
 
     world.receipt = {
+        # The version this receipt is written against, read from the contract
+        # rather than retyped, so the fixture cannot drift from the gate.
+        "receipt_schema_version": source_apply.RECEIPT_SCHEMA_VERSION,
         "actor": "fixture-client",
         "decision": "accepted",
         "decided_at": "2026-09-27T00:00:00Z",
