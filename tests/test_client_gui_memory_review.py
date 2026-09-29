@@ -166,7 +166,7 @@ class LoadTests(MemoryReviewTestCase):
     def test_the_destination_has_a_labelled_corrections_page(self):
         tabs = self.window._memory_tabs
         self.assertEqual(
-            ["Documents", "Search", "Resume", "Corrections", "Code Twin"],
+            ["Documents", "Search", "Resume", "Corrections"],
             [tabs.tabText(i) for i in range(tabs.count())],
         )
 

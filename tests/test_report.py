@@ -42,7 +42,7 @@ def _metadata() -> dict:
     return {
         "task_id": task["task_id"],
         "plan": build_plan(task),
-        "next_action": "Proceed to code-twin content generation on origin/main.",
+        "next_action": "Proceed to document content generation on origin/main.",
         "repository_context": task["repository_context"],
     }
 

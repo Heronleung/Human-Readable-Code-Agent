@@ -4,10 +4,10 @@ Runs the desktop client by default, and the headless boundary when invoked
 with the ``--serve`` argument sentinel. This is the entry point a PyInstaller
 build bundles so that one frozen executable serves both roles:
 
-* ``hrca-app`` (or ``python -m hrca.app``) launches the desktop client,
-* ``hrca-app --serve`` (or ``python -m hrca.app --serve``) runs the headless
+* ``hrca-app`` (or ``python -m hrca.cli.app``) launches the desktop client,
+* ``hrca-app --serve`` (or ``python -m hrca.cli.app --serve``) runs the headless
   boundary over stdin/stdout,
-* ``hrca-app --credential`` (or ``python -m hrca.app --credential``) runs the
+* ``hrca-app --credential`` (or ``python -m hrca.cli.app --credential``) runs the
   single-purpose native credential host over stdin/stdout.
 
 The client and the boundary are imported lazily so each branch pulls in only

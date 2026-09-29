@@ -2923,5 +2923,125 @@ class ImpactProposalTwinExceptionTests(unittest.TestCase):
         self.assertEqual([], sorted(offenders))
 
 
+class TwinSurfaceRemovalTests(unittest.TestCase):
+    """UI-TRANSITION-1: the desktop presents no code-twin surface, and the
+    removal retired a *surface*, never a capability.
+
+    The navigation table is read straight out of ``client.py`` with :mod:`ast`,
+    so this invariant is checked without importing PySide6 — the desktop module
+    stays out of the Qt-free routes while its product boundary stays asserted.
+    The retained twin capability is asserted *present* so a later edit cannot
+    read the removal as licence to delete it.
+    """
+
+    def _module_literal(self, name):
+        """Return the literal bound to module-level ``name`` in client.py."""
+        tree = ast.parse(open(_CLIENT_PATH, encoding="utf-8").read())
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == name
+                for target in node.targets
+            ):
+                return ast.literal_eval(node.value)
+        self.fail("client.py does not define %s" % name)
+
+    def test_the_client_visual_layer_exports_only_what_it_defines(self):
+        # A removed style factory must not stay in ``__all__``: a broken export
+        # fails ``from hrca.ui.style import *`` and hides the removal.
+        from hrca.ui import style
+
+        tree = ast.parse(open(_module_path("style"), encoding="utf-8").read())
+        defined = set()
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef)):
+                defined.add(node.name)
+            elif isinstance(node, ast.Assign):
+                defined.update(
+                    target.id for target in node.targets
+                    if isinstance(target, ast.Name)
+                )
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                defined.update(
+                    alias.asname or alias.name.split(".")[0]
+                    for alias in node.names
+                )
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                defined.add(node.target.id)
+
+        missing = sorted(set(style.__all__) - defined)
+        self.assertEqual([], missing, "style.__all__ names undefined symbols")
+
+
+    def test_the_client_carries_no_twin_vocabulary(self):
+        # No Twin-named attribute, object name, label, tooltip or comment
+        # survives anywhere in the desktop client, so no removed surface can
+        # quietly return as a label a user would read. Case-sensitive on
+        # purpose: ``setWindowTitle`` contains "tWin" and is not a Twin word.
+        text = open(_CLIENT_PATH, encoding="utf-8").read()
+        self.assertNotIn("Twin", text)
+        self.assertNotIn("twin", text)
+
+    def test_navigation_exposes_no_source_tree_or_code_map_destination(self):
+        self.assertEqual(
+            self._module_literal("_NAV_DESTINATIONS"),
+            ("document", "preview", "versions", "memory", "change_review",
+             "validation_evidence"),
+        )
+        self.assertEqual(
+            self._module_literal("_ADVANCED_DESTINATIONS"),
+            ("change_review", "validation_evidence"),
+        )
+        labels = self._module_literal("_NAV_LABELS")
+        self.assertNotIn("source_code_map", labels)
+        self.assertNotIn("Source & Code Map", labels.values())
+
+    def test_the_removal_changed_no_store_schema(self):
+        # The compatibility path is that there is nothing to migrate: the code
+        # twin store and the evidence-link document keep their own schema
+        # versions, so a store written before the removal is read unchanged and
+        # is never rewritten by the desktop.
+        from hrca.twin import TWIN_SCHEMA_VERSION
+        from hrca.twin.memory_twin_link import LINK_SCHEMA_VERSION
+
+        self.assertEqual(TWIN_SCHEMA_VERSION, "1.0.0")
+        self.assertEqual(LINK_SCHEMA_VERSION, "1.0.0")
+
+    def test_the_retained_twin_capability_is_still_registered(self):
+        # Nothing in the removed UI was a capability: every twin action family
+        # stays declared and dispatchable, so orchestration, review, validation
+        # and migration keep their source-evidence reads.
+        from hrca.core import contract
+
+        retained = (
+            contract.TWIN_ACTIONS
+            | contract.DRAFT_ACTIONS
+            | contract.PROPOSAL_ACTIONS
+            | contract.MEMORY_CODE_LINK_ACTIONS
+        )
+        self.assertTrue(retained)
+        for action in sorted(retained):
+            with self.subTest(action=action):
+                self.assertIn(action, contract.ALLOWED_ACTIONS)
+
+    def test_the_desktop_imports_no_twin_module(self):
+        # Stated again here as the product-boundary reason it exists: the
+        # client reaches source evidence only through the boundary protocol.
+        tree = ast.parse(open(_CLIENT_PATH, encoding="utf-8").read())
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+        for name in sorted(imported):
+            with self.subTest(module=name):
+                self.assertFalse(
+                    name == "twin" or name.startswith("twin.")
+                    or name.endswith(".twin") or ".twin." in name,
+                    "the desktop client must not import %s" % name,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

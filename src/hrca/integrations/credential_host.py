@@ -4,8 +4,9 @@ A short-lived, single-purpose helper process that owns the native dark entry
 sheet (a Win32 modal replacing CredUI) and the Credential Manager write/delete
 for one Add / Replace / Remove credential operation. It is launched only by the
 desktop application —
-through the same entry executable's ``--credential`` sentinel in a frozen
-build, or ``python -m hrca.credential_host`` from source — runs in the
+through the same entry executable's ``--credential`` sentinel, which the frozen
+build reaches as ``hrca-app --credential`` and a source checkout as
+``python -m hrca.cli.app --credential`` — runs in the
 interactive user session it inherits from that application, parents the entry
 sheet to the application's top-level window when a parent handle is supplied,
 and emits exactly one bounded, secret-free contract envelope on stdout before

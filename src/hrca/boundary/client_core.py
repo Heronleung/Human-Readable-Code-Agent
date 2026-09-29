@@ -330,11 +330,20 @@ def default_fixture_root(frozen: Optional[bool] = None) -> str:
 def resolve_backend_command(frozen: Optional[bool] = None) -> List[str]:
     """Return the command that launches the headless backend.
 
-    The backend is exposed through the same entry executable using the
-    ``--serve`` argument sentinel:
+    The backend is exposed through the same unified entry the frozen build
+    bundles, selected by the ``--serve`` argument sentinel:
 
     * frozen build — ``[sys.executable, "--serve"]``,
-    * source build — ``[sys.executable, "-m", "hrca.boundary", "--serve"]``.
+    * source build — ``[sys.executable, "-m", "hrca.cli.app", "--serve"]``.
+
+    The source form names ``hrca.cli.app`` deliberately, and not the shorter
+    ``-m hrca.boundary``. ``hrca.boundary`` is an importable *package*, and
+    ``python -m`` cannot execute a package that ships no ``__main__.py``; the
+    compatibility-shim route is closed as well, because a shim may not share a
+    leaf name with the module it points at and ``hrca/__main__.py`` already owns
+    ``__main__``. ``hrca.cli.app`` exists to know about both halves and
+    dispatches ``--serve`` to :func:`hrca.boundary.main`, so naming it gives the
+    source and frozen launches one dispatch path rather than two.
 
     ``sys.executable`` and ``sys.argv`` are used rather than assuming an
     installed interpreter, so the resolution works from a venv, a system
@@ -344,7 +353,7 @@ def resolve_backend_command(frozen: Optional[bool] = None) -> List[str]:
     is_frozen = getattr(sys, "frozen", False) if frozen is None else frozen
     if is_frozen:
         return [sys.executable, contract.SERVE_SENTINEL]
-    return [sys.executable, "-m", "hrca.boundary", contract.SERVE_SENTINEL]
+    return [sys.executable, "-m", "hrca.cli.app", contract.SERVE_SENTINEL]
 
 
 def resolve_credential_host_command(frozen: Optional[bool] = None) -> List[str]:
@@ -354,7 +363,19 @@ def resolve_credential_host_command(frozen: Optional[bool] = None) -> List[str]:
     secure credential prompt and the Credential Manager write:
 
     * frozen build — ``[sys.executable, "--credential"]``,
-    * source build — ``[sys.executable, "-m", "hrca.credential_host"]``.
+    * source build — ``[sys.executable, "-m", "hrca.cli.app", "--credential"]``.
+
+    The source form names the unified entry, exactly as
+    :func:`resolve_backend_command` does: ``hrca.cli.app`` already dispatches
+    ``--credential`` to :func:`hrca.integrations.credential_host.main`, and it is
+    the entry the frozen build bundles, so both launches reach the host by one
+    path rather than two. The previous command named ``hrca.credential_host``, a
+    module that has never existed in this package, so the launch died with
+    "No module named hrca.credential_host" before the host could answer. A root
+    ``hrca/credential_host.py`` compatibility shim would also have resolved — a
+    shim is skipped by the leaf-name uniqueness rule — but it would reach the
+    host by a *different* route than the frozen build and would add a module to
+    do what the launcher already does.
 
     The operation and the parent window handle are carried in the stdin request
     (not the command line), so the command itself names no secret and no
@@ -363,7 +384,7 @@ def resolve_credential_host_command(frozen: Optional[bool] = None) -> List[str]:
     is_frozen = getattr(sys, "frozen", False) if frozen is None else frozen
     if is_frozen:
         return [sys.executable, contract.CREDENTIAL_SENTINEL]
-    return [sys.executable, "-m", "hrca.credential_host"]
+    return [sys.executable, "-m", "hrca.cli.app", contract.CREDENTIAL_SENTINEL]
 
 
 def build_scan_task(scan_path: str) -> Dict[str, Any]:

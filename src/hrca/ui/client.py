@@ -1,9 +1,9 @@
-"""PySide6 IDE workspace shell for the P3.2 read-only desktop slice.
+"""PySide6 desktop client for PrimaAgent — the document-first product surface.
 
 The client is a *client only*: it supervises a headless backend process through
 the versioned NDJSON boundary, submits bounded read-only workspace actions
-(``open_project`` / ``get_tree`` / ``get_document``) plus the read-only scan
-pipeline, and renders the results in a read-only IDE-style layout. It never
+(``open_project``) plus the read-only scan pipeline, and renders the results in
+a document-first layout. It never
 imports the scanner, planner, report builder, provider protocol, Git tooling or
 any command-execution code, never enumerates or reads project files directly
 (all filesystem access is mediated by the boundary), and never decides that an
@@ -16,8 +16,8 @@ Layout (presentation only, no semantics invented):
 * **Navigation rail** — a compact labelled column with **Document** and
   **Preview** as the only always-visible primary destinations, then a divider,
   **Versions** (the accepted-version drawer) and a collapsed **Advanced**
-  disclosure grouping the retained technical surfaces as **Source & Code Map**
-  / **Change Review** / **Validation Evidence**;
+  disclosure grouping the retained technical surfaces as
+  **Change Review** / **Validation Evidence**;
 * **Document workspace** — the primary full-height Working Document editor with
   a document header (selector, New, Open, saved/unsaved state) and a footer
   where Save is the primary action and the candidate actions are contextual;
@@ -25,13 +25,12 @@ Layout (presentation only, no semantics invented):
   (bound document revision, Candidate vs Accepted Version and its bounded state,
   deterministic-fixture provenance, fixed quotation inputs/results, and a
   validation-evidence summary); it never executes a package;
-* **Advanced** (collapsed by default) — Source & Code Map keeps the three-pane
-  project view (Project Explorer, read-only Source Code, Code Map); Change
-  Review keeps Agent Chat, Plan, Diff and the raw Candidate metadata;
-  Validation Evidence keeps Problems, Tests and Evidence. Diff is explicitly
-  unavailable in this slice; nothing is ever written to disk;
-* **Status bar** — one row with a transient message and six right-aligned
-  persistent fields.
+* **Advanced** (collapsed by default) — **Change Review** keeps Agent Chat,
+  Plan, Diff and the raw Candidate metadata; **Validation Evidence** keeps
+  Problems, Tests and Evidence. Diff is explicitly unavailable in this slice;
+  nothing is ever written to disk;
+* **Status bar** — one row with a transient message and four right-aligned
+  persistent fields (root, repository, provider, validation state).
 
 Every visual value is owned by :mod:`hrca.style`; no widget hard-codes an
 ad-hoc colour, radius or padding. Supervision constraints honoured here:
@@ -107,7 +106,7 @@ from PySide6.QtWidgets import (
 
 from ..core import contract
 from . import style
-from ..boundary.client_core import PROVIDER_STATUS_CONFIGURED, PROVIDER_STATUS_FAILED, PROVIDER_STATUS_MISSING_CREDENTIAL, PROVIDER_STATUS_PENDING, PROVIDER_STATUS_UNAVAILABLE, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, STATE_BLOCKED, STATE_FAILED, STATE_IDLE, STATE_RUNNING, STATE_SUCCESS, STATE_UNAVAILABLE, TWIN_AVAILABLE, TWIN_EMPTY, TWIN_LOADING, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, LineBuffer, ResponseRouter, block_type_label, credential_action_message, profile_failure_message, build_add_profile_request, build_compare_draft_request, build_delete_profile_request, build_discard_draft_request, build_generate_intent_delta_request, build_get_code_map_request, build_get_document_request, build_get_draft_request, build_get_profiles_request, build_get_tree_request, build_manage_credential_request, build_open_project_request, build_plan_proposal_request, build_remove_credential_request, build_rename_profile_request, build_request, build_reset_draft_request, build_save_draft_request, build_scan_request, build_set_active_profile_request, build_sync_twin_request, default_fixture_root, format_draft_operations, format_entity_list, format_intent_delta, format_procedural_document, format_proposal, intent_class_label, is_twin_source_path, operation_label, proposal_state_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, advisory_state_label, advisory_unavailable_reason_label, build_plan_advisory_request, build_prepare_advisory_request, format_advisory_disclosure, format_advisory_result, twin_state_from_sync, build_create_document_request, build_open_document_request, build_save_document_request, build_create_candidate_request, build_adopt_candidate_request, build_list_versions_request, build_restore_version_request, document_failure_message, document_kind_label, format_document_state, format_version_list, build_preview_request, format_preview, preview_badge, preview_state_label, preview_state_message, build_get_library_request, build_create_folder_request, build_rename_item_request, build_move_item_request, build_trash_item_request, build_restore_item_request, build_prepare_rule_delta_request, build_interpret_rule_delta_request, format_delta_disclosure, format_delta_interpret_result, delta_interpret_state_label, build_get_memory_documents_request, build_get_memory_record_request, memory_run_rows, claim_rows, record_detail_rows, memory_record_kind_label, memory_state_label, memory_origin_label, MEMORY_QUERY_FACETS, MEMORY_QUERY_ORDERS, MEMORY_ORDER_RELEVANCE, MEMORY_ORDER_RECORDED_TIME, MEMORY_MAX_FILTERS, MEMORY_UNSUPPORTED_FACETS, MEMORY_FACET_LABELS, MEMORY_ORDER_LABELS, memory_facet_label, build_search_memory_request, build_memory_resume_request, memory_hit_rows, memory_resume_view, MEMORY_REVIEW_OPERATIONS, MEMORY_OPERATION_LABELS, memory_operation_label, memory_correction_state_label, memory_correction_source_id, memory_review_view, build_memory_history_request, build_memory_effective_request, build_memory_correction_request, build_memory_code_link_request, build_memory_code_freshness_request, memory_twin_candidate_identities, memory_twin_selector_for, memory_twin_link_is_openable, memory_twin_open_refusal, memory_twin_link_records, memory_twin_freshness_label, memory_twin_actionable_label, memory_link_rows, memory_freshness_rows, build_get_twin_request, format_twin_projection, MEMORY_TWIN_LINK_RECORD_KIND, MEMORY_TWIN_REFUSED_NO_SELECTOR, MEMORY_TWIN_REFUSED_NOT_ACTIONABLE
+from ..boundary.client_core import PROVIDER_STATUS_CONFIGURED, PROVIDER_STATUS_FAILED, PROVIDER_STATUS_MISSING_CREDENTIAL, PROVIDER_STATUS_PENDING, PROVIDER_STATUS_UNAVAILABLE, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, STATE_BLOCKED, STATE_FAILED, STATE_IDLE, STATE_RUNNING, STATE_SUCCESS, STATE_UNAVAILABLE, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, LineBuffer, ResponseRouter, credential_action_message, profile_failure_message, build_add_profile_request, build_delete_profile_request, build_get_profiles_request, build_manage_credential_request, build_open_project_request, build_remove_credential_request, build_rename_profile_request, build_request, build_scan_request, build_set_active_profile_request, default_fixture_root, operation_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, build_create_document_request, build_open_document_request, build_save_document_request, build_create_candidate_request, build_adopt_candidate_request, build_list_versions_request, build_restore_version_request, document_failure_message, document_kind_label, format_document_state, format_version_list, build_preview_request, format_preview, preview_badge, preview_state_label, preview_state_message, build_get_library_request, build_create_folder_request, build_rename_item_request, build_move_item_request, build_trash_item_request, build_restore_item_request, build_prepare_rule_delta_request, build_interpret_rule_delta_request, format_delta_disclosure, format_delta_interpret_result, delta_interpret_state_label, build_get_memory_documents_request, build_get_memory_record_request, memory_run_rows, claim_rows, record_detail_rows, memory_record_kind_label, memory_state_label, memory_origin_label, MEMORY_QUERY_FACETS, MEMORY_QUERY_ORDERS, MEMORY_ORDER_RELEVANCE, MEMORY_ORDER_RECORDED_TIME, MEMORY_MAX_FILTERS, MEMORY_UNSUPPORTED_FACETS, MEMORY_FACET_LABELS, MEMORY_ORDER_LABELS, memory_facet_label, build_search_memory_request, build_memory_resume_request, memory_hit_rows, memory_resume_view, MEMORY_REVIEW_OPERATIONS, MEMORY_OPERATION_LABELS, memory_operation_label, memory_correction_state_label, memory_correction_source_id, memory_review_view, build_memory_history_request, build_memory_effective_request, build_memory_correction_request
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
 # boundary error. These are display-only; they are distinct from the contract
@@ -119,17 +118,6 @@ REASON_LAUNCH_FAILED = "launch_failed"
 _DEFAULT_SCAN_PATH = default_fixture_root()
 _DEFAULT_TIMEOUT_MS = 15000
 
-# Fixed, honest one-line descriptions for each bounded Twin presentation state.
-# No Twin entity exists in P3.2, so none of these is derived from source; they
-# are the only text the surface ever shows and are not persisted.
-_TWIN_LABELS = {
-    "empty": "No Code Map has been generated for this project.",
-    "loading": "Code Map synchronization is in progress.",
-    "available": "A Code Map is available.",
-    "stale": "The Code Map is stale relative to the source.",
-    "conflict": "The Code Map conflicts with the source.",
-    "unsupported": "Code Map generation is unsupported for this project.",
-}
 
 # Fixed, honest unavailable text for the Diff surface. Until a code proposal
 # capability exists there is nothing to diff and no way to apply changes, so
@@ -140,9 +128,6 @@ _DIFF_UNAVAILABLE = (
     "no way to apply changes."
 )
 
-# The fixed, honest notice shown on the editable Code Map surface. Every edit
-# becomes a Twin Draft only — it never modifies source, Git state or files.
-_DRAFT_NOTICE = "Edits create a draft only. Source code is unchanged."
 
 # Preview state -> semantic colour token (P4.5). The badge always carries the
 # state word too, so colour is never the sole signal.
@@ -195,19 +180,8 @@ _RULE_DELTA_REVIEWABLE = "reviewable_candidate"
 MEMORY_SCOPE_NOTE = (
     "Read-only views over stored runs. Export, backup and recovery are offline "
     "operator (CLI) workflows: this desktop never packages, restores or "
-    "replaces a Memory store. A Code Twin link is a typed reference, not source "
-    "truth, and its freshness is whatever the Twin last reported."
+    "replaces a Memory store."
 )
-
-
-def _twin_rows(rows: List[tuple]) -> List[tuple]:
-    """Return labelled rows in the detail renderer's ``(field, value, reported)``
-    shape.
-
-    A link and a freshness verdict are values the boundary returned, not
-    source-reported text, so no row is marked as merely reported.
-    """
-    return [(str(name), str(value), False) for name, value in rows]
 
 
 # Fixed, honest unavailable messages for the document surface. Each ``reason``
@@ -256,16 +230,15 @@ _SETTINGS_SECTION_LABELS = {
     "about": "About",
 }
 
-# The six content destinations the labelled navigation rail pages. Document and
+# The five content destinations the labelled navigation rail pages. Document and
 # Preview are the only always-visible primary destinations; Versions opens the
-# accepted-version drawer; the Advanced group exposes the three secondary views
-# (Source & Code Map / Change Review / Validation Evidence) collapsed by default.
+# accepted-version drawer; the Advanced group exposes the two secondary views
+# (Change Review / Validation Evidence) collapsed by default.
 _NAV_DESTINATIONS = (
     "document",
     "preview",
     "versions",
     "memory",
-    "source_code_map",
     "change_review",
     "validation_evidence",
 )
@@ -276,8 +249,8 @@ _NAV_DESTINATION_INDEX = {
     key: index for index, key in enumerate(_NAV_DESTINATIONS)
 }
 
-# The three destinations grouped under the collapsed Advanced disclosure.
-_ADVANCED_DESTINATIONS = ("source_code_map", "change_review", "validation_evidence")
+# The two destinations grouped under the collapsed Advanced disclosure.
+_ADVANCED_DESTINATIONS = ("change_review", "validation_evidence")
 
 # Human-readable rail labels (one per destination, same order as _NAV_DESTINATIONS).
 _NAV_LABELS = {
@@ -285,7 +258,6 @@ _NAV_LABELS = {
     "preview": "Preview",
     "versions": "Versions",
     "memory": "Memory",
-    "source_code_map": "Source & Code Map",
     "change_review": "Change Review",
     "validation_evidence": "Validation Evidence",
 }
@@ -426,64 +398,6 @@ class CodeView(QPlainTextEdit):
         cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
         self.setTextCursor(cursor)
         self.centerCursor()
-
-
-class DocumentView(QWidget):
-    """A read-only document surface: a labelled banner over a code body.
-
-    Three modes, driven by the boundary's document ``kind``:
-
-    * ``source``      — syntax-highlighted source, banner hidden;
-    * ``preview``     — plain read-only text under a "Read-only preview" banner;
-    * ``unavailable`` — a bounded banner explaining why the file cannot be shown
-      (binary / unsupported / missing / unreadable / oversized), empty body.
-    """
-
-    def __init__(
-        self,
-        parent: Optional[QWidget] = None,
-        palette: Optional[style.Palette] = None,
-    ) -> None:
-        super().__init__(parent)
-        self._palette = palette or style.palette_for()
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        layout.setSpacing(style.SPACE_0)
-
-        self._banner = QLabel()
-        self._banner.setObjectName("documentBanner")
-        self._banner.setWordWrap(True)
-        self._banner.setVisible(False)
-        layout.addWidget(self._banner)
-
-        self._body = CodeView(self, palette=self._palette)
-        layout.addWidget(self._body, stretch=1)
-
-    def show_source(self, content: str) -> None:
-        """Show syntax-highlighted source with no banner."""
-        self._banner.setVisible(False)
-        self._body.setPlainText(content)
-
-    def show_preview(self, name: str, content: str) -> None:
-        """Show a labelled read-only text preview."""
-        self._banner.setText(f"Read-only preview — {name}")
-        self._banner.setStyleSheet(style.preview_banner_style(self._palette))
-        self._banner.setVisible(True)
-        self._body.setPlainText(content)
-
-    def show_unavailable(self, name: str, reason: str) -> None:
-        """Show a bounded unavailable banner and an empty body."""
-        message = _UNAVAILABLE_TEXT.get(reason, _UNAVAILABLE_FALLBACK)
-        self._banner.setText(f"{name} — {message}")
-        self._banner.setStyleSheet(style.unavailable_banner_style(self._palette))
-        self._banner.setVisible(True)
-        self._body.setPlainText("")
-
-    def reveal_line(self, lineno: int) -> None:
-        """Scroll the code body to ``lineno`` (1-based source line)."""
-        self._body.reveal_line(lineno)
 
 
 class ElidedLabel(QLabel):
@@ -654,7 +568,7 @@ class _DocumentTreeView(_ProjectTreeView):
 
 
 class MainWindow(QMainWindow):
-    """Render the IDE workspace shell (P3.2 presentation-only surface)."""
+    """Render the desktop client (presentation-only product surface)."""
 
     def __init__(
         self,
@@ -668,7 +582,6 @@ class MainWindow(QMainWindow):
 
         self._root: Optional[str] = None
         self._repository_state: str = REPOSITORY_UNVERIFIED
-        self._twin_state: str = TWIN_EMPTY
         self._provider_state: str = PROVIDER_UNAVAILABLE
         # P4.2a provider presentation state: the allowlisted model and redacted
         # credential presence reported by the boundary, plus the fixed-height
@@ -699,48 +612,7 @@ class MainWindow(QMainWindow):
         self._profile_cards: Dict[str, Dict[str, Any]] = {}
         self._empty_state_label: Optional[QLabel] = None
         self._validation_state: str = VALIDATION_IDLE
-        self._current_document: Optional[str] = None
-        self._tree: Optional[Dict[str, Any]] = None
-        self._open_tabs: Dict[str, DocumentView] = {}
         self._pending: Dict[str, tuple] = {}
-        self._pending_reveal_line: Optional[int] = None
-        # Monotonic selection generation: every Twin request chain is tagged with
-        # the generation that started it, so a late response for a previously
-        # selected file is discarded instead of overwriting the current one.
-        self._twin_generation: int = 0
-        # Follow/pin state for the Code Map pane: unlocked (follow) by default,
-        # pinned (lock) to the currently displayed Code Map's source path.
-        self._twin_pinned: bool = False
-        self._active_twin_path: Optional[str] = None
-        # Procedural Code Map (P3.4) state: the current blocks, document, entity
-        # list and active entity locator, plus edit-mode / dirty / block bookkeeping.
-        self._codemap_blocks: List[Dict[str, Any]] = []
-        self._codemap_text: str = ""
-        self._codemap_entities: List[Dict[str, Any]] = []
-        self._active_entity_locator: Optional[str] = None
-        # In-place Code Map status line: shows "Updating Code Map for <path>…"
-        # during a file switch and a bounded failure message on request failure,
-        # while the previous valid projection stays mounted underneath.
-        self._codemap_status: Optional[QLabel] = None
-        # Chip state captured before a Code Map load begins, so a failed load
-        # can restore the retained projection's state instead of flashing Empty.
-        self._codemap_prior_state: str = TWIN_EMPTY
-        # True while a file-switch Code Map load is in flight (a scoped sync or
-        # get is pending); cleared on load or failure.
-        self._codemap_load_pending: bool = False
-        self._codemap_details_visible: bool = False
-        self._edit_mode: bool = False
-        self._draft_dirty: bool = False
-        self._draft_operations: List[Dict[str, Any]] = []
-        self._draft_controls: Dict[str, QWidget] = {}
-        self._draft_op_kinds: Dict[str, str] = {}
-        self._draft_originals: Dict[str, str] = {}
-        self._draft_unresolved: Dict[str, QPushButton] = {}
-        # Pending advisory confirmation state (P4.2b): the content-addressed
-        # token and the itemized disclosure shown to the user before the single
-        # confirmed request. Neither holds a credential, prompt or source text.
-        self._pending_advisory_token: Optional[str] = None
-        self._pending_advisory_disclosure: str = ""
         # Pending provider-to-rule-delta interpretation state (P4.8): the
         # content-addressed token and itemized disclosure shown before the single
         # confirmed request, the document the token is bound to, the in-flight
@@ -812,21 +684,6 @@ class MainWindow(QMainWindow):
         self._memory_review_version_id: Optional[str] = None
         self._memory_review_attempt_token: str = contract.new_correlation_id()
 
-        # Memory Code Twin link state (M4.5/v2c): the reviewed link and its
-        # returned freshness verdict, the run/record/identity selection the link
-        # was bound to, the generation that invalidates outstanding link and
-        # open actions, and the identity the open is currently proving.
-        self._memory_twin_generation: int = 0
-        self._memory_twin_document_sets: List[Dict[str, Any]] = []
-        self._memory_twin_record: Optional[Dict[str, Any]] = None
-        self._memory_twin_link: Optional[Dict[str, Any]] = None
-        self._memory_twin_freshness: Optional[Dict[str, Any]] = None
-        self._memory_twin_context: Optional[tuple] = None
-        self._memory_twin_open_identity: Optional[str] = None
-        self._memory_twin_candidates: List[Dict[str, Any]] = []
-        self._memory_twin_outcomes: List[Dict[str, Any]] = []
-        self._memory_twin_index: int = 0
-        self._memory_twin_resolved_count: int = 0
 
         self._document_id: Optional[str] = None
         self._document_name: Optional[str] = None
@@ -863,7 +720,6 @@ class MainWindow(QMainWindow):
         # Deferred exit intents resolved after a save completes: "edit" returns
         # to the read-only projection; "close" closes the window.
         self._leave_after_save: bool = False
-        self._close_after_save: bool = False
         # Primary navigation state (replaces the old bottom-panel tab model): the
         # labelled rail's destination buttons keyed by destination, the current
         # destination, the Advanced disclosure and its collapsed group, and the
@@ -914,12 +770,15 @@ class MainWindow(QMainWindow):
         )
         self._build_ui()
         self._set_neutral_status()
-        self._set_twin_state(TWIN_EMPTY)
+        # Populate the status strip once at startup so it shows the bounded
+        # baseline values (root/repo/provider/validation) rather than empty
+        # fields until the first operation writes them.
+        self._update_status()
 
     # -- UI construction -------------------------------------------------
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("Human-Readable Code Agent")
+        self.setWindowTitle("PrimaAgent")
         self.resize(style.WINDOW_DEFAULT_WIDTH, style.WINDOW_DEFAULT_HEIGHT)
         self.setMinimumSize(style.WINDOW_MIN_WIDTH, style.WINDOW_MIN_HEIGHT)
 
@@ -964,21 +823,6 @@ class MainWindow(QMainWindow):
 
         root.addWidget(self._build_status_bar())
 
-    def _configure_primary_splitter(self) -> None:
-        splitter = self._horizontal_splitter
-        splitter.setCollapsible(0, True)   # explorer collapsible
-        splitter.setCollapsible(1, False)
-        splitter.setCollapsible(2, False)
-        splitter.setStretchFactor(0, style.EXPLORER_STRETCH)
-        splitter.setStretchFactor(1, style.SOURCE_STRETCH)
-        splitter.setStretchFactor(2, style.TWIN_STRETCH)
-        splitter.setSizes(
-            [
-                style.EXPLORER_DEFAULT_WIDTH,
-                style.PRIMARY_SOURCE_INITIAL_WIDTH,
-                style.PRIMARY_TWIN_INITIAL_WIDTH,
-            ]
-        )
 
     def _build_command_bar(self) -> QWidget:
         bar = QWidget()
@@ -1044,335 +888,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._provider_status_label, stretch=1)
         return region
 
-    def _build_explorer(self) -> QWidget:
-        panel = QWidget()
-        panel.setObjectName("explorerPanel")
-        panel.setMinimumWidth(style.EXPLORER_MIN_WIDTH)
-        panel.setMaximumWidth(style.EXPLORER_MAX_WIDTH)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
-        layout.setSpacing(style.SPACE_0)
-
-        header, _ = self._header_row("Project Explorer")
-        layout.addWidget(header)
-
-        self._tree_model = QStandardItemModel()
-        self._tree_model.setHorizontalHeaderLabels(["Name"])
-        self._tree_view = _ProjectTreeView()
-        self._tree_view.setObjectName("projectTree")
-        self._tree_view.setModel(self._tree_model)
-        self._tree_view.setHeaderHidden(True)
-        self._tree_view.setRootIsDecorated(True)
-        self._tree_view.setIndentation(style.TREE_INDENT)
-        self._tree_view.setUniformRowHeights(True)
-        self._tree_view.setAnimated(False)
-        self._tree_view.setSortingEnabled(False)
-        self._tree_view.setAlternatingRowColors(False)
-        self._tree_view.setFrameShape(QFrame.NoFrame)
-        self._tree_view.setAccessibleName("Project Explorer")
-        self._tree_view.clicked.connect(self._on_tree_clicked)
-        layout.addWidget(self._tree_view, stretch=1)
-
-        self._project_label = ElidedLabel("No project open")
-        self._project_label.setObjectName("projectRootLabel")
-        self._project_label.setStyleSheet(style.project_root_label_style(self._palette))
-        layout.addWidget(self._project_label)
-        return panel
-
-    def _build_source(self) -> QWidget:
-        panel = QWidget()
-        panel.setObjectName("sourcePanel")
-        panel.setMinimumWidth(style.SOURCE_MIN_WIDTH)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
-        layout.setSpacing(style.SPACE_0)
-
-        self._source_stack = QStackedWidget()
-
-        empty_page = QWidget()
-        empty_layout = QVBoxLayout(empty_page)
-        empty_layout.addStretch(1)
-        empty_layout.addWidget(
-            self._empty_label(
-                "No document open — select a file in the Project Explorer to "
-                "view its source."
-            )
-        )
-        empty_layout.addStretch(1)
-        self._source_stack.addWidget(empty_page)
-
-        self._source_tabs = QTabWidget()
-        self._source_tabs.setObjectName("sourceTabs")
-        self._source_tabs.setTabsClosable(True)
-        self._source_tabs.setMovable(True)
-        self._source_tabs.setDocumentMode(True)
-        self._source_tabs.setUsesScrollButtons(True)
-        self._source_tabs.setElideMode(Qt.ElideNone)
-        self._source_tabs.tabCloseRequested.connect(self._close_tab)
-        self._source_tabs.currentChanged.connect(self._on_source_tab_changed)
-        self._source_stack.addWidget(self._source_tabs)
-
-        layout.addWidget(self._source_stack, stretch=1)
-        self._source_stack.setCurrentIndex(0)
-        return panel
-
-    def _build_twin(self) -> QWidget:
-        panel = QWidget()
-        panel.setObjectName("twinPanel")
-        panel.setMinimumWidth(style.TWIN_MIN_WIDTH)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
-        layout.setSpacing(style.SPACE_0)
-
-        header, header_layout = self._header_row("Code Map")
-        self._twin_header_label = header_layout.itemAt(0).widget()
-        self._twin_header_label.setAccessibleName("Code Map")
-        self._twin_chip = QLabel()
-        self._twin_chip.setObjectName("twinChip")
-        self._twin_chip.setAccessibleName("Twin state")
-        header_layout.addWidget(self._twin_chip)
-        header_layout.addStretch(1)
-
-        # Editable Code Map action (P3.4): a checkable control that switches the
-        # pane between the read-only procedural document and the draft surface.
-        self._edit_button = QPushButton("Edit Code Map")
-        self._edit_button.setObjectName("editCodeMapButton")
-        self._edit_button.setCheckable(True)
-        self._edit_button.setAccessibleName("Edit Code Map")
-        self._edit_button.setToolTip(
-            "Edit the Code Map procedural blocks; edits become a draft only."
-        )
-        self._edit_button.toggled.connect(self._on_edit_toggled)
-        header_layout.addWidget(self._edit_button)
-
-        # Single monochrome pin control on the right of the header, after the
-        # state chip. It is a checkable vector-drawn lock, never an emoji, glyph
-        # or icon asset.
-        self._twin_lock_button = QToolButton()
-        self._twin_lock_button.setObjectName("twinLockButton")
-        self._twin_lock_button.setCheckable(True)
-        self._twin_lock_button.setFocusPolicy(Qt.StrongFocus)
-        self._twin_lock_button.setAccessibleDescription(
-            "Pins the Code Map to the current file; unpinning follows the active "
-            "source tab."
-        )
-        self._twin_lock_button.toggled.connect(self._on_twin_lock_toggled)
-        header_layout.addWidget(self._twin_lock_button)
-        layout.addWidget(header)
-
-        # The pane body is a two-page stack: page 0 is the read-only procedural
-        # document (entity list + document + evidence); page 1 is the editable
-        # draft surface. Editing never removes the read-only document.
-        self._twin_stack = QStackedWidget()
-        self._twin_stack.setObjectName("twinStack")
-        self._twin_stack.addWidget(self._build_twin_readonly_body())
-        self._twin_stack.addWidget(self._build_edit_surface())
-        layout.addWidget(self._twin_stack, stretch=1)
-
-        self._update_lock_control()
-        self._update_edit_control()
-        return panel
-
-    def _build_twin_readonly_body(self) -> QWidget:
-        body = QWidget()
-        body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(
-            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
-        )
-        body_layout.setSpacing(style.GAP_TIGHT)
-
-        # Compact ordered entity list (file view): module / class / function
-        # entries. Selecting one reveals that entity's nested procedure.
-        entity_header = QWidget()
-        entity_header_layout = QHBoxLayout(entity_header)
-        entity_header_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        entity_label = QLabel("Entities")
-        entity_label.setObjectName("codemapEntitiesLabel")
-        entity_label.setStyleSheet(style.secondary_text_style(self._palette))
-        entity_header_layout.addWidget(entity_label)
-        entity_header_layout.addStretch(1)
-
-        self._codemap_details_button = QPushButton("Details")
-        self._codemap_details_button.setObjectName("codemapDetailsButton")
-        self._codemap_details_button.setCheckable(True)
-        self._codemap_details_button.setAccessibleName("Show Code Map evidence")
-        self._codemap_details_button.toggled.connect(self._on_details_toggled)
-        entity_header_layout.addWidget(self._codemap_details_button)
-        body_layout.addWidget(entity_header)
-
-        # Small in-place status line, always mounted at a fixed height. It
-        # carries the "Updating Code Map for …" indicator and bounded failure
-        # messages without ever replacing the mounted procedural document or
-        # changing the body geometry (the region is permanently reserved, so a
-        # message appearing or clearing never shifts the document below it).
-        self._codemap_status = QLabel("")
-        self._codemap_status.setObjectName("codemapStatus")
-        self._codemap_status.setAccessibleName("Code Map status")
-        self._codemap_status.setWordWrap(False)
-        self._codemap_status.setTextFormat(Qt.PlainText)
-        self._codemap_status.setStyleSheet(style.secondary_text_style(self._palette))
-        self._codemap_status.setFixedHeight(style.CODEMAP_STATUS_HEIGHT)
-        body_layout.addWidget(self._codemap_status)
-
-        self._codemap_entity_list = QListWidget()
-        self._codemap_entity_list.setObjectName("codemapEntityList")
-        self._codemap_entity_list.setAccessibleName("Code Map entities")
-        self._codemap_entity_list.setMaximumHeight(style.CODEMAP_ENTITY_LIST_MAX_HEIGHT)
-        self._codemap_entity_list.setVisible(False)
-        self._codemap_entity_list.itemClicked.connect(self._on_entity_selected)
-        body_layout.addWidget(self._codemap_entity_list)
-
-        self._codemap_document = QPlainTextEdit()
-        self._codemap_document.setObjectName("codemapDocument")
-        self._codemap_document.setReadOnly(True)
-        self._codemap_document.setAccessibleName("Code Map content")
-        body_layout.addWidget(self._codemap_document, stretch=1)
-
-        self._codemap_details = QPlainTextEdit()
-        self._codemap_details.setObjectName("codemapDetails")
-        self._codemap_details.setReadOnly(True)
-        self._codemap_details.setAccessibleName("Code Map evidence")
-        self._codemap_details.setVisible(False)
-        body_layout.addWidget(self._codemap_details)
-        return body
-
-    def _build_edit_surface(self) -> QWidget:
-        surface = QWidget()
-        surface.setObjectName("editCodeMapSurface")
-        layout = QVBoxLayout(surface)
-        layout.setContentsMargins(style.INSET, style.GAP_TIGHT, style.INSET, style.INSET)
-        layout.setSpacing(style.GAP_TIGHT)
-
-        self._draft_notice = QLabel(_DRAFT_NOTICE)
-        self._draft_notice.setObjectName("draftNotice")
-        self._draft_notice.setWordWrap(True)
-        self._draft_notice.setStyleSheet(style.draft_notice_style(self._palette))
-        self._draft_notice.setAccessibleName("Draft notice")
-        layout.addWidget(self._draft_notice)
-
-        self._draft_facts = QLabel("")
-        self._draft_facts.setObjectName("draftFacts")
-        self._draft_facts.setWordWrap(True)
-        self._draft_facts.setTextFormat(Qt.PlainText)
-        self._draft_facts.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self._draft_facts.setStyleSheet(style.secondary_text_style(self._palette))
-        self._draft_facts.setAccessibleName("Read-only facts")
-        layout.addWidget(self._draft_facts)
-
-        # Structure controls: draft-only note/step inputs. A non-empty value is
-        # collected on save as an ``insert_block`` operation (a draft-scoped
-        # block, never a verified source fact).
-        structure = QWidget()
-        structure_layout = QVBoxLayout(structure)
-        structure_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        structure_layout.setSpacing(style.GAP_TIGHT)
-        note_row = QWidget()
-        note_layout = QHBoxLayout(note_row)
-        note_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        note_layout.setSpacing(style.GAP_TIGHT)
-        note_label = QLabel("Add note")
-        note_label.setObjectName("draftFieldLabel")
-        note_label.setStyleSheet(style.draft_field_label_style(self._palette))
-        self._note_input = QLineEdit()
-        self._note_input.setObjectName("draftNoteInput")
-        self._note_input.setAccessibleName("Add note text")
-        self._note_input.textChanged.connect(self._mark_draft_dirty)
-        note_layout.addWidget(note_label)
-        note_layout.addWidget(self._note_input, stretch=1)
-        structure_layout.addWidget(note_row)
-
-        step_row = QWidget()
-        step_layout = QHBoxLayout(step_row)
-        step_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        step_layout.setSpacing(style.GAP_TIGHT)
-        step_label = QLabel("Add step")
-        step_label.setObjectName("draftFieldLabel")
-        step_label.setStyleSheet(style.draft_field_label_style(self._palette))
-        self._step_input = QLineEdit()
-        self._step_input.setObjectName("draftStepInput")
-        self._step_input.setAccessibleName("Add step text")
-        self._step_input.textChanged.connect(self._mark_draft_dirty)
-        step_layout.addWidget(step_label)
-        step_layout.addWidget(self._step_input, stretch=1)
-        structure_layout.addWidget(step_row)
-        layout.addWidget(structure)
-
-        # Scrollable inline edits: one row per editable block (purpose text and
-        # decision condition) plus a mark-unresolved toggle. Verified facts are
-        # never exposed as editable.
-        self._draft_fields = QWidget()
-        self._draft_fields_layout = QVBoxLayout(self._draft_fields)
-        self._draft_fields_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        self._draft_fields_layout.setSpacing(style.GAP_TIGHT)
-        self._draft_scroll = QScrollArea()
-        self._draft_scroll.setObjectName("draftFieldsScroll")
-        self._draft_scroll.setWidgetResizable(True)
-        self._draft_scroll.setFrameShape(QFrame.NoFrame)
-        self._draft_scroll.setWidget(self._draft_fields)
-        layout.addWidget(self._draft_scroll, stretch=1)
-
-        # Read-only Compare / Generate result area (hidden until produced).
-        self._draft_result = QPlainTextEdit()
-        self._draft_result.setObjectName("draftResult")
-        self._draft_result.setReadOnly(True)
-        self._draft_result.setFixedHeight(style.DRAFT_RESULT_HEIGHT)
-        self._draft_result.setAccessibleName("Draft result")
-        self._draft_result.setVisible(False)
-        layout.addWidget(self._draft_result)
-
-        actions = QWidget()
-        actions_layout = QHBoxLayout(actions)
-        actions_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        actions_layout.setSpacing(style.GAP_TIGHT)
-        self.save_draft_button = QPushButton("Save")
-        self.discard_draft_button = QPushButton("Discard")
-        self.reset_draft_button = QPushButton("Reset")
-        self.compare_draft_button = QPushButton("Compare")
-        self.generate_draft_button = QPushButton("Generate")
-        self.plan_proposal_button = QPushButton("Plan proposal")
-        self.advisory_button = QPushButton("Advisory plan")
-        self.save_draft_button.setAccessibleName("Save Code Map draft")
-        self.discard_draft_button.setAccessibleName("Discard Code Map draft")
-        self.reset_draft_button.setAccessibleName("Reset Code Map draft")
-        self.compare_draft_button.setAccessibleName("Compare Code Map draft")
-        self.generate_draft_button.setAccessibleName("Generate Intent Delta")
-        self.plan_proposal_button.setAccessibleName("Plan proposal")
-        self.advisory_button.setAccessibleName("Advisory plan")
-        self.advisory_button.setToolTip(
-            "Prepare a disclosure and, after explicit confirmation, make one "
-            "low-budget DeepSeek advisory planning call."
-        )
-        self.save_draft_button.clicked.connect(self._save_draft)
-        self.discard_draft_button.clicked.connect(self._discard_draft)
-        self.reset_draft_button.clicked.connect(self._reset_draft)
-        self.compare_draft_button.clicked.connect(self._compare_draft)
-        self.generate_draft_button.clicked.connect(self._generate_intent_delta)
-        self.plan_proposal_button.clicked.connect(self._plan_proposal)
-        self.advisory_button.clicked.connect(self._prepare_advisory)
-        for button in (
-            self.save_draft_button,
-            self.discard_draft_button,
-            self.reset_draft_button,
-            self.compare_draft_button,
-            self.generate_draft_button,
-            self.plan_proposal_button,
-            self.advisory_button,
-        ):
-            actions_layout.addWidget(button)
-        layout.addWidget(actions)
-        return surface
 
     def _build_nav_rail(self) -> QWidget:
         """Build the compact labelled navigation rail.
@@ -1445,25 +960,12 @@ class MainWindow(QMainWindow):
         """Build the single content stack that pages every destination.
 
         Document and Preview are primary full-height workspaces; Versions is the
-        accepted-version drawer; the three Advanced pages group the retained
+        accepted-version drawer; the two Advanced pages group the retained
         technical surfaces. Every page is built once and kept alive for the
         window's lifetime, so no surface output is silently discarded.
         """
         stack = QStackedWidget()
         stack.setObjectName("contentStack")
-
-        # Source & Code Map: the retained three-pane project view (explorer,
-        # read-only source tabs, Code Map). The explorer no longer permanently
-        # consumes space because this whole page lives behind Advanced.
-        self._horizontal_splitter = HairlineSplitter(Qt.Horizontal, self._palette)
-        self._horizontal_splitter.setObjectName("primaryWorkspace")
-        self._explorer_panel = self._build_explorer()
-        self._source_panel = self._build_source()
-        self._twin_panel = self._build_twin()
-        self._horizontal_splitter.addWidget(self._explorer_panel)
-        self._horizontal_splitter.addWidget(self._source_panel)
-        self._horizontal_splitter.addWidget(self._twin_panel)
-        self._configure_primary_splitter()
 
         self._views: Dict[str, CodeView] = {}
         self._document_page = self._build_document_workspace()
@@ -1471,7 +973,6 @@ class MainWindow(QMainWindow):
         stack.addWidget(self._build_preview_workspace())
         stack.addWidget(self._build_versions_page())
         stack.addWidget(self._build_memory_page())
-        stack.addWidget(self._horizontal_splitter)
         stack.addWidget(self._build_change_review_page())
         stack.addWidget(self._build_validation_evidence_page())
 
@@ -1786,19 +1287,16 @@ class MainWindow(QMainWindow):
     def _build_memory_page(self) -> QWidget:
         """Build the read-only Memory destination.
 
-        Five read-only pages over the same bounded protocol: Documents (the
+        Four read-only pages over the same bounded protocol: Documents (the
         projected claims of one run and their exact supporting records), Search
         (a faceted cross-run query with relevance or recorded-time ordering),
-        Resume (the evidence-linked resume), Corrections (human revisions, with
-        the generated statement always alongside the effective one) and Code
-        Twin (the typed link between one stored record and one exact Twin
-        entity, with the freshness the Twin itself reports).
+        Resume (the evidence-linked resume) and Corrections (human revisions,
+        with the generated statement always alongside the effective one).
 
         Every state is carried by words, so colour assists but never decides: a
-        claim's provenance, a hit's match and time status, a resume's
-        unsupported or not-verified facts, and a link's freshness and
-        actionability are all textual labels, and nothing here claims freshness
-        or verification the schema cannot support.
+        claim's provenance, a hit's match and time status, and a resume's
+        unsupported or not-verified facts are all textual labels, and nothing
+        here claims freshness or verification the schema cannot support.
 
         Export, backup and recovery are deliberately absent: they are offline
         operator workflows with no route to this process, so the note below
@@ -1831,7 +1329,6 @@ class MainWindow(QMainWindow):
         self._memory_tabs.addTab(self._build_memory_search_page(), "Search")
         self._memory_tabs.addTab(self._build_memory_resume_page(), "Resume")
         self._memory_tabs.addTab(self._build_memory_review_page(), "Corrections")
-        self._memory_tabs.addTab(self._build_memory_twin_page(), "Code Twin")
         layout.addWidget(self._memory_tabs, stretch=1)
         return body
 
@@ -2638,809 +2135,6 @@ class MainWindow(QMainWindow):
         return panel
 
     # -- Memory review: corrections, confirmation and history (M4.5/v1b) ---
-
-    # -- Memory Code Twin link: building ------------------------------------
-
-    def _build_memory_twin_page(self) -> QWidget:
-        """Build the Code Twin page: one typed link and its returned freshness.
-
-        Two steps, because the protocol has two: **Bind link** records a link
-        against the entity the Twin holds now, and **Refresh freshness**
-        re-compares that held link with the Twin as it is later. They are
-        deliberately separate. A link is a value carrying the revision it was
-        taken at, and freshness is a fresh comparison against it — so re-binding
-        would silently erase exactly the drift this page exists to report, and a
-        link recorded against a retained or absent entity could not be bound at
-        all.
-
-        Opening is offered only while the boundary itself reported the held link
-        actionable, and is settled by the returned artifact's own id rather than
-        by the selector having resolved to *something*.
-
-        Export, backup and recovery are deliberately not here. They are offline
-        operator workflows with no route into this process, so a packaging or
-        restore control would offer a capability the boundary cannot serve.
-        """
-        body = QWidget()
-        body.setObjectName("memoryTwinPanel")
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(
-            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.SPACE_0
-        )
-        layout.setSpacing(style.GAP_TIGHT)
-
-        controls = QWidget()
-        controls_layout = QHBoxLayout(controls)
-        controls_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        controls_layout.setSpacing(style.GAP_TIGHT)
-
-        self._memory_twin_run_selector = QComboBox()
-        self._memory_twin_run_selector.setObjectName("memoryTwinRunSelector")
-        self._memory_twin_run_selector.setAccessibleName("Code Twin link run")
-        self._memory_twin_run_selector.setToolTip(
-            "The stored run whose source claim is reviewed"
-        )
-        self._memory_twin_run_selector.currentIndexChanged.connect(
-            self._on_memory_twin_run_changed
-        )
-        controls_layout.addWidget(self._memory_twin_run_selector)
-
-        self._memory_twin_record_selector = QComboBox()
-        self._memory_twin_record_selector.setObjectName("memoryTwinRecordSelector")
-        self._memory_twin_record_selector.setAccessibleName("Code Twin link record")
-        self._memory_twin_record_selector.setToolTip(
-            "The exact source-claim record the link is bound to"
-        )
-        self._memory_twin_record_selector.currentIndexChanged.connect(
-            self._on_memory_twin_record_changed
-        )
-        controls_layout.addWidget(self._memory_twin_record_selector)
-
-        self._memory_twin_bind_button = QPushButton("Bind link")
-        self._memory_twin_bind_button.setObjectName("memoryTwinBindButton")
-        self._memory_twin_bind_button.setAccessibleName("Bind the Code Twin link")
-        self._memory_twin_bind_button.setToolTip(
-            "Bind the link against the authoritative Twin and read its freshness"
-        )
-        self._memory_twin_bind_button.clicked.connect(self._bind_memory_twin_link)
-        controls_layout.addWidget(self._memory_twin_bind_button)
-
-        self._memory_twin_refresh_button = QPushButton("Refresh freshness")
-        self._memory_twin_refresh_button.setObjectName("memoryTwinRefreshButton")
-        self._memory_twin_refresh_button.setAccessibleName(
-            "Refresh the Code Twin freshness"
-        )
-        self._memory_twin_refresh_button.setToolTip(
-            "Re-compare the held link with the Twin now; the link itself is "
-            "never re-bound, so a moved revision is reported rather than erased"
-        )
-        self._memory_twin_refresh_button.clicked.connect(
-            self._refresh_memory_twin_freshness
-        )
-        controls_layout.addWidget(self._memory_twin_refresh_button)
-
-        controls_layout.addStretch(1)
-        layout.addWidget(controls)
-
-        self._memory_twin_status = QLabel("")
-        self._memory_twin_status.setObjectName("memoryTwinStatus")
-        self._memory_twin_status.setWordWrap(True)
-        self._memory_twin_status.setStyleSheet(
-            style.memory_placeholder_style(self._palette)
-        )
-        layout.addWidget(self._memory_twin_status)
-
-        splitter = HairlineSplitter(Qt.Horizontal, self._palette)
-        splitter.setObjectName("memoryTwinSplitter")
-        splitter.addWidget(self._build_memory_twin_link_panel())
-        splitter.addWidget(self._build_memory_twin_source_panel())
-        splitter.setStretchFactor(0, style.MEMORY_PANE_STRETCH)
-        splitter.setStretchFactor(1, style.MEMORY_PANE_STRETCH)
-        layout.addWidget(splitter, stretch=1)
-
-        self._clear_memory_twin("Review a link to read its identity and freshness.")
-        return body
-
-    def _build_memory_twin_link_panel(self) -> QWidget:
-        """Build the link and freshness panel, and the gated open action."""
-        panel = QWidget()
-        panel.setObjectName("memoryTwinLinkPanel")
-        panel.setMinimumWidth(style.MEMORY_CLAIM_LIST_MIN_WIDTH)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.GAP_TIGHT, style.SPACE_0
-        )
-        layout.setSpacing(style.GAP_TIGHT)
-
-        outcome_heading = QLabel("Candidate identities")
-        outcome_heading.setObjectName("memoryTwinHeading")
-        outcome_heading.setFont(style.panel_header_font())
-        outcome_heading.setStyleSheet(style.secondary_text_style(self._palette))
-
-        self._memory_twin_outcome_body = QWidget()
-        self._memory_twin_outcome_body.setObjectName("memoryTwinOutcomeBody")
-        self._memory_twin_outcome_layout = QVBoxLayout(self._memory_twin_outcome_body)
-        self._memory_twin_outcome_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        self._memory_twin_outcome_layout.setSpacing(style.SPACE_4)
-
-        link_heading = QLabel("Link")
-        link_heading.setObjectName("memoryTwinHeading")
-        link_heading.setFont(style.panel_header_font())
-        link_heading.setStyleSheet(style.secondary_text_style(self._palette))
-
-        self._memory_twin_link_body = QWidget()
-        self._memory_twin_link_body.setObjectName("memoryTwinLinkBody")
-        self._memory_twin_link_layout = QVBoxLayout(self._memory_twin_link_body)
-        self._memory_twin_link_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        self._memory_twin_link_layout.setSpacing(style.GAP_GROUP)
-
-        freshness_heading = QLabel("Freshness")
-        freshness_heading.setObjectName("memoryTwinHeading")
-        freshness_heading.setFont(style.panel_header_font())
-        freshness_heading.setStyleSheet(style.secondary_text_style(self._palette))
-
-        self._memory_twin_freshness_body = QWidget()
-        self._memory_twin_freshness_body.setObjectName("memoryTwinFreshnessBody")
-        self._memory_twin_freshness_layout = QVBoxLayout(
-            self._memory_twin_freshness_body
-        )
-        self._memory_twin_freshness_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        self._memory_twin_freshness_layout.setSpacing(style.GAP_GROUP)
-
-        host = QWidget()
-        host_layout = QVBoxLayout(host)
-        host_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        host_layout.setSpacing(style.GAP_TIGHT)
-        for widget in (
-            outcome_heading,
-            self._memory_twin_outcome_body,
-            link_heading,
-            self._memory_twin_link_body,
-            freshness_heading,
-            self._memory_twin_freshness_body,
-        ):
-            host_layout.addWidget(widget)
-        host_layout.addStretch(1)
-
-        scroll = QScrollArea()
-        scroll.setObjectName("memoryTwinLinkScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(host)
-        layout.addWidget(scroll, stretch=1)
-
-        self._memory_twin_open_button = QPushButton("Open source entity")
-        self._memory_twin_open_button.setObjectName("memoryTwinOpenButton")
-        self._memory_twin_open_button.setFocusPolicy(Qt.StrongFocus)
-        self._memory_twin_open_button.setEnabled(False)
-        self._memory_twin_open_button.clicked.connect(self._open_memory_twin_entity)
-        layout.addWidget(self._memory_twin_open_button)
-
-        self._memory_twin_open_status = QLabel("")
-        self._memory_twin_open_status.setObjectName("memoryTwinOpenStatus")
-        self._memory_twin_open_status.setWordWrap(True)
-        self._memory_twin_open_status.setStyleSheet(
-            style.memory_claim_meta_style(self._palette)
-        )
-        layout.addWidget(self._memory_twin_open_status)
-        return panel
-
-    def _build_memory_twin_source_panel(self) -> QWidget:
-        """Build the panel that shows the exact source entity once opened."""
-        panel = QWidget()
-        panel.setObjectName("memoryTwinSourcePanel")
-        panel.setMinimumWidth(style.MEMORY_DETAIL_MIN_WIDTH)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(
-            style.GAP_TIGHT, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        layout.setSpacing(style.GAP_TIGHT)
-
-        heading = QLabel("Source entity")
-        heading.setObjectName("memoryTwinHeading")
-        heading.setFont(style.panel_header_font())
-        heading.setStyleSheet(style.secondary_text_style(self._palette))
-        layout.addWidget(heading)
-
-        self._memory_twin_source_text = QLabel("")
-        self._memory_twin_source_text.setObjectName("memoryTwinSourceText")
-        self._memory_twin_source_text.setWordWrap(True)
-        self._memory_twin_source_text.setFocusPolicy(Qt.StrongFocus)
-        self._memory_twin_source_text.setTextInteractionFlags(
-            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
-        )
-        self._memory_twin_source_text.setAccessibleName("Opened source entity")
-        self._memory_twin_source_text.setToolTip(
-            "The bounded projection of the exact entity the link names"
-        )
-        self._memory_twin_source_text.setStyleSheet(
-            style.memory_detail_value_style(self._palette)
-        )
-
-        scroll = QScrollArea()
-        scroll.setObjectName("memoryTwinSourceScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(self._memory_twin_source_text)
-        layout.addWidget(scroll, stretch=1)
-        return panel
-
-    # -- Memory Code Twin link: reading -------------------------------------
-
-    def _clear_memory_twin(self, message: str) -> None:
-        """Clear the review, leaving a bounded reason in place of each panel."""
-        self._memory_twin_record = None
-        self._memory_twin_link = None
-        self._memory_twin_freshness = None
-        self._memory_twin_context = None
-        self._memory_twin_open_identity = None
-        self._memory_twin_resolved_count = 0
-        self._memory_twin_outcomes = []
-        self._memory_twin_index = 0
-        self._clear_layout(self._memory_twin_outcome_layout)
-        self._render_detail_rows(self._memory_twin_link_layout, [("", message, False)])
-        self._render_detail_rows(self._memory_twin_freshness_layout, [("", message, False)])
-        self._clear_memory_twin_source(message)
-        self._memory_twin_open_button.setEnabled(False)
-        self._memory_twin_open_button.setAccessibleName(
-            "Open source entity — disabled: no link has been reviewed"
-        )
-        self._memory_twin_open_button.setToolTip(
-            "Unavailable: review a link and let the Twin report it actionable"
-        )
-        self._memory_twin_open_status.setText(
-            "Nothing can be opened until the Twin reports the link actionable."
-        )
-
-    def _render_memory_twin_outcomes(self) -> None:
-        """Show what each exact candidate identity resolved to, in words."""
-        self._clear_layout(self._memory_twin_outcome_layout)
-        if not self._memory_twin_outcomes:
-            placeholder = QLabel("No candidate identity has been reviewed.")
-            placeholder.setObjectName("memoryTwinOutcomeEmpty")
-            placeholder.setWordWrap(True)
-            placeholder.setStyleSheet(style.memory_placeholder_style(self._palette))
-            self._memory_twin_outcome_layout.addWidget(placeholder)
-            return
-        for outcome in self._memory_twin_outcomes:
-            row = QLabel(str(outcome.get("summary")))
-            row.setObjectName("memoryTwinOutcome")
-            row.setWordWrap(True)
-            row.setStyleSheet(style.memory_claim_meta_style(self._palette))
-            self._memory_twin_outcome_layout.addWidget(row)
-
-    def _clear_memory_twin_source(self, message: str) -> None:
-        """Clear the opened-entity panel without opening or inferring anything."""
-        self._memory_twin_source_text.setText(message)
-
-    def _bind_memory_twin_link(self) -> None:
-        """Read one link end to end, or the context it needs to be read from.
-
-        The generation advances before the first request, so a response that
-        arrives after the selection moved on is discarded rather than rendered
-        against the current context.
-        """
-        self._memory_twin_generation += 1
-        generation = self._memory_twin_generation
-        run_id = self._memory_twin_run_selector.currentData()
-        record_id = self._memory_twin_record_selector.currentData()
-        if isinstance(run_id, str) and isinstance(record_id, str):
-            self._request_memory_twin_record(generation, run_id, record_id)
-            return
-        cid = contract.new_correlation_id()
-        request = build_get_memory_documents_request(cid)
-        self._set_status(STATE_RUNNING, "reading Memory documents")
-        if not self._send(
-            request,
-            partial(self._on_memory_twin_documents, generation),
-            partial(self._on_memory_twin_failed, generation),
-        ):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_memory_twin_documents(
-        self, generation: int, result: Dict[str, Any]
-    ) -> None:
-        if generation != self._memory_twin_generation:
-            return
-        document_sets = [
-            s for s in (result.get("document_sets") or []) if isinstance(s, dict)
-        ]
-        self._memory_twin_document_sets = document_sets
-        selector = self._memory_twin_run_selector
-        previous = selector.currentIndex()
-        selector.blockSignals(True)
-        selector.clear()
-        for document_set in document_sets:
-            run = document_set.get("run") if isinstance(document_set.get("run"), dict) else {}
-            selector.addItem(
-                "%s — %s" % (memory_state_label(run.get("state")), run.get("run_id")),
-                run.get("run_id"),
-            )
-        selector.blockSignals(False)
-        if not document_sets:
-            self._clear_memory_twin("No stored Memory run was found.")
-            return
-        selector.setCurrentIndex(previous if 0 <= previous < len(document_sets) else 0)
-        self._populate_memory_twin_records(generation)
-
-    def _populate_memory_twin_records(self, generation: int) -> None:
-        """Offer the source claims of the selected run, from its own documents."""
-        index = self._memory_twin_run_selector.currentIndex()
-        document_set = (
-            self._memory_twin_document_sets[index]
-            if 0 <= index < len(self._memory_twin_document_sets)
-            else None
-        )
-        records = memory_twin_link_records(document_set)
-        selector = self._memory_twin_record_selector
-        previous = selector.currentIndex()
-        selector.blockSignals(True)
-        selector.clear()
-        for record in records:
-            selector.addItem(str(record.get("label")), record.get("record_id"))
-        selector.blockSignals(False)
-        if not records:
-            self._clear_memory_twin(
-                "This run records no source claim, so there is no link to review."
-            )
-            return
-        selector.setCurrentIndex(previous if 0 <= previous < len(records) else 0)
-        run_id = self._memory_twin_run_selector.currentData()
-        record_id = selector.currentData()
-        if isinstance(run_id, str) and isinstance(record_id, str):
-            self._request_memory_twin_record(generation, run_id, record_id)
-
-    def _request_memory_twin_record(
-        self, generation: int, run_id: str, record_id: str
-    ) -> None:
-        """Read the exact source-claim record, to learn the bodies it claims."""
-        self._memory_twin_candidates = []
-        self._memory_twin_outcomes = []
-        self._memory_twin_index = 0
-        self._memory_twin_resolved_count = 0
-        # A bind replaces the held link: the old link's revision is no longer
-        # what this surface is reading.
-        self._memory_twin_link = None
-        self._memory_twin_freshness = None
-        self._memory_twin_context = None
-        self._clear_layout(self._memory_twin_outcome_layout)
-        cid = contract.new_correlation_id()
-        request = build_get_memory_record_request(
-            cid, run_id, MEMORY_TWIN_LINK_RECORD_KIND, record_id
-        )
-        self._set_status(STATE_RUNNING, "reading the source claim")
-        if not self._send(
-            request,
-            partial(self._on_memory_twin_record, generation),
-            partial(self._on_memory_twin_failed, generation),
-        ):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_memory_twin_record(
-        self, generation: int, result: Dict[str, Any]
-    ) -> None:
-        if generation != self._memory_twin_generation:
-            return
-        self._memory_twin_record = result
-        self._memory_twin_candidates = memory_twin_candidate_identities(result)
-        self._memory_twin_outcomes = []
-        self._memory_twin_index = 0
-        self._memory_twin_resolved_count = 0
-        if not self._memory_twin_candidates:
-            self._clear_memory_twin(
-                "This claim names no source entity, so no link can be bound to it."
-            )
-            return
-        self._advance_memory_twin_review(generation)
-
-    def _set_memory_twin_outcome(self, index: int, summary: str) -> None:
-        """Replace one candidate's outcome row in place, and redraw the list."""
-        while len(self._memory_twin_outcomes) <= index:
-            self._memory_twin_outcomes.append({"summary": ""})
-        self._memory_twin_outcomes[index] = {"summary": summary}
-        self._render_memory_twin_outcomes()
-
-    def _advance_memory_twin_review(self, generation: int) -> None:
-        """Bind the next exact candidate identity, or finish when none remain.
-
-        Every candidate is a complete identity composed from the record's own
-        stored body, so each is answered by the boundary on its own terms. This
-        iterates because only the authoritative Twin can say which symbol kind a
-        locator is: nothing here reorders, filters or prefers one spelling, and
-        two exact hits are reported as an ambiguity rather than resolved.
-        """
-        if generation != self._memory_twin_generation:
-            return
-        run_id = self._memory_twin_run_selector.currentData()
-        record_id = self._memory_twin_record_selector.currentData()
-        if not isinstance(run_id, str) or not isinstance(record_id, str):
-            self._clear_memory_twin("No source-claim record is selected.")
-            return
-        if self._memory_twin_index >= len(self._memory_twin_candidates):
-            self._finalize_memory_twin_review(generation)
-            return
-        candidate = self._memory_twin_candidates[self._memory_twin_index]
-        self._request_memory_code_link(generation, run_id, record_id, candidate)
-
-    def _request_memory_code_link(
-        self,
-        generation: int,
-        run_id: str,
-        record_id: str,
-        candidate: Dict[str, Any],
-    ) -> None:
-        """Bind one exact identity to the record and read the typed link."""
-        entity_id = str(candidate.get("entity_id"))
-        entity_kind = str(candidate.get("entity_kind"))
-        cid = contract.new_correlation_id()
-        request = build_memory_code_link_request(
-            cid, entity_id, entity_kind, run_id, record_id
-        )
-        self._set_status(STATE_RUNNING, "binding the Code Twin link")
-        if not self._send(
-            request,
-            partial(self._on_memory_twin_link, generation, candidate),
-            partial(self._on_memory_twin_bind_refused, generation, candidate),
-        ):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_memory_twin_bind_refused(
-        self, generation: int, candidate: Dict[str, Any], code: str
-    ) -> None:
-        """Record a candidate the boundary refused and move to the next one."""
-        if generation != self._memory_twin_generation:
-            return
-        self._set_memory_twin_outcome(
-            self._memory_twin_index,
-            "%s — %s" % (candidate.get("label"), contract.error_message(code)),
-        )
-        self._memory_twin_index += 1
-        self._advance_memory_twin_review(generation)
-
-    def _on_memory_twin_link(
-        self, generation: int, candidate: Dict[str, Any], result: Dict[str, Any]
-    ) -> None:
-        if generation != self._memory_twin_generation:
-            return
-        link = result if isinstance(result, dict) else None
-        if not memory_link_rows(link):
-            self._set_memory_twin_outcome(
-                self._memory_twin_index,
-                "%s — no link was returned" % candidate.get("label"),
-            )
-            self._memory_twin_index += 1
-            self._advance_memory_twin_review(generation)
-            return
-        self._memory_twin_link = link
-        self._memory_twin_context = (
-            self._memory_twin_run_selector.currentData(),
-            self._memory_twin_record_selector.currentData(),
-        )
-        self._memory_twin_resolved_count += 1
-        self._set_memory_twin_outcome(
-            self._memory_twin_index,
-            "%s — link bound; reading the freshness the Twin reports"
-            % candidate.get("label"),
-        )
-        self._request_memory_code_freshness(generation, candidate, link)
-
-    def _request_memory_code_freshness(
-        self, generation: int, candidate: Dict[str, Any], link: Dict[str, Any]
-    ) -> None:
-        """Compare the recorded revision with authoritative Twin state."""
-        cid = contract.new_correlation_id()
-        request = build_memory_code_freshness_request(cid, link)
-        self._set_status(STATE_RUNNING, "reading Code Twin freshness")
-        if not self._send(
-            request,
-            partial(self._on_memory_twin_freshness, generation, candidate),
-            partial(self._on_memory_twin_failed, generation),
-        ):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_memory_twin_freshness(
-        self, generation: int, candidate: Dict[str, Any], result: Dict[str, Any]
-    ) -> None:
-        if generation != self._memory_twin_generation:
-            return
-        verdict = result if isinstance(result, dict) else None
-        self._memory_twin_freshness = verdict
-        state_label = memory_twin_freshness_label(
-            verdict.get("freshness") if isinstance(verdict, dict) else None
-        )
-        self._set_memory_twin_outcome(
-            self._memory_twin_index,
-            "%s — %s, actionable %s"
-            % (
-                candidate.get("label"),
-                state_label,
-                memory_twin_actionable_label(verdict),
-            ),
-        )
-        self._memory_twin_index += 1
-        self._advance_memory_twin_review(generation)
-
-    def _finalize_memory_twin_review(self, generation: int) -> None:
-        """Render the resolved link and its verdict, then apply the open gate."""
-        if generation != self._memory_twin_generation:
-            return
-        self._render_memory_twin_resolution()
-
-    def _render_memory_twin_resolution(self) -> None:
-        """Draw the held link and its latest verdict, and re-apply the gate.
-
-        The link is whatever the boundary last returned and is never rebuilt
-        here: the point of re-reading freshness is to compare that recorded
-        revision with the Twin as it is now, so a moved revision is reported
-        instead of being overwritten by a fresh bind.
-        """
-        link = self._memory_twin_link
-        verdict = self._memory_twin_freshness
-        rows = memory_link_rows(link)
-        if not rows:
-            self._render_detail_rows(
-                self._memory_twin_link_layout,
-                [("", "No candidate identity produced a link for this claim.", False)],
-            )
-            self._render_detail_rows(
-                self._memory_twin_freshness_layout,
-                [("", "No freshness can be reported without a link.", False)],
-            )
-            self._clear_memory_twin_source("No source entity is open.")
-            self._apply_memory_twin_gate()
-            self._restore_operation_status()
-            return
-        self._render_detail_rows(self._memory_twin_link_layout, _twin_rows(rows))
-        freshness = memory_freshness_rows(verdict)
-        if not freshness:
-            freshness = [("", "No freshness has been read for this link.", False)]
-            self._render_detail_rows(self._memory_twin_freshness_layout, freshness)
-        else:
-            self._render_detail_rows(
-                self._memory_twin_freshness_layout, _twin_rows(freshness)
-            )
-        self._clear_memory_twin_source(
-            "No entity is open. Opening accepts the link only if the returned "
-            "artifact is this exact identity."
-        )
-        self._apply_memory_twin_gate()
-        self._restore_operation_status()
-
-    def _refresh_memory_twin_freshness(self) -> None:
-        """Re-compare the held link with the Twin, without re-binding it.
-
-        This is the only way a moved revision can be seen: a link records the
-        revision it was taken at, so a fresh bind would always agree with itself
-        and the drift would be invisible. A link recorded against an entity the
-        Twin has since retained or dropped is refused at bind time, so it is
-        precisely by holding the earlier link that history and absence become
-        readable at all.
-        """
-        if self._memory_twin_link is None:
-            self._memory_twin_open_status.setText(
-                "Nothing to refresh: bind a link first."
-            )
-            return
-        if self._memory_twin_resolved_count != 1:
-            self._memory_twin_open_status.setText(
-                "Nothing to refresh: this claim did not resolve to exactly one identity."
-            )
-            return
-        self._memory_twin_generation += 1
-        generation = self._memory_twin_generation
-        cid = contract.new_correlation_id()
-        request = build_memory_code_freshness_request(cid, self._memory_twin_link)
-        self._set_status(STATE_RUNNING, "refreshing Code Twin freshness")
-        if not self._send(
-            request,
-            partial(self._on_memory_twin_freshness_refreshed, generation),
-            partial(self._on_memory_twin_refresh_failed, generation),
-        ):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_memory_twin_refresh_failed(self, generation: int, code: str) -> None:
-        """A failed comparison keeps the link: only the verdict is unknown."""
-        if generation != self._memory_twin_generation:
-            return
-        self._memory_twin_freshness = None
-        self._render_memory_twin_resolution()
-        self._memory_twin_open_status.setText(
-            "The freshness could not be read: %s. The link itself is unchanged."
-            % contract.error_message(code)
-        )
-        self._set_status(STATE_FAILED, contract.error_message(code))
-
-    def _on_memory_twin_freshness_refreshed(
-        self, generation: int, result: Dict[str, Any]
-    ) -> None:
-        if generation != self._memory_twin_generation:
-            return
-        verdict = result if isinstance(result, dict) else None
-        if not memory_freshness_rows(verdict):
-            self._clear_memory_twin("No freshness verdict was returned.")
-            return
-        self._memory_twin_freshness = verdict
-        self._render_memory_twin_resolution()
-
-    def _apply_memory_twin_gate(self) -> None:
-        """Enable opening only for one returned actionable verdict on this link.
-
-        The gate is the boundary's own answer, narrowed and never widened: an
-        actionable verdict in a state the protocol calls actionable, about this
-        exact link, and exactly one candidate identity resolving. Everything
-        else stays visible and inert, and the button says which case it is in
-        words as well as in its enabled state.
-        """
-        link = self._memory_twin_link
-        verdict = self._memory_twin_freshness
-        state_label = memory_twin_freshness_label(
-            verdict.get("freshness") if isinstance(verdict, dict) else None
-        )
-        actionable_label = memory_twin_actionable_label(verdict)
-        if link is None:
-            self._memory_twin_open_button.setEnabled(False)
-            self._memory_twin_open_button.setAccessibleName(
-                "Open source entity — disabled: no candidate identity produced a link"
-            )
-            self._memory_twin_open_button.setToolTip(
-                "Disabled: this claim produced no link to open"
-            )
-            self._memory_twin_open_status.setText(
-                "No candidate identity produced a link for this claim, so nothing "
-                "can be opened and nothing is inferred in its place."
-            )
-            return
-        if self._memory_twin_resolved_count > 1:
-            self._memory_twin_open_button.setEnabled(False)
-            self._memory_twin_open_button.setAccessibleName(
-                "Open source entity — disabled: more than one identity resolved"
-            )
-            self._memory_twin_open_button.setToolTip(
-                "Disabled: more than one exact identity resolved for this claim"
-            )
-            self._memory_twin_open_status.setText(
-                "More than one exact identity resolved for this claim, so nothing "
-                "is opened: an ambiguous link is reported, never chosen between."
-            )
-            return
-        if not memory_twin_link_is_openable(link, verdict):
-            self._memory_twin_open_button.setEnabled(False)
-            self._memory_twin_open_button.setAccessibleName(
-                "Open source entity — disabled: the link is %s and reported %s"
-                % (state_label, actionable_label)
-            )
-            self._memory_twin_open_button.setToolTip(
-                "Disabled: the link is %s and reported actionable: %s"
-                % (state_label, actionable_label)
-            )
-            self._memory_twin_open_status.setText(
-                "This link is %s and actionable: %s, so nothing can be opened. "
-                "The link and its verdict stay visible."
-                % (state_label, actionable_label)
-            )
-            return
-        identity = str(link.get("entity_id"))
-        self._memory_twin_open_button.setEnabled(True)
-        self._memory_twin_open_button.setAccessibleName(
-            "Open the source entity %s" % identity
-        )
-        self._memory_twin_open_button.setToolTip(
-            "Open %s — the Twin reported this link %s and actionable"
-            % (identity, state_label)
-        )
-        self._memory_twin_open_status.setText(
-            "The Twin reported this link %s and actionable: opening will accept "
-            "it only if the returned artifact is this exact entity." % state_label
-        )
-
-    def _open_memory_twin_entity(self) -> None:
-        """Open the linked entity, proving the returned artifact's exact id.
-
-        Two independent things must still hold: the selection must be the one
-        the link was bound to, and the verdict must be the boundary's own
-        actionable answer about that same link. The selector is then derived
-        from the *returned* identity, and the response is accepted only when the
-        artifact it carries is that identity.
-        """
-        generation = self._memory_twin_generation
-        link = self._memory_twin_link
-        verdict = self._memory_twin_freshness
-        if not memory_twin_link_is_openable(link, verdict):
-            self._memory_twin_open_status.setText(
-                "Nothing was opened: %s." % MEMORY_TWIN_REFUSED_NOT_ACTIONABLE
-            )
-            return
-        if self._memory_twin_resolved_count != 1:
-            self._memory_twin_open_status.setText(
-                "Nothing was opened: this claim did not resolve to exactly one identity."
-            )
-            return
-        run_id = self._memory_twin_run_selector.currentData()
-        record_id = self._memory_twin_record_selector.currentData()
-        if self._memory_twin_context != (run_id, record_id):
-            self._memory_twin_open_status.setText(
-                "Nothing was opened: the selection changed since the link was read."
-            )
-            return
-        selector = memory_twin_selector_for(link.get("entity_id"))
-        if selector is None:
-            self._clear_memory_twin_source(MEMORY_TWIN_REFUSED_NO_SELECTOR + ".")
-            self._memory_twin_open_status.setText(
-                "Nothing was opened: this identity has no exact source selector."
-            )
-            return
-        self._memory_twin_open_identity = str(link.get("entity_id"))
-        cid = contract.new_correlation_id()
-        request = build_get_twin_request(cid, selector)
-        self._set_status(STATE_RUNNING, "opening the linked source entity")
-        if not self._send(
-            request,
-            partial(self._on_memory_twin_opened, generation),
-            partial(self._on_memory_twin_open_failed, generation),
-        ):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_memory_twin_opened(self, generation: int, result: Dict[str, Any]) -> None:
-        """Render the entity only when the returned artifact is that entity."""
-        if generation != self._memory_twin_generation:
-            return
-        entity_id = self._memory_twin_open_identity
-        if self._memory_twin_context is None:
-            return
-        refusal = memory_twin_open_refusal(result, entity_id)
-        if refusal is not None:
-            self._clear_memory_twin_source(refusal + ".")
-            self._memory_twin_open_status.setText(
-                "Nothing was opened: %s. The link and its verdict are unchanged."
-                % refusal
-            )
-            self._restore_operation_status()
-            return
-        self._memory_twin_source_text.setText(format_twin_projection(result))
-        self._memory_twin_open_status.setText(
-            "Opened %s: the returned artifact carries exactly this identity."
-            % str(entity_id)
-        )
-        self._restore_operation_status()
-
-    # -- Memory Code Twin link: invalidation --------------------------------
-
-    def _on_memory_twin_run_changed(self) -> None:
-        """A new run invalidates the link and narrows the records it offers."""
-        self._memory_twin_generation += 1
-        self._clear_memory_twin("Review a link to read its identity and freshness.")
-        self._populate_memory_twin_records(self._memory_twin_generation)
-
-    def _on_memory_twin_record_changed(self) -> None:
-        """A new record invalidates the link and the identities it admitted."""
-        self._memory_twin_generation += 1
-        self._clear_memory_twin("Review a link to read its identity and freshness.")
-
-    def _on_memory_twin_failed(self, generation: int, code: str) -> None:
-        if generation != self._memory_twin_generation:
-            return
-        self._clear_memory_twin(contract.error_message(code))
-        self._set_status(STATE_FAILED, contract.error_message(code))
-
-    def _on_memory_twin_open_failed(self, generation: int, code: str) -> None:
-        if generation != self._memory_twin_generation:
-            return
-        self._clear_memory_twin_source(contract.error_message(code) + ".")
-        self._memory_twin_open_status.setText(
-            "Nothing was opened: %s. The link and its verdict are unchanged."
-            % contract.error_message(code)
-        )
-        self._restore_operation_status()
 
     def _build_memory_review_page(self) -> QWidget:
         """Build the Corrections page: comparison, editor, conflicts and history.
@@ -4975,15 +3669,11 @@ class MainWindow(QMainWindow):
 
         self._root_label = self._status_field(max_width=style.STATUS_ROOT_MAX_WIDTH)
         self._repo_label = self._status_field()
-        self._file_label = self._status_field(max_width=style.STATUS_FILE_MAX_WIDTH)
-        self._twin_label = self._status_field()
         self._provider_label = self._status_field()
         self._validation_label = self._status_field()
         for lbl in (
             self._root_label,
             self._repo_label,
-            self._file_label,
-            self._twin_label,
             self._provider_label,
             self._validation_label,
         ):
@@ -5081,26 +3771,6 @@ class MainWindow(QMainWindow):
         """
         self._set_status(STATE_IDLE, "ready")
 
-    def _set_twin_chip(self, state: str) -> None:
-        """Update only the Twin state chip and the status field.
-
-        Kept separate from :meth:`_set_twin_state` so a projection or sync
-        result can set the chip without replacing the richer body text.
-        """
-        self._twin_state = state
-        word = style.TWIN_STATE_WORD.get(state, state.title())
-        self._twin_chip.setText(word)
-        self._twin_chip.setStyleSheet(style.twin_chip_style(self._palette, state))
-        self._twin_chip.setToolTip(word)
-        self._update_status()
-
-    def _set_twin_state(self, state: str) -> None:
-        self._set_twin_chip(state)
-        self._codemap_text = _TWIN_LABELS.get(state, "")
-        self._codemap_blocks = []
-        self._codemap_entities = []
-        self._hide_codemap_status()
-        self._render_code_map()
 
     def _set_validation_state(self, state: str) -> None:
         self._validation_state = state
@@ -5109,8 +3779,6 @@ class MainWindow(QMainWindow):
     def _update_status(self) -> None:
         self._root_label.setText(f"Root: {self._root or 'none'}")
         self._repo_label.setText(f"Repo: {self._repository_state}")
-        self._file_label.setText(f"File: {self._current_document or 'none'}")
-        self._twin_label.setText(f"Twin: {self._twin_state}")
         self._provider_label.setText(f"Provider: {self._provider_state}")
         self._validation_label.setText(f"Validation: {self._validation_state}")
 
@@ -5935,691 +4603,21 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_FAILED, reason)
         self._refresh_profiles()
 
-    def _open_document(self, rel_path: str) -> None:
-        cid = contract.new_correlation_id()
-        request = build_get_document_request(cid, rel_path)
-        self._set_status(STATE_RUNNING, f"opening {rel_path}")
-        on_success = partial(self._on_document_opened, rel_path)
-        if not self._send(request, on_success, self._on_document_failed):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    # -- action result handlers -----------------------------------------
 
     def _on_project_opened(self, result: Dict[str, Any]) -> None:
         self._root = result.get("root")
         self._repository_state = result.get("repository_state", REPOSITORY_UNVERIFIED)
-        self._project_label.setText(self._root or "No project open")
         self._update_status()
         self._update_scan_enabled()
-        cid = contract.new_correlation_id()
-        request = build_get_tree_request(cid)
-        if self._send(request, self._on_tree_loaded, self._on_tree_failed):
-            self._set_status(STATE_RUNNING, "loading project tree")
-
-    def _on_tree_loaded(self, tree: Dict[str, Any]) -> None:
-        self._tree = tree
-        self._populate_tree(tree)
         self._set_status(STATE_SUCCESS, "project open")
-        self._set_validation_state(VALIDATION_OK)
-        # Auto-synchronize the Twin once the accepted root is established (a
-        # no-op when there is no open project, e.g. in tree-only unit tests).
-        self._sync_twin()
 
-    def _on_document_opened(self, rel_path: str, doc: Dict[str, Any]) -> None:
-        name = doc.get("name", rel_path)
-        kind = doc.get("kind", "source")
-        view = self._open_tabs.get(rel_path)
-        # Set the current document before the tab switches so the currentChanged
-        # handler treats this as already-followed and never double-loads.
-        self._current_document = rel_path
-        if view is None:
-            view = DocumentView(self._source_tabs, palette=self._palette)
-            index = self._source_tabs.addTab(view, name)
-            self._open_tabs[rel_path] = view
-            self._source_tabs.setCurrentIndex(index)
-        else:
-            self._source_tabs.setCurrentWidget(view)
-        if kind == "preview":
-            view.show_preview(name, doc.get("content", ""))
-        elif kind == "unavailable":
-            view.show_unavailable(name, doc.get("reason", ""))
-        else:
-            view.show_source(doc.get("content", ""))
-        self._source_stack.setCurrentIndex(1)
-        self._set_status(STATE_SUCCESS, f"opened {rel_path}")
-        self._update_status()
-
-        # Reveal a pending source-anchor line, then load the file's Code Map.
-        if self._pending_reveal_line is not None and kind == "source":
-            view.reveal_line(self._pending_reveal_line)
-            self._pending_reveal_line = None
-        self._load_codemap(rel_path)
-
-    def _on_source_tab_changed(self, index: int) -> None:
-        """Follow the newly active source tab (P3.4 active-file scope).
-
-        Activating an already-open tab switches the Code Map to that file's
-        scoped procedure. ``_on_document_opened`` sets ``_current_document``
-        before the tab switches, so this handler no-ops during the open itself
-        and only fires on a genuine tab change.
-        """
-        if index < 0:
-            return
-        widget = self._source_tabs.widget(index)
-        if widget is None:
-            return
-        rel_path = None
-        for path, view in self._open_tabs.items():
-            if view is widget:
-                rel_path = path
-                break
-        if rel_path is None or rel_path == self._current_document:
-            return
-        self._current_document = rel_path
-        self._update_status()
-        self._load_codemap(rel_path)
 
     def _on_scan_completed(self, result: Dict[str, Any]) -> None:
         self._render_scan(result)
         self._set_status(STATE_SUCCESS, "scan complete")
         self._set_validation_state(VALIDATION_OK)
-        # Refresh the selected file's Code Map after a successful scan: a
-        # supported file re-syncs and reloads; no supported file is a no-op.
-        if self._current_document and is_twin_source_path(self._current_document):
-            self._load_codemap(self._current_document)
 
-    # -- Code Map synchronization, load and render (P3.4) ----------------
-
-    def _next_twin_generation(self) -> int:
-        """Advance the selection generation and return its new value.
-
-        Every Twin request chain is tagged with the generation that started it;
-        a late response whose generation no longer matches is discarded so it can
-        never overwrite the currently selected file's projection.
-        """
-        self._twin_generation += 1
-        return self._twin_generation
-
-    def _set_active_twin_path(self, path: Optional[str]) -> None:
-        """Record the source path backing the displayed Code Map and refresh the
-        pin control. ``None`` means no valid Code Map is shown, so the pin
-        control is disabled (unless the pane is already pinned). Clearing the
-        path also clears the active entity locator, which disables the edit
-        action."""
-        self._active_twin_path = path
-        if path is None:
-            self._active_entity_locator = None
-        self._update_lock_control()
-        self._update_edit_control()
-
-    def _update_lock_control(self) -> None:
-        """Sync the pin control's accessible name, tooltip, enablement and icon
-        to the follow/pin state (P3.3)."""
-        locked = self._twin_pinned
-        enabled = locked or self._active_twin_path is not None
-        if locked:
-            name = "Unpin Code Map"
-            tooltip = "Follow the active source tab"
-        elif enabled:
-            name = "Pin Code Map"
-            tooltip = "Pin Code Map to the current file"
-        else:
-            name = "Pin Code Map"
-            tooltip = "No supported source file is active; open one to pin the Code Map."
-        self._twin_lock_button.setAccessibleName(name)
-        self._twin_lock_button.setToolTip(tooltip)
-        self._twin_lock_button.setEnabled(enabled)
-        self._twin_lock_button.setIcon(style.lock_icon(self._palette, locked, enabled))
-
-    def _on_twin_lock_toggled(self, checked: bool) -> None:
-        """Pin or unpin the Code Map pane (P3.3).
-
-        Pinning freezes the displayed Code Map to its current source path and
-        invalidates any in-flight chain so no late response relabels it.
-        Unpinning immediately follows the active supported source tab (a scoped
-        sync plus Code Map), or shows a bounded empty state when there is none.
-        """
-        self._twin_pinned = checked
-        if checked:
-            self._next_twin_generation()
-            self._update_lock_control()
-            return
-        self._update_lock_control()
-        if self._current_document and is_twin_source_path(self._current_document):
-            self._load_codemap(self._current_document)
-        else:
-            self._set_twin_state(TWIN_EMPTY)
-            self._set_active_twin_path(None)
-
-    def _sync_twin(self, changed_paths: Optional[List[str]] = None) -> None:
-        """Auto-synchronize the Structured Twin for the accepted workspace.
-
-        A no-op without an open project. ``changed_paths`` optionally scopes the
-        sync to specific root-relative source paths; ``None`` means full sync.
-        """
-        if not self._root:
-            return
-        cid = contract.new_correlation_id()
-        request = build_sync_twin_request(cid, changed_paths)
-        self._set_twin_chip(TWIN_LOADING)
-        if not self._send(request, self._on_twin_synced, self._on_twin_failed):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _show_codemap_status(self, text: str) -> None:
-        """Write the in-place status message without touching the projection.
-
-        The status region is always mounted at a fixed height, so this only
-        changes its text; it never toggles visibility or reflows the body.
-        """
-        if self._codemap_status is None:
-            return
-        self._codemap_status.setText(text)
-
-    def _hide_codemap_status(self) -> None:
-        """Clear the in-place status message, leaving its reserved region intact."""
-        if self._codemap_status is None:
-            return
-        self._codemap_status.setText("")
-
-    def _load_codemap(self, rel_path: str) -> None:
-        """Drive the selection -> sync -> get -> render Code Map lifecycle (P3.4).
-
-        A supported Python source (``.py`` / ``.pyi``) shows a small in-place
-        "Updating…" status line, synchronizes that file's scope, then loads and
-        renders its procedural document — all while the previous valid projection
-        stays mounted and is replaced atomically once the correlated response
-        arrives. Any other file shows a bounded state and never triggers a source
-        sync. When the pane is pinned, or an editable draft is open, the current
-        Code Map is frozen and the guard returns without following, clearing,
-        reloading or relabelling it.
-        """
-        if not self._root:
-            return
-        if self._twin_pinned:
-            return  # pinned: never follow, clear, reload or relabel the pinned Code Map
-        if self._edit_mode:
-            return  # an open (possibly dirty) draft is never silently retargeted
-        generation = self._next_twin_generation()
-        if not is_twin_source_path(rel_path):
-            self._hide_codemap_status()
-            self._set_twin_state(TWIN_EMPTY)
-            self._set_active_twin_path(None)
-            return
-        # Keep the previous projection mounted; only switch the chip to Loading
-        # and show the in-place status. The document, entity list and active path
-        # are replaced once (in ``_on_code_map_loaded``), never cleared here.
-        if self._twin_state != TWIN_LOADING:
-            self._codemap_prior_state = self._twin_state
-        self._codemap_load_pending = True
-        self._set_twin_chip(TWIN_LOADING)
-        self._show_codemap_status(f"Updating Code Map for {rel_path}…")
-        self._sync_twin_scoped(rel_path, generation)
-
-    def _sync_twin_scoped(self, rel_path: str, generation: int) -> None:
-        """Synchronize the selected file's scope before loading its projection."""
-        cid = contract.new_correlation_id()
-        request = build_sync_twin_request(cid, [rel_path])
-        on_success = partial(self._on_selection_synced, rel_path, generation)
-        on_error = partial(self._on_selection_sync_failed, generation)
-        if not self._send(request, on_success, on_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_selection_synced(
-        self, rel_path: str, generation: int, result: Dict[str, Any]
-    ) -> None:
-        """After a successful scoped sync, load and render the Code Map."""
-        if generation != self._twin_generation:
-            return
-        cid = contract.new_correlation_id()
-        request = build_get_code_map_request(cid)
-        on_success = partial(self._on_code_map_loaded, generation=generation, rel_path=rel_path)
-        on_error = partial(self._on_code_map_failed, generation)
-        if not self._send(request, on_success, on_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_selection_sync_failed(self, generation: int, reason: str) -> None:
-        """A failed selection sync shows a bounded failure state with its reason."""
-        if generation != self._twin_generation:
-            return
-        self._set_status(STATE_FAILED, reason)
-        self._set_code_map_failure(reason)
-
-    def _on_twin_synced(self, result: Dict[str, Any]) -> None:
-        # A workspace-level sync updates only the chip and status; the rich Code
-        # Map body is populated by the follow-up ``get_code_map`` in the
-        # selection chain, not here.
-        state = result.get("state", "synchronized")
-        self._set_twin_chip(twin_state_from_sync(state))
-        self._set_status(STATE_SUCCESS, f"twin {state}")
-
-    def _on_code_map_loaded(
-        self,
-        result: Dict[str, Any],
-        generation: Optional[int] = None,
-        rel_path: Optional[str] = None,
-    ) -> None:
-        """Render a loaded Code Map: document, entity list, evidence and state.
-
-        Shared by the selection chain (which passes ``generation``/``rel_path``)
-        and the edit surface (which re-requests the scoped blocks with no
-        generation). A late response whose generation no longer matches is
-        discarded; in edit mode the edit surface is (re)populated afterwards.
-        """
-        if generation is not None and generation != self._twin_generation:
-            return  # a late response for a previously selected file
-        self._codemap_load_pending = False
-        self._hide_codemap_status()
-        baseline = result.get("baseline") or {}
-        sync_state = baseline.get("sync_state", "synchronized")
-        self._set_twin_chip(twin_state_from_sync(sync_state))
-        self._codemap_blocks = result.get("blocks") or []
-        self._codemap_entities = result.get("entities") or []
-        self._codemap_text = format_procedural_document(result.get("document"))
-        self._active_entity_locator = result.get("entity") or None
-        self._render_code_map()
-        self._render_evidence(result)
-        self._set_active_twin_path(rel_path or self._current_document)
-        self._set_status(STATE_SUCCESS, f"twin {sync_state}")
-        if self._edit_mode:
-            self._render_edit_surface(result)
-
-    def _on_twin_failed(self, reason: str) -> None:
-        # A workspace-level sync failure leaves no synchronized Code Map.
-        self._set_status(STATE_FAILED, reason)
-        self._set_twin_state(TWIN_EMPTY)
-        self._set_active_twin_path(None)
-
-    def _on_code_map_failed(self, generation: int, reason: str) -> None:
-        """A failed Code Map load shows a bounded failure state, never stale Empty."""
-        if generation != self._twin_generation:
-            return
-        self._set_status(STATE_FAILED, reason)
-        self._set_code_map_failure(reason)
-
-    def _set_code_map_failure(self, reason: str) -> None:
-        """Show a bounded failure status while retaining the previous projection.
-
-        The document, entity list and active path stay mounted; the failure is
-        surfaced in the in-place status line. The chip returns to its pre-load
-        state (or Empty when a non-Code-Map sync was interrupted) instead of
-        flashing Empty.
-        """
-        if self._codemap_load_pending:
-            self._set_twin_chip(self._codemap_prior_state)
-            self._codemap_load_pending = False
-        elif self._twin_state == TWIN_LOADING:
-            self._set_twin_chip(TWIN_EMPTY)
-        self._show_codemap_status(f"Code Map unavailable — {reason}.")
-
-    def _render_code_map(self) -> None:
-        """Render the read-only procedural document and the compact entity list."""
-        self._codemap_document.setPlainText(self._codemap_text)
-        self._populate_entity_list()
-
-    def _populate_entity_list(self) -> None:
-        """Populate the compact ordered entity list (module/class/function).
-
-        Each entry stores its entity locator as user data; selecting one scopes
-        the document to that entity's nested procedure. Verified entities only —
-        draft blocks never appear here.
-        """
-        self._codemap_entity_list.clear()
-        for entity in self._codemap_entities:
-            locator = entity.get("locator") or "?"
-            kind = entity.get("kind") or "unknown"
-            subject = entity.get("subject") or entity.get("name") or locator
-            label = f"{kind}: {locator} — {subject}"
-            item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, locator)
-            self._codemap_entity_list.addItem(item)
-        self._codemap_entity_list.setVisible(bool(self._codemap_entities))
-
-    def _on_entity_selected(self, item) -> None:
-        """Scope the Code Map to the selected entity's nested procedure (P3.4)."""
-        locator = item.data(Qt.UserRole)
-        if not locator:
-            return
-        generation = self._next_twin_generation()
-        cid = contract.new_correlation_id()
-        request = build_get_code_map_request(cid, selector=locator)
-        self._set_status(STATE_RUNNING, f"loading Code Map for {locator}")
-        on_success = partial(
-            self._on_code_map_loaded, generation=generation, rel_path=self._current_document
-        )
-        on_error = partial(self._on_code_map_failed, generation)
-        if not self._send(request, on_success, on_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_details_toggled(self, checked: bool) -> None:
-        """Toggle the source-correspondence evidence view."""
-        self._codemap_details_visible = checked
-        self._codemap_details.setVisible(checked)
-        if checked:
-            self._codemap_details_button.setAccessibleName("Hide Code Map evidence")
-        else:
-            self._codemap_details_button.setAccessibleName("Show Code Map evidence")
-
-    def _render_evidence(self, result: Dict[str, Any]) -> None:
-        """Render the source-correspondence evidence for the displayed blocks."""
-        if not self._codemap_blocks:
-            self._codemap_details.setPlainText("")
-            return
-        self._codemap_details.setPlainText(
-            "\n\n".join(self._format_block_evidence(b) for b in self._codemap_blocks)
-        )
-
-    def _format_block_evidence(self, block: Dict[str, Any]) -> str:
-        """Return one bounded evidence paragraph for a block: its typed identity,
-        provenance, confidence, state, editability and source anchor."""
-        label = block_type_label(str(block.get("block_type", "unknown")))
-        anchors = block.get("source_anchors") or []
-        if anchors:
-            first = anchors[0]
-            location = f"{first.get('file', '?')}:{first.get('lineno', '?')}"
-        else:
-            location = "no source anchor"
-        lines = [
-            f"{label} — {block.get('block_id', '?')}",
-            f"  source: {location}",
-            f"  provenance: {block.get('provenance', 'unknown')}",
-            f"  confidence: {block.get('confidence', 'unknown')}",
-            f"  state: {block.get('state', 'unknown')}",
-            f"  editability: {block.get('editability', 'unknown')}",
-        ]
-        reason = block.get("confidence_reason")
-        if reason:
-            lines.append(f"  reason: {reason}")
-        fingerprint = block.get("source_fingerprint")
-        if fingerprint:
-            lines.append(f"  fingerprint: {fingerprint}")
-        return "\n".join(lines)
-
-    # -- Editable Code Map draft (P3.4) ----------------------------------
-
-    def _update_edit_control(self) -> None:
-        """Enable the ``Edit Code Map`` action only when a Code Map is displayed,
-        and leave edit mode when the target disappears."""
-        enabled = self._active_twin_path is not None
-        self._edit_button.setEnabled(enabled)
-        if not enabled and self._edit_mode:
-            self._exit_edit_mode()
-
-    def _on_edit_toggled(self, checked: bool) -> None:
-        """Toggle the editable Code Map surface (P3.4)."""
-        if checked:
-            self._enter_edit_mode()
-        else:
-            self._attempt_leave_edit_mode()
-
-    def _enter_edit_mode(self) -> None:
-        """Show the edit surface and load the editable Code Map blocks."""
-        if self._active_twin_path is None:
-            self._edit_button.setChecked(False)
-            return
-        self._edit_mode = True
-        self._draft_dirty = False
-        self._twin_stack.setCurrentIndex(1)
-        cid = contract.new_correlation_id()
-        request = build_get_code_map_request(cid, selector=self._active_entity_locator)
-        self._set_status(STATE_RUNNING, "loading editable Code Map")
-        if not self._send(request, self._on_code_map_loaded, self._on_draft_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _attempt_leave_edit_mode(self) -> None:
-        """Leave edit mode, prompting to save or discard a dirty draft first.
-
-        A dirty draft is never auto-saved; the user chooses save, discard or
-        remain. Discard drops only the unsaved edits and returns to read-only;
-        save leaves after the save completes; remain stays put."""
-        if self._draft_dirty:
-            choice = self._prompt_dirty_leave()
-            if choice == "save":
-                self._leave_after_save = True
-                self._save_draft()
-                return  # exit after a successful save
-            if choice == "remain":
-                self._edit_button.setChecked(True)
-                return
-        self._exit_edit_mode()
-
-    def _exit_edit_mode(self) -> None:
-        """Return the Code Map pane to its read-only projection."""
-        self._edit_mode = False
-        self._draft_dirty = False
-        self._twin_stack.setCurrentIndex(0)
-        self._edit_button.setChecked(False)
-        self._set_status(STATE_IDLE, "edit mode closed")
-
-    def _prompt_dirty_leave(self) -> str:
-        """Ask how to resolve a dirty draft; returns ``save``/``discard``/
-        ``remain``. This is a bounded modal; it never writes or auto-saves."""
-        box = QMessageBox(self)
-        box.setWindowTitle("Unsaved Code Map edits")
-        box.setText(
-            "You have unsaved Code Map edits. Edits create a draft only; "
-            "source code is unchanged."
-        )
-        save_button = box.addButton("Save", QMessageBox.AcceptRole)
-        discard_button = box.addButton("Discard", QMessageBox.DestructiveRole)
-        remain_button = box.addButton("Remain", QMessageBox.RejectRole)
-        box.setDefaultButton(save_button)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is save_button:
-            return "save"
-        if clicked is discard_button:
-            return "discard"
-        return "remain"
-
-    def _owning_entity_locator(self) -> Optional[str]:
-        """Return the owning entity locator for draft insert operations.
-
-        Prefers the active (scoped) entity locator; falls back to the module
-        entity so whole-document edits still name a valid owning entity."""
-        if self._active_entity_locator:
-            return self._active_entity_locator
-        for entity in self._codemap_entities:
-            if entity.get("kind") == "module":
-                return entity.get("locator")
-        return None
-
-    def _collect_operations(self) -> List[Dict[str, Any]]:
-        """Read the current controls into ordered typed draft operations.
-
-        Only authored values are included; an empty or unchanged control is
-        skipped so a no-op never fabricates a spurious operation."""
-        operations: List[Dict[str, Any]] = []
-        owning = self._owning_entity_locator()
-        if owning:
-            note = (self._note_input.text() or "").strip()
-            if note:
-                operations.append(
-                    {
-                        "op": "insert_block",
-                        "owning_entity_id": owning,
-                        "block_type": "note",
-                        "proposed_text": note,
-                    }
-                )
-            step = (self._step_input.text() or "").strip()
-            if step:
-                operations.append(
-                    {
-                        "op": "insert_block",
-                        "owning_entity_id": owning,
-                        "block_type": "step",
-                        "proposed_payload": {"operation": "assign"},
-                        "proposed_text": step,
-                    }
-                )
-
-        for key, control in self._draft_controls.items():
-            op_kind = self._draft_op_kinds.get(key)
-            value = self._read_single_value(control)
-            if value is None or value == self._draft_originals.get(key, ""):
-                continue
-            if op_kind == "purpose":
-                operations.append(
-                    {"op": "replace_description", "target_block_id": key, "proposed_text": value}
-                )
-            elif op_kind == "condition":
-                operations.append(
-                    {
-                        "op": "replace_condition_intent",
-                        "target_block_id": key,
-                        "proposed_condition": value,
-                    }
-                )
-
-        for block_id, button in self._draft_unresolved.items():
-            if button.isChecked():
-                operations.append(
-                    {"op": "mark_unresolved", "target_block_id": block_id, "reason": "review"}
-                )
-
-        return operations
-
-    def _read_single_value(self, control: QWidget) -> Optional[str]:
-        if isinstance(control, QLineEdit):
-            return control.text().strip() or None
-        if isinstance(control, QPlainTextEdit):
-            return control.toPlainText().strip() or None
-        return None
-
-    def _save_draft(self) -> None:
-        """Collect the current controls into typed operations and save the draft."""
-        operations = self._collect_operations()
-        cid = contract.new_correlation_id()
-        request = build_save_draft_request(cid, operations)
-        self._set_status(STATE_RUNNING, "saving Code Map draft")
-        if not self._send(request, self._on_draft_saved, self._on_draft_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _discard_draft(self) -> None:
-        """Discard the saved draft (never touches source)."""
-        cid = contract.new_correlation_id()
-        request = build_discard_draft_request(cid)
-        self._set_status(STATE_RUNNING, "discarding Code Map draft")
-        if not self._send(request, self._on_draft_discarded, self._on_draft_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _reset_draft(self) -> None:
-        """Reset the draft to the baseline (removes every saved edit)."""
-        cid = contract.new_correlation_id()
-        request = build_reset_draft_request(cid)
-        self._set_status(STATE_RUNNING, "resetting Code Map draft")
-        if not self._send(request, self._on_draft_reset, self._on_draft_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _compare_draft(self) -> None:
-        """Compare the saved draft against the baseline."""
-        cid = contract.new_correlation_id()
-        request = build_compare_draft_request(cid)
-        self._set_status(STATE_RUNNING, "comparing Code Map draft")
-        if not self._send(request, self._on_draft_compared, self._on_draft_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _generate_intent_delta(self) -> None:
-        """Generate the deterministic, non-executable Intent Delta."""
-        cid = contract.new_correlation_id()
-        request = build_generate_intent_delta_request(cid)
-        self._set_status(STATE_RUNNING, "generating Intent Delta")
-        if not self._send(request, self._on_intent_delta_ready, self._on_draft_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _plan_proposal(self) -> None:
-        """Request a deterministic, non-applied Proposal Package from the Intent Delta."""
-        cid = contract.new_correlation_id()
-        request = build_plan_proposal_request(cid)
-        self._set_status(STATE_RUNNING, "planning proposal")
-        if not self._send(request, self._on_proposal_ready, self._on_draft_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    # -- Advisory hosted-planning flow (P4.2b) ----------------------------
-
-    def _prepare_advisory(self) -> None:
-        """Prepare the advisory disclosure for the current Intent Delta/proposal.
-
-        This first call only builds the itemized disclosure manifest offline; it
-        never contacts the provider. The single confirmed request happens in
-        :meth:`_send_advisory` after the user accepts the disclosure.
-        """
-        cid = contract.new_correlation_id()
-        request = build_prepare_advisory_request(cid)
-        self._set_status(STATE_RUNNING, "preparing advisory disclosure")
-        if not self._send(request, self._on_advisory_prepared, self._on_advisory_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_advisory_prepared(self, result: Dict[str, Any]) -> None:
-        """Show the disclosure confirmation, or an honest unavailability reason."""
-        if not result.get("advisory_available"):
-            reason = str(result.get("reason", "unknown"))
-            self._set_status(STATE_FAILED, advisory_unavailable_reason_label(reason))
-            self._show_draft_result(
-                "Advisory plan unavailable.\n\n"
-                f"{advisory_unavailable_reason_label(reason)}"
-            )
-            return
-        token = result.get("advisory_token")
-        disclosure = result.get("disclosure") or {}
-        if not token:
-            self._set_status(STATE_FAILED, "advisory disclosure is incomplete")
-            return
-        self._pending_advisory_token = token
-        self._pending_advisory_disclosure = format_advisory_disclosure(disclosure)
-        self._confirm_advisory()
-
-    def _confirm_advisory(self) -> None:
-        """Show the itemized disclosure and require explicit confirmation.
-
-        The default action is Cancel; cancelling (or closing the box) sends
-        nothing. Only an explicit Send proceeds to the single request.
-        """
-        box = QMessageBox(self)
-        box.setWindowTitle("Confirm advisory planning request")
-        box.setText("Send this disclosure to DeepSeek for one advisory planning call?")
-        box.setInformativeText(self._pending_advisory_disclosure)
-        box.setDetailedText(
-            "The source-derived items listed above will leave this machine and "
-            "be sent to the fixed provider endpoint. Exactly one request will be "
-            "made, with no retry or fallback. Cancelling sends nothing."
-        )
-        send_button = box.addButton("Send", QMessageBox.AcceptRole)
-        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
-        box.setDefaultButton(cancel_button)
-        box.exec()
-        if box.clickedButton() is not send_button:
-            self._pending_advisory_token = None
-            self._pending_advisory_disclosure = ""
-            self._set_status(STATE_SUCCESS, "advisory cancelled")
-            self._show_draft_result("Advisory request cancelled. Nothing was sent.")
-            return
-        self._send_advisory()
-
-    def _send_advisory(self) -> None:
-        """Send the single confirmed advisory request."""
-        token = self._pending_advisory_token
-        self._pending_advisory_token = None
-        self._pending_advisory_disclosure = ""
-        if not token:
-            return
-        cid = contract.new_correlation_id()
-        request = build_plan_advisory_request(cid, token, True)
-        self._set_status(STATE_RUNNING, "requesting advisory plan")
-        if not self._send(request, self._on_advisory_result, self._on_advisory_error):
-            self._set_status(STATE_FAILED, "a request is already in progress")
-
-    def _on_advisory_result(self, result: Dict[str, Any]) -> None:
-        """Render the versioned advisory result (deterministic vs suggested)."""
-        state = str(result.get("state", "unknown"))
-        self._show_draft_result(format_advisory_result(result))
-        self._set_status(STATE_SUCCESS, f"advisory {advisory_state_label(state)}")
-
-    def _on_advisory_error(self, reason: str) -> None:
-        self._set_status(STATE_FAILED, reason)
-        self._show_draft_result(f"Advisory plan unavailable.\n\nReason: {reason}")
-
-    # -- Version-bound Preview flow (P4.5) --------------------------------
+    # -- preview ---------------------------------------------------------
 
     def _next_preview_generation(self) -> int:
         """Advance the preview generation and return its new value.
@@ -7768,159 +5766,12 @@ class MainWindow(QMainWindow):
                 f"Operation unavailable.\n\n{document_failure_message(reason)}"
             )
 
-    def _mark_draft_dirty(self, *_args: Any) -> None:
-        self._draft_dirty = True
-
-    def _show_draft_result(self, text: str) -> None:
-        self._draft_result.setPlainText(text)
-        self._draft_result.setVisible(bool(text))
-
-    def _render_edit_surface(self, result: Dict[str, Any]) -> None:
-        """Populate the edit surface's read-only facts and inline editable rows.
-
-        Verified facts stay read-only; only blocks whose ``editability`` names a
-        typed operation get an inline one-line editor (purpose text, decision
-        condition). Structure controls (Add note / Add step) are always present.
-        """
-        self._clear_draft_controls()
-        baseline = result.get("baseline") or {}
-        entity = self._active_entity_locator
-        facts = f"Scope: {entity}" if entity else "Scope: whole document"
-        facts += f"\nBaseline revision: {baseline.get('baseline_revision') or 'none'}"
-        self._draft_facts.setText(facts)
-
-        for block in self._codemap_blocks:
-            editability = block.get("editability")
-            if editability == "replace_description":
-                self._add_edit_row(block, "purpose", block.get("display_text", ""))
-            elif editability == "replace_condition_intent":
-                self._add_edit_row(block, "condition", self._condition_text(block))
-
-        self._draft_fields_layout.addStretch(1)
-        self._show_draft_result("")
-
-    def _condition_text(self, block: Dict[str, Any]) -> str:
-        """Return the current condition text for a decision block."""
-        payload = block.get("payload") or {}
-        return payload.get("condition") or ""
-
-    def _clear_draft_controls(self) -> None:
-        """Remove every previously built control and its bookkeeping."""
-        while self._draft_fields_layout.count():
-            item = self._draft_fields_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._draft_controls.clear()
-        self._draft_op_kinds.clear()
-        self._draft_originals.clear()
-        self._draft_unresolved.clear()
-
-    def _add_edit_row(self, block: Dict[str, Any], op_kind: str, original_text: str) -> None:
-        """Add one labelled inline edit row for an editable block.
-
-        The row is a block label plus a one-line editor pre-filled with the
-        block's current text and a checkable Mark Unresolved toggle. The editor
-        is connected to mark the surface dirty *after* it is pre-filled, so
-        loading never marks the surface dirty."""
-        block_id = block.get("block_id", "?")
-        block_label = block_type_label(str(block.get("block_type", "unknown")))
-        label = QLabel(f"{block_label} — {block_id}")
-        label.setObjectName("draftFieldLabel")
-        label.setWordWrap(True)
-        label.setStyleSheet(style.draft_field_label_style(self._palette))
-        label.setAccessibleName("Code Map editable block")
-        self._draft_fields_layout.addWidget(label)
-
-        control = QLineEdit()
-        control.setObjectName("draftSingleEdit")
-        control.setAccessibleName(f"{op_kind} editor")
-        control.setText(original_text or "")
-        self._draft_fields_layout.addWidget(control)
-
-        unresolved = QPushButton("Mark unresolved")
-        unresolved.setObjectName("draftMarkUnresolvedButton")
-        unresolved.setCheckable(True)
-        unresolved.setAccessibleName(f"Mark unresolved {block_id}")
-        unresolved.toggled.connect(self._mark_draft_dirty)
-        self._draft_fields_layout.addWidget(unresolved)
-
-        self._draft_controls[block_id] = control
-        self._draft_op_kinds[block_id] = op_kind
-        self._draft_originals[block_id] = original_text or ""
-        self._draft_unresolved[block_id] = unresolved
-        control.textChanged.connect(self._mark_draft_dirty)
-
-    # -- Editable Code Map draft result handlers -------------------------
-
-    def _on_draft_saved(self, result: Dict[str, Any]) -> None:
-        draft = result.get("draft") or {}
-        operations = draft.get("operations", [])
-        self._draft_dirty = False
-        self._show_draft_result(format_draft_operations(operations))
-        self._set_status(STATE_SUCCESS, "draft saved")
-        if self._close_after_save:
-            self._close_after_save = False
-            self.close()  # re-enter closeEvent with a clean draft
-        elif self._leave_after_save:
-            self._leave_after_save = False
-            self._exit_edit_mode()
-
-    def _on_draft_discarded(self, result: Dict[str, Any]) -> None:
-        self._draft_dirty = False
-        self._clear_draft_controls()
-        self._show_draft_result("Draft discarded.")
-        self._set_status(STATE_SUCCESS, "draft discarded")
-
-    def _on_draft_reset(self, result: Dict[str, Any]) -> None:
-        self._draft_dirty = False
-        self._show_draft_result("Draft reset to baseline.")
-        self._set_status(STATE_SUCCESS, "draft reset")
-
-    def _on_draft_compared(self, result: Dict[str, Any]) -> None:
-        conflict = result.get("conflict") or {}
-        operations = result.get("operations", [])
-        text = format_draft_operations(operations)
-        if conflict.get("state") not in (None, "none"):
-            text = f"Conflict: {conflict.get('reason', conflict.get('state'))}\n\n{text}"
-        self._show_draft_result(text)
-        self._set_status(STATE_SUCCESS, "draft compared")
-
-    def _on_intent_delta_ready(self, result: Dict[str, Any]) -> None:
-        if result.get("no_change"):
-            self._show_draft_result("No changes. The draft is a no-op.")
-            self._set_status(STATE_SUCCESS, "no changes")
-            return
-        self._show_draft_result(format_intent_delta(result.get("intent_delta") or {}))
-        self._set_status(STATE_SUCCESS, "Intent Delta generated")
-
-    def _on_proposal_ready(self, result: Dict[str, Any]) -> None:
-        if result.get("no_change"):
-            self._show_draft_result("No changes. Nothing to plan.")
-            self._set_status(STATE_SUCCESS, "no changes")
-            return
-        proposal = result.get("proposal") or {}
-        state = proposal.get("state", "unknown")
-        self._show_draft_result(format_proposal(proposal))
-        self._set_status(STATE_SUCCESS, f"proposal {proposal_state_label(state)}")
-
-    def _on_draft_error(self, reason: str) -> None:
-        self._set_status(STATE_FAILED, reason)
-        self._show_draft_result(f"Draft action unavailable.\n\nReason: {reason}")
-
-    # -- action error handlers ------------------------------------------
 
     def _on_open_failed(self, reason: str) -> None:
         self._set_status(STATE_FAILED, reason)
         self._set_validation_state(VALIDATION_FAILED)
         self._update_scan_enabled()
 
-    def _on_tree_failed(self, reason: str) -> None:
-        self._set_status(STATE_FAILED, reason)
-        self._set_validation_state(VALIDATION_FAILED)
-
-    def _on_document_failed(self, reason: str) -> None:
-        self._set_status(STATE_FAILED, reason)
 
     def _on_scan_failed(self, reason: str) -> None:
         self._set_status(STATE_FAILED, reason)
@@ -7955,63 +5806,6 @@ class MainWindow(QMainWindow):
             )
         )
 
-    def _populate_tree(self, tree: Dict[str, Any]) -> None:
-        self._tree_model.clear()
-        self._tree_model.setHorizontalHeaderLabels(["Name"])
-        self._add_tree_nodes(self._tree_model.invisibleRootItem(), tree.get("children", []))
-
-    def _add_tree_nodes(self, parent: QStandardItem, nodes: List[Dict[str, Any]]) -> None:
-        for node in nodes:
-            node_type = node.get("type")
-            name = node.get("name", "")
-            children = node.get("children", [])
-            if node_type == "dir":
-                # The disclosure chevron is painted by the branch style in the
-                # fixed indicator slot, never embedded in the label, so the
-                # label is the plain name and never shifts when it toggles.
-                item = QStandardItem(name)
-                item.setEditable(False)
-                item.setData(node.get("path"), Qt.UserRole)
-                item.setData(node_type, Qt.UserRole + 1)
-                item.setFont(style.tree_folder_font())
-                parent.appendRow(item)
-                self._add_tree_nodes(item, children)
-            else:
-                item = QStandardItem(name)
-                item.setEditable(False)
-                item.setData(node.get("path"), Qt.UserRole)
-                item.setData(node_type, Qt.UserRole + 1)
-                item.setData(node.get("kind"), Qt.UserRole + 2)
-                parent.appendRow(item)
-
-    def _on_tree_clicked(self, index) -> None:
-        item = self._tree_model.itemFromIndex(index)
-        if item is None:
-            return
-        node_type = item.data(Qt.UserRole + 1)
-        if node_type != "file":
-            return
-        rel_path = item.data(Qt.UserRole)
-        if not rel_path:
-            return
-        self._open_document(rel_path)
-
-    def _close_tab(self, index: int) -> None:
-        widget = self._source_tabs.widget(index)
-        if widget is None:
-            return
-        self._source_tabs.removeTab(index)
-        for rel_path, view in list(self._open_tabs.items()):
-            if view is widget:
-                del self._open_tabs[rel_path]
-        widget.deleteLater()
-        if self._current_document not in self._open_tabs:
-            self._current_document = None
-        if self._source_tabs.count() == 0:
-            self._source_stack.setCurrentIndex(0)
-        self._update_status()
-
-    # -- supervisor signal handlers -------------------------------------
 
     def _on_completed(self, correlation_id: str, result: Dict[str, Any]) -> None:
         callbacks = self._pending.pop(correlation_id, None)
@@ -8030,9 +5824,6 @@ class MainWindow(QMainWindow):
     def _on_blocked(self, correlation_id: str) -> None:
         self._pending.pop(correlation_id, None)
         self._set_status(STATE_BLOCKED, correlation_id)
-        # A Code Map chain interrupted by a timeout/restart must not stay Loading.
-        if self._twin_state == TWIN_LOADING:
-            self._set_code_map_failure("blocked")
 
     def _on_unavailable(self, message: str) -> None:
         self._set_status(STATE_UNAVAILABLE, message)
@@ -8052,20 +5843,7 @@ class MainWindow(QMainWindow):
         self._set_status(STATE_UNAVAILABLE, message)
 
     def closeEvent(self, event) -> None:
-        """Reap the supervised backend when the window closes.
-
-        A dirty Code Map draft blocks close until the user resolves it (save,
-        discard or remain); it is never auto-saved."""
-        if self._edit_mode and self._draft_dirty:
-            choice = self._prompt_dirty_leave()
-            if choice == "save":
-                self._close_after_save = True
-                self._save_draft()
-                event.ignore()
-                return
-            if choice == "remain":
-                event.ignore()
-                return
+        """Reap the supervised backend when the window closes."""
         self._supervisor.terminate()
         self._credential_supervisor.terminate()
         super().closeEvent(event)
@@ -8392,7 +6170,6 @@ if __name__ == "__main__":
 __all__ = [
     "PythonHighlighter",
     "CodeView",
-    "DocumentView",
     "ElidedLabel",
     "HairlineSplitter",
     "BackendSupervisor",

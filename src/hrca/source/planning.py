@@ -1,4 +1,4 @@
-"""Deterministic task intake and plan builder for the Human-Readable Code Twin.
+"""Deterministic task intake and plan builder for the PrimaAgent source core.
 
 Bridges the P2.1 workflow contract with the P2.2 report builder. It validates a
 bounded task input and returns an ordered, schema-compatible list of plan

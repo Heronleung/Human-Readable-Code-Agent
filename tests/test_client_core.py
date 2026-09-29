@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import importlib.util
 import os
 import sys
 import tempfile
@@ -100,12 +102,82 @@ class FixtureTaskTests(unittest.TestCase):
         self.assertEqual(req["task"]["task_id"], "P3.1")
 
 
+def _assert_names_a_runnable_module(command, sentinel):
+    """Assert a resolved ``[interpreter, "-m", module, sentinel]`` can run.
+
+    A resolved command must be *runnable*, not merely spelled correctly.
+    ``-m <name>`` executes a plain module, or a package that ships an executable
+    ``__main__.py``. A module that does not exist, or a package without
+    ``__main__.py``, fails with "No module named ..." only *later*, once the
+    desktop is already trying to start the child.
+
+    Both defects shipped once — ``--serve`` named the ``hrca.boundary`` package
+    (UI-TRANSITION-1R) and ``--credential`` named a module that never existed
+    (1C) — so the rule is stated once here and applied to every resolved
+    command.
+
+    The check is deliberately static: the safe routes run under the dispatch
+    guard, which makes starting a process a failure, so this must not spawn
+    anything to find out.
+    """
+    if command[0] != sys.executable:
+        raise AssertionError("interpreter is not sys.executable: %r" % (command,))
+    if command[1] != "-m":
+        raise AssertionError("launch is not a -m run: %r" % (command,))
+    target = command[2]
+    if command[3] != sentinel:
+        raise AssertionError("wrong sentinel %r for %r" % (command[3], target))
+
+    spec = importlib.util.find_spec(target)
+    if spec is None:
+        raise AssertionError("%s does not exist, so -m cannot run it" % target)
+    if spec.submodule_search_locations is not None:
+        if importlib.util.find_spec(target + ".__main__") is None:
+            raise AssertionError(
+                "%s is a package with no __main__.py, so -m cannot run it" % target
+            )
+
+
 class BackendCommandTests(unittest.TestCase):
     def test_source_resolution(self):
         self.assertEqual(
             resolve_backend_command(frozen=False),
-            [sys.executable, "-m", "hrca.boundary", contract.SERVE_SENTINEL],
+            [sys.executable, "-m", "hrca.cli.app", contract.SERVE_SENTINEL],
         )
+
+    def test_source_resolution_names_an_executable_module(self):
+        _assert_names_a_runnable_module(
+            resolve_backend_command(frozen=False), contract.SERVE_SENTINEL
+        )
+
+    def test_credential_resolution_names_an_executable_module(self):
+        # The same rule for the host the Settings add-credential flow launches:
+        # it named a module that does not exist (UI-TRANSITION-1C).
+        _assert_names_a_runnable_module(
+            resolve_credential_host_command(frozen=False),
+            contract.CREDENTIAL_SENTINEL,
+        )
+
+    def test_the_credential_sentinel_dispatches_to_the_native_host(self):
+        # The resolver names the unified entry, so the dispatch that turns
+        # ``--credential`` into the native host must exist there. Asserted from
+        # the launcher's own source: no process starts and no credential is
+        # involved at any point.
+        origin = importlib.util.find_spec("hrca.cli.app").origin
+        with open(origin, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+
+        branch = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and "CREDENTIAL_SENTINEL" in ast.dump(node.test):
+                branch = node
+                break
+        self.assertIsNotNone(branch, "hrca.cli.app has no --credential branch")
+
+        body = ast.dump(ast.Module(body=branch.body, type_ignores=[]))
+        self.assertIn("credential_host", body)
+        self.assertIn("host_main", body)
+        self.assertIn("Return", body)
 
     def test_frozen_resolution(self):
         self.assertEqual(
@@ -116,7 +188,7 @@ class BackendCommandTests(unittest.TestCase):
     def test_credential_host_source_resolution(self):
         self.assertEqual(
             resolve_credential_host_command(frozen=False),
-            [sys.executable, "-m", "hrca.credential_host"],
+            [sys.executable, "-m", "hrca.cli.app", contract.CREDENTIAL_SENTINEL],
         )
 
     def test_credential_host_frozen_resolution(self):

@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hrca"
 version = "0.1.0"
-description = "Deterministic static scanner for a human-readable code twin (Phase 1 baseline)."
+description = "PrimaAgent — a chat-first, document-based coding agent over a deterministic source-evidence core."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Heronleung" }]
-keywords = ["ast", "static-analysis", "scanner", "code-twin"]
+keywords = ["ast", "static-analysis", "scanner", "coding-agent"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Programming Language :: Python :: 3",

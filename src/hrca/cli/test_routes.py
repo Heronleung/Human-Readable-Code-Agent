@@ -28,7 +28,11 @@ The routes
     construction: no container, no process, no network, no credential, no
     optional dependency.
 ``twin``
-    The optional Code Twin / Code Map capability and the Memory-to-Twin bridge.
+    The retained **headless** source-evidence capability: the deterministic
+    Structured Code Twin store and its Code Map projection, the editable Code
+    Map draft and derived intent delta, the advisory context builder, and the
+    Memory-to-Code-Twin evidence link with its freshness comparison. No
+    desktop surface reaches any of it; the desktop is not on this route.
 ``provider``
     The provider and credential seam, exercised through doubles only.
 ``container``
@@ -171,7 +175,6 @@ UNROUTED_MODULES: Dict[str, str] = {
     "test_client_gui_memory": "requires the optional PySide6 desktop extra",
     "test_client_gui_memory_query": "requires the optional PySide6 desktop extra",
     "test_client_gui_memory_review": "requires the optional PySide6 desktop extra",
-    "test_client_gui_memory_twin": "requires the optional PySide6 desktop extra",
     "test_client_gui_rule_delta": "requires the optional PySide6 desktop extra",
 }
 
@@ -322,7 +325,6 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_client_gui_memory",
         "test_client_gui_memory_query",
         "test_client_gui_memory_review",
-        "test_client_gui_memory_twin",
         "test_client_gui_rule_delta",
         "test_codemap",
         "test_codemap_draft",

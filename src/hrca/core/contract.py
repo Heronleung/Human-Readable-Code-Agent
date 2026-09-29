@@ -415,14 +415,14 @@ MAX_MEMORY_ID_CHARS = 256
 
 # Argument sentinel that turns the unified entry executable into the headless
 # boundary. A frozen build launches ``[sys.executable, "--serve"]``; a source
-# build launches ``[sys.executable, "-m", "hrca.boundary", "--serve"]``.
+# build launches ``[sys.executable, "-m", "hrca.cli.app", "--serve"]``.
 SERVE_SENTINEL = "--serve"
 
 # Argument sentinel that turns the unified entry executable into the dedicated
 # native credential host (a short-lived, single-purpose process that owns the
 # secure credential prompt and the Credential Manager write). A frozen build
 # launches ``[sys.executable, "--credential"]``; a source build launches
-# ``[sys.executable, "-m", "hrca.credential_host"]``.
+# ``[sys.executable, "-m", "hrca.cli.app", "--credential"]``.
 CREDENTIAL_SENTINEL = "--credential"
 
 # Bounded error code -> fixed message catalogue. An error response carries only

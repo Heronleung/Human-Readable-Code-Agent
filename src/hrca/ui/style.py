@@ -84,13 +84,6 @@ STATUS_BAR_HEIGHT = 24
 PANEL_HEADER_HEIGHT = 28
 CHAT_COMPOSER_HEIGHT = 56
 
-# Editable Code Map draft controls (P3.4). A single-line field is a QLineEdit
-# (its natural height); a list field is a bounded multi-line editor of this
-# fixed height, and the read-only Compare / Generate result area below the
-# controls is this fixed height.
-EDIT_FIELD_LIST_HEIGHT = 96
-DRAFT_RESULT_HEIGHT = 120
-
 # Bottom utility panel geometry. The panel is a single header (the flat tab bar
 # plus the disclosure control) above one body. The header must be tall enough to
 # fit the tab bar; the body floor keeps the selected surface usable at every
@@ -117,12 +110,6 @@ TREE_CHEVRON_SIZE = 6
 TREE_CHEVRON_STROKE = 1.5
 TREE_DISCLOSURE_HIT_SIZE = 20
 
-# Code Map header pin control (P3.3). The lock is a monochrome vector padlock
-# painted at LOCK_ICON_SIZE with a LOCK_STROKE outline; only its shape (closed
-# vs open shackle) and colour change with the pin state.
-LOCK_ICON_SIZE = 16
-LOCK_STROKE = 1.75
-
 # Credential-profile card controls (P4.2a). The icon-only delete action is a
 # monochrome vector trash can painted at PROFILE_ICON_SIZE, mounted in a fixed
 # PROFILE_ACTION_BUTTON_SIZE hit target (>= 24 x 24 px, the WCAG 2.5.8 target
@@ -146,15 +133,9 @@ COMMAND_BAR_BUTTON_HEIGHT = 28
 SPLITTER_HANDLE_WIDTH = 6          # 6 px interactive hit area
 SPLITTER_HAIRLINE_WIDTH = 1        # visually a 1 px hairline
 
-EXPLORER_DEFAULT_WIDTH = 240
-EXPLORER_MIN_WIDTH = 180
-EXPLORER_MAX_WIDTH = 420
-SOURCE_MIN_WIDTH = 360
-TWIN_MIN_WIDTH = 300
-
 # App-owned document-library explorer geometry (P4.6). A narrow, resizable,
-# collapsible pane immediately right of the navigation rail; it shares the
-# Project Explorer's width grammar so the two trees read as one component.
+# collapsible pane immediately right of the navigation rail; it is the app's
+# only tree.
 LIBRARY_EXPLORER_DEFAULT_WIDTH = 240
 LIBRARY_EXPLORER_MIN_WIDTH = 160
 LIBRARY_EXPLORER_MAX_WIDTH = 420
@@ -164,28 +145,9 @@ LIBRARY_CONTENT_STRETCH = 1
 # Maximum height of the recoverable Trash strip in the library explorer (P4.6).
 LIBRARY_TRASH_MAX_HEIGHT = 168
 
-# Initial primary-splitter pane widths (px), applied once at construction.
+# Initial width of the primary content stack (px), applied once at
+# construction.
 PRIMARY_SOURCE_INITIAL_WIDTH = 560
-PRIMARY_TWIN_INITIAL_WIDTH = 360
-
-# Primary-splitter stretch factors (unitless): Explorer is fixed (0); Source
-# and Twin take extra width in a 3 : 2 ratio.
-EXPLORER_STRETCH = 0
-SOURCE_STRETCH = 3
-TWIN_STRETCH = 2
-
-TWIN_CONTENT_MAX_WIDTH = 720
-
-# Compact entity list height in the Code Map read-only pane (P3.4). The list is
-# a bounded, scrollable strip above the procedural document, never an unbounded
-# column that would crowd out the document.
-CODEMAP_ENTITY_LIST_MAX_HEIGHT = 120
-
-# Fixed single-line height of the Code Map in-place status region (P3.4). The
-# status label is always mounted at this height so that showing or clearing its
-# "Updating…" / failure text never changes the body layout, the procedural
-# document's viewport origin, or the user's scroll position.
-CODEMAP_STATUS_HEIGHT = 20
 
 # Fixed single-line height of the provider status region (P4.2a). The region is
 # permanently reserved below the top toolbar so the local-only provider state
@@ -304,36 +266,13 @@ DARK_PALETTE = Palette(
 PALETTES = {"light": LIGHT_PALETTE, "dark": DARK_PALETTE}
 
 # ---------------------------------------------------------------------------
-# State token names shared by the Twin chip and any state indicator.
+# State token names shared by any semantic state indicator.
 # ---------------------------------------------------------------------------
 STATE_INFO = "info"
 STATE_SUCCESS = "success"
 STATE_WARNING = "warning"
 STATE_ERROR = "error"
 STATE_NEUTRAL = "neutral"
-
-# The six bounded Twin presentation states map onto the five semantic state
-# colours. ``empty`` and ``unsupported`` both use the neutral token (they both
-# mean "no Twin is available"); the chip always carries a distinct word, so
-# colour is never the sole signal.
-TWIN_STATE_TOKEN = {
-    "empty": STATE_NEUTRAL,
-    "loading": STATE_INFO,
-    "available": STATE_SUCCESS,
-    "stale": STATE_WARNING,
-    "conflict": STATE_ERROR,
-    "unsupported": STATE_NEUTRAL,
-}
-
-# Human-readable chip words for each Twin state (title case, never colour alone).
-TWIN_STATE_WORD = {
-    "empty": "Empty",
-    "loading": "Loading",
-    "available": "Available",
-    "stale": "Stale",
-    "conflict": "Conflict",
-    "unsupported": "Unsupported",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +286,7 @@ def ui_font(size: int = UI_FONT_SIZE) -> QFont:
 
 
 def code_font(size: int = CODE_FONT_SIZE) -> QFont:
-    """Return the fixed-width font at ``size`` px for code and Twin text."""
+    """Return the fixed-width font at ``size`` px for code text."""
     font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
     font.setPixelSize(size)
     return font
@@ -384,50 +323,6 @@ def tree_chevron_vertices(open_state: bool) -> List[QPointF]:
     if open_state:
         return [QPointF(-half, -half), QPointF(0.0, half), QPointF(half, -half)]
     return [QPointF(-half, -half), QPointF(half, 0.0), QPointF(-half, half)]
-
-
-def lock_icon(palette: Palette, locked: bool, enabled: bool = True) -> QIcon:
-    """Return a monochrome vector padlock icon for the Code Map pin control.
-
-    The closed glyph (``locked`` true) has a full shackle and is drawn in the
-    palette's ``on_accent`` colour (over the accent checked background); the
-    open glyph has a gap on one side and is drawn in ``text_secondary`` (or
-    ``text_disabled`` when the control is disabled). The icon is painted with
-    :class:`QPainter` — no emoji, glyph, icon pack or image asset.
-    """
-    if locked:
-        color = palette.on_accent
-    elif enabled:
-        color = palette.text_secondary
-    else:
-        color = palette.text_disabled
-
-    size = LOCK_ICON_SIZE
-    pixmap = QPixmap(size, size)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    pen = QPen(QColor(color), LOCK_STROKE)
-    pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
-    painter.setPen(pen)
-    painter.setBrush(QColor(color))
-
-    # Body: a filled rounded rectangle in the lower half.
-    painter.drawRoundedRect(QRectF(4.0, 9.0, 8.0, 5.0), 1.5, 1.5)
-
-    # Shackle: a stroked arc plus the leg(s) that descend into the body. The
-    # open (unlocked) glyph leaves the left leg un-drawn so the gap is the
-    # only shape difference between the two states.
-    painter.setBrush(Qt.NoBrush)
-    if locked:
-        painter.drawArc(QRectF(5.0, 4.0, 6.0, 6.0), 0, 180 * 16)
-        painter.drawLine(QPointF(5.0, 7.0), QPointF(5.0, 10.0))
-    else:
-        painter.drawArc(QRectF(5.0, 4.0, 6.0, 6.0), 0, 135 * 16)
-    painter.drawLine(QPointF(11.0, 7.0), QPointF(11.0, 10.0))
-    painter.end()
-    return QIcon(pixmap)
 
 
 def trash_icon(palette: Palette, enabled: bool = True) -> QIcon:
@@ -620,7 +515,6 @@ QMainWindow, QWidget#root { background: $window; color: $text; }
 QWidget#commandBar { background: $window; border-bottom: 1px solid $border; }
 
 /* ---- pane backgrounds ---- */
-QWidget#explorerPanel, QWidget#sourcePanel, QWidget#twinPanel,
 QWidget#chatPanel { background: $surface; }
 
 /* ---- generic flat push button ---- */
@@ -665,24 +559,6 @@ QToolButton {
 QToolButton:hover { color: $text; background: $sunken; }
 QToolButton:focus { border: 1px solid $focus; }
 
-/* ---- Code Map pin control (checkable, monochrome lock) ---- */
-QToolButton#twinLockButton { padding: 2px; }
-QToolButton#twinLockButton:checked { background: $accent; color: $on_accent; }
-QToolButton#twinLockButton:checked:hover { background: $accent_hover; }
-
-/* ---- Code Map behavior-node controls (flat, text-like, left-aligned) ---- */
-QPushButton#behaviorNodeButton {
-    background: transparent;
-    color: $text;
-    border: 1px solid transparent;
-    border-radius: $chip_radius;
-    padding: 4px 8px;
-    text-align: left;
-}
-QPushButton#behaviorNodeButton:hover { background: $sunken; border-color: $border; }
-QPushButton#behaviorNodeButton:pressed { background: $border; }
-QPushButton#behaviorNodeButton:focus { border: 1px solid $focus; }
-
 /* ---- panel header label ---- */
 QLabel#panelHeader {
     color: $text_secondary;
@@ -693,36 +569,13 @@ QLabel#panelHeader {
 
 /* ---- secondary / status / empty-state text ---- */
 QLabel#secondary { color: $text_secondary; }
-QLabel#projectRootLabel { color: $text_secondary; padding: 4px 12px 6px 12px; }
 QLabel#emptyState { color: $text_secondary; padding: 16px; }
 QLabel#statusField { color: $text_secondary; font-size: 12px; }
-
-/* ---- Project Explorer tree ---- */
-QTreeView#projectTree {
-    background: $surface;
-    border: none;
-    outline: none;
-    font-size: 13px;
-}
-QTreeView#projectTree::item { height: $tree_row; }
-QTreeView#projectTree::item:selected {
-    background: $selection;
-    color: $text;
-}
-QTreeView#projectTree::item:hover { background: $sunken; }
 
 /* ---- code and document views ---- */
 QPlainTextEdit { background: $sunken; color: $text; border: none; }
 
-/* ---- Twin body is a QLabel (not a text edit), so target the real class ---- */
-QLabel#twinBody { background: $surface; border: none; padding: 0; }
-
-/* ---- flat tabs (Source Code and bottom panel) ---- */
-QTabWidget#sourceTabs::pane {
-    border: none;
-    border-top: 1px solid $border;
-    background: $sunken;
-}
+/* ---- flat tabs ---- */
 QTabBar::tab {
     background: transparent;
     color: $text_secondary;
@@ -883,17 +736,12 @@ def status_field_style(palette: Palette) -> str:
     return f"color: {palette.text_secondary}; font-size: {STATUS_FONT_SIZE}px;"
 
 
-def project_root_label_style(palette: Palette) -> str:
-    """Return the style sheet for the explorer's project-root footer label."""
-    return f"color: {palette.text_secondary}; padding: {GAP_TIGHT}px {INSET}px;"
-
-
 def state_chip_style(palette: Palette, token: str) -> str:
     """Return the chip style for a semantic state ``token`` (info/success/…).
 
     The colour comes from the state's semantic token; the word is applied
     separately by the caller so colour is never the sole signal. Used by the
-    Twin chip and the P4.5 preview state badge.
+    P4.5 preview state badge.
     """
     fg = palette.state_fg(token)
     bg = palette.state_bg(token)
@@ -901,15 +749,6 @@ def state_chip_style(palette: Palette, token: str) -> str:
         f"color: {fg}; background: {bg}; border-radius: {RADIUS_CHIP}px; "
         f"padding: 1px {GAP_TIGHT}px; font-size: {STATUS_FONT_SIZE}px;"
     )
-
-
-def twin_chip_style(palette: Palette, state: str) -> str:
-    """Return the style sheet for the Twin state chip in ``state``.
-
-    The colour comes from the state's semantic token; the word is applied
-    separately by the caller so colour is never the sole signal.
-    """
-    return state_chip_style(palette, TWIN_STATE_TOKEN.get(state, STATE_NEUTRAL))
 
 
 def preview_banner_style(palette: Palette) -> str:
@@ -926,20 +765,6 @@ def unavailable_banner_style(palette: Palette) -> str:
         f"color: {palette.warning}; font-size: {STATUS_FONT_SIZE}px; "
         f"padding: {GAP_TIGHT}px {INSET}px;"
     )
-
-
-def draft_notice_style(palette: Palette) -> str:
-    """Return the style sheet for the "Edits create a draft only" notice.
-
-    Muted secondary text; the caller sets word-wrap so the notice stays on one
-    bounded surface without ever implying the edit touches source.
-    """
-    return f"color: {palette.text_secondary}; font-size: {STATUS_FONT_SIZE}px;"
-
-
-def draft_field_label_style(palette: Palette) -> str:
-    """Return the style sheet for a structured draft field label."""
-    return f"color: {palette.text_secondary};"
 
 
 # -- Memory documents surface (M4.3/v2b) ---------------------------------
@@ -1031,8 +856,6 @@ __all__ = [
     "STATUS_BAR_HEIGHT",
     "PANEL_HEADER_HEIGHT",
     "CHAT_COMPOSER_HEIGHT",
-    "EDIT_FIELD_LIST_HEIGHT",
-    "DRAFT_RESULT_HEIGHT",
     "BOTTOM_PANEL_HEADER_HEIGHT",
     "BOTTOM_PANEL_BODY_MIN_HEIGHT",
     "BOTTOM_PANEL_MIN_HEIGHT",
@@ -1045,8 +868,6 @@ __all__ = [
     "TREE_CHEVRON_SIZE",
     "TREE_CHEVRON_STROKE",
     "TREE_DISCLOSURE_HIT_SIZE",
-    "LOCK_ICON_SIZE",
-    "LOCK_STROKE",
     "PROFILE_ICON_SIZE",
     "PROFILE_ACTION_BUTTON_SIZE",
     "PROFILE_CARD_HEIGHT",
@@ -1055,19 +876,7 @@ __all__ = [
     "COMMAND_BAR_BUTTON_HEIGHT",
     "SPLITTER_HANDLE_WIDTH",
     "SPLITTER_HAIRLINE_WIDTH",
-    "EXPLORER_DEFAULT_WIDTH",
-    "EXPLORER_MIN_WIDTH",
-    "EXPLORER_MAX_WIDTH",
-    "SOURCE_MIN_WIDTH",
-    "TWIN_MIN_WIDTH",
     "PRIMARY_SOURCE_INITIAL_WIDTH",
-    "PRIMARY_TWIN_INITIAL_WIDTH",
-    "EXPLORER_STRETCH",
-    "SOURCE_STRETCH",
-    "TWIN_STRETCH",
-    "TWIN_CONTENT_MAX_WIDTH",
-    "CODEMAP_ENTITY_LIST_MAX_HEIGHT",
-    "CODEMAP_STATUS_HEIGHT",
     "PROVIDER_STATUS_HEIGHT",
     "PRIMARY_WORKSPACE_INITIAL_HEIGHT",
     "PRIMARY_WORKSPACE_STRETCH",
@@ -1091,8 +900,6 @@ __all__ = [
     "STATE_WARNING",
     "STATE_ERROR",
     "STATE_NEUTRAL",
-    "TWIN_STATE_TOKEN",
-    "TWIN_STATE_WORD",
     "Palette",
     "LIGHT_PALETTE",
     "DARK_PALETTE",
@@ -1102,7 +909,6 @@ __all__ = [
     "panel_header_font",
     "tree_folder_font",
     "tree_chevron_vertices",
-    "lock_icon",
     "trash_icon",
     "TreeBranchStyle",
     "detect_color_scheme",
@@ -1114,13 +920,9 @@ __all__ = [
     "secondary_text_style",
     "status_label_style",
     "status_field_style",
-    "project_root_label_style",
-    "twin_chip_style",
     "state_chip_style",
     "preview_banner_style",
     "unavailable_banner_style",
-    "draft_notice_style",
-    "draft_field_label_style",
     "MEMORY_CLAIM_LIST_MIN_WIDTH",
     "MEMORY_DETAIL_MIN_WIDTH",
     "MEMORY_PANE_STRETCH",

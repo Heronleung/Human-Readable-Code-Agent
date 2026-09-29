@@ -1,14 +1,16 @@
-# Human-Readable Code Agent
+# PrimaAgent
 
-A deterministic static scanner for Python source trees — the **Phase 1
-baseline** for a "code twin" project. It parses Python with the standard-library
+A chat-first, document-based coding agent built on a deterministic
+source-evidence core. The core parses Python with the standard-library
 [`ast`](https://docs.python.org/3/library/ast.html) module and emits canonical
-JSON records that later phases can turn into a navigable, twin-like
-representation of the code.
+JSON records; the desktop presents working documents, their accepted versions,
+the Developer Memory read model and the provider-backed review workflow.
 
-This is **not** an IDE, an LLM agent, or a general-purpose analysis tool. It is
-a small, bounded foundation: it extracts structure and emits only what the
-source actually says.
+Source evidence — the scanner, the Structured Code Twin store, its Code Map
+projection, the advisory context builder and the Memory-to-Code-Twin evidence
+link — is **internal support** for orchestration, review, validation and
+migration. It is deliberately not a product surface: the desktop exposes no
+code-twin view, no source-tree pane and no Code Map.
 
 ## Setup (uv)
 
@@ -95,58 +97,52 @@ so repeated scans stay byte-identical.
 is newer than the scanner supports, or is missing or malformed, is refused with
 a bounded reason rather than half-read.
 
-## Desktop client (P3.2)
+## Desktop client
 
-A read-only PySide6 **IDE workspace shell** supervises a headless **application
-boundary** over newline-delimited JSON on stdin/stdout. It opens a project root
-through the boundary, lists a filtered, bounded project tree, opens documents
-read-only, and still submits the deterministic read-only scan. The boundary is
-the only place that imports the deterministic core (`scanner`, `planning`,
-`report`) and the workspace filesystem policy; the client consumes only the
-versioned contract in `hrca.contract`.
+A PySide6 desktop client supervises a headless **application boundary** over
+newline-delimited JSON on stdin/stdout. It opens a project root through the
+boundary and submits the deterministic read-only scan. The boundary is the only
+place that imports the deterministic core (`scanner`, `planning`, `report`) and
+the workspace filesystem policy; the client consumes only the versioned
+contract in `hrca.contract`.
 
-The shell presents the approved IDE layout (all presentation-only; no
+The client presents a document-first product surface (all presentation-only; no
 semantics are invented):
 
-- **Three primary panes side by side** — a thin, collapsible **Project
-  Explorer** (`QTreeView`, populated from the boundary's filtered `get_tree`
-  response, never a direct directory walk or `QFileSystemModel`); a central
-  **Source Code** area with flat, closable, read-only `QPlainTextEdit` +
-  `QSyntaxHighlighter` tabs opened via `get_document` (the client never reads
-  files itself); and an independent right-hand **Code Map** pane
-  (never nested inside Source Code) that can display the bounded
-  `empty` / `loading` / `available` / `stale` / `conflict` / `unsupported`
-  states — in P3.2 no Twin entity exists, so the honest default is `empty`.
-  In P3.3 the pane follows the active supported `.py`/`.pyi` tab by default;
-  a single monochrome lock button on its header pins the displayed projection
-  to its source path (tab switches no longer replace it), and unpinning
-  immediately follows the active tab again. Closing a pinned tab keeps the last
-  rendered projection until unpinned.
-- **One bottom utility panel** — a single full-width surface directly beneath
-  all three panes, with one flat tab bar (`Agent Chat | Plan | Diff | Problems
-  | Tests | Evidence`, Agent Chat first) and one disclosure chevron (`▾`/`▴`)
-  at the far right that collapses the panel to its header row and restores the
-  last usable height. **Agent Chat** (the default tab) carries a disabled
-  composer and send action labelled "provider-backed chat unavailable" — no
-  provider, credential, network or inference call is ever made — while the
-  other five tabs surface the P3.1 plan, raw result, validation, limitations
-  and outcome data. **Diff** is explicitly unavailable in this read-only
-  slice: no code-proposal capability exists, so there is nothing to diff and
-  no way to apply changes.
-- **A single-row status bar** — a transient message plus six persistent fields
-  (root, repository, file, Twin, provider, validation state).
+- **Document workspace (primary)** — a full-height Working Document editor with a
+  document header (selector, New, Open, saved/unsaved state) and a footer where
+  Save is the primary action and the candidate actions (Create candidate /
+  Review candidate / Adopt) are contextual. The app-owned **document library**
+  explorer sits immediately right of the navigation rail and is the app's only
+  tree.
+- **Preview, Versions, Memory, Change Review and Validation Evidence** — the
+  remaining destinations. **Preview** is a read-only, version-bound candidate
+  review surface. **Versions** is the accepted-version drawer. **Memory** is the
+  read-only Developer Memory read model (Documents, Search, Resume,
+  Corrections). **Change Review** groups Agent Chat (a deliberately disabled
+  composer and send action — no provider, credential, network or inference call
+  is made), Plan, Diff and the raw candidate metadata; **Diff** stays explicitly
+  unavailable in this read-only slice. **Validation Evidence** carries Problems,
+  Tests and Evidence. **Agent Chat** is the seam the chat-first surface lands on.
+- **A single-row status bar** — a transient message plus four persistent fields
+  (root, repository, provider, validation state).
 
-As of **P4.4a** the shell is document-first rather than IDE-shaped. A compact
-labelled navigation rail presents **Document** and **Preview** as the only
-always-visible primary destinations, then **Versions** (the accepted-version
-history with per-version Restore) and a collapsed **Advanced** disclosure that
-groups the retained technical surfaces as **Source & Code Map** (the three
-panes above), **Change Review** (Agent Chat, Plan, Diff and the raw candidate
-metadata) and **Validation Evidence** (Problems, Tests, Evidence). The Working
-Document is promoted to a full-height primary workspace with a document header
-(file selector, New, Open, saved/unsaved state), a large editor and a footer
-where Save is the primary action and the candidate actions (Create candidate /
-Review candidate / Adopt) are contextual.
+As of **P4.4a** the shell is document-first. A compact labelled navigation rail
+presents **Document** and **Preview** as the only always-visible primary
+destinations, then **Versions** (the accepted-version history with per-version
+Restore) and a collapsed **Advanced** disclosure that groups the retained
+technical surfaces as **Change Review** (Agent Chat, Plan, Diff and the raw
+candidate metadata) and **Validation Evidence** (Problems, Tests, Evidence).
+
+As of **UI-TRANSITION-1** the desktop no longer presents a code-twin surface.
+The Project Explorer, the read-only Source Code tabs and the right-hand Code Map
+pane — together with the Memory destination's **Code Twin** tab and the status
+bar's Twin field — are removed. Their capability is retained headless and
+unchanged: the scanner, the Structured Code Twin store, the Code Map projection
+and its editable draft, the advisory context builder and the
+Memory-to-Code-Twin evidence link all remain reachable through the boundary and
+the offline operator CLIs. No protocol action, contract version, schema or store
+was changed, and every persisted record stays readable.
 
 As of **P4.5**, **Preview** is a read-only, version-bound candidate review
 surface fed by a new `preview_document` boundary read-model (no package
@@ -267,17 +263,20 @@ executable** using the `--serve` argument sentinel, resolved via
 
 | Context           | Launch command                                         |
 | ----------------- | ------------------------------------------------------ |
-| Source (venv)     | `[sys.executable, "-m", "hrca.boundary", "--serve"]`   |
+| Source (venv)     | `[sys.executable, "-m", "hrca.cli.app", "--serve"]`    |
 | Frozen (PyInstaller) | `[sys.executable, "--serve"]`                        |
 
-The frozen build uses `hrca/app.py` as its entry point: it runs the desktop
-client by default, and the headless boundary when invoked with `--serve`.
+Both forms name the same unified entry, `hrca.cli.app`: it runs the desktop
+client by default, and the headless boundary when invoked with `--serve`. The
+frozen executable bundles that entry directly; the source command reaches it
+with `-m`. It is named here rather than `-m hrca.boundary` because
+`hrca.boundary` is a package with no `__main__.py`, which `-m` cannot execute.
 
 ### Running from source
 
 ```bash
 uv sync --extra desktop                 # installs PySide6 (optional)
-uv run python -m hrca.client            # launch the IDE workspace shell
+uv run python -m hrca.client            # launch the desktop client
 uv run python -m hrca.client --scan-once   # headless supervised scan (defaults to repo fixtures)
 ```
 
@@ -798,9 +797,10 @@ account.
 collector, no provider access and no Memory UI exist. Capture runs only when a
 caller explicitly configures hooks and points them at the collector. Correction
 history, export, backup and the Memory-to-Code-Twin link boundary are delivered
-(M4.5); the interactive Code Twin link review that reads a link, renders the
-freshness the Twin reports and opens the exact entity is delivered in the Memory
-destination (M4.5/v2c).
+(M4.5). The interactive Code Twin link review that read a link, rendered the
+freshness the Twin reports and opened the exact entity shipped as the Memory
+destination's Code Twin tab and was removed by UI-TRANSITION-1; the boundary it
+drove is unchanged and remains headless.
 
 ## Evidence-linked documents (M4.3)
 
@@ -1284,13 +1284,19 @@ Both actions are reads. The link is a value; the verdict is computed. No store,
 run state, correction, generated version or source fact is touched, so a link
 can never accept a repository change or claim a verified current baseline.
 
-## The Code Twin link workflow (M4.5/v2c)
+## The Code Twin link workflow (M4.5/v2c) — headless only
 
-The **Code Twin** tab of the Memory destination is the interactive half of the
-link boundary. It reads one stored source claim, binds it against the
-authoritative Twin, and renders the freshness the Twin itself reports — then,
-only while the boundary reported the link actionable, offers to open the exact
-entity the link names.
+*As of UI-TRANSITION-1 the desktop no longer surfaces this workflow.* The
+**Code Twin** tab of the Memory destination was removed with the rest of the
+code-twin product surface. The link boundary itself is unchanged: it remains
+reachable through the two read-only actions `get_memory_code_link` /
+`resolve_memory_code_freshness` and the existing `get_twin` read, and through
+the offline operator CLI.
+
+The workflow it implemented — read one stored source claim, bind it against the
+authoritative Twin, and return the freshness the Twin itself reports, then
+offer to open the exact entity the link names only while the boundary reported
+the link actionable. What follows describes that retained headless capability.
 
 ### Two steps, because the protocol has two
 

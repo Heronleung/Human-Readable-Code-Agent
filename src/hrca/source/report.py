@@ -1,4 +1,4 @@
-"""Deterministic structured report builder for the Human-Readable Code Twin.
+"""Deterministic structured report builder for the PrimaAgent source core.
 
 Converts scanner evidence (:mod:`hrca.scanner`) and task metadata into a
 version-1 workflow report. The builder is read-only with respect to the scanned

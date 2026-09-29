@@ -1,8 +1,13 @@
-# Human-Readable Code Agent
+# PrimaAgent
 
-A deterministic static scanner for Python source trees — the **Phase 1
-baseline** for a "code twin" project. No LLM, no network, no runtime code
-execution at scan time.
+A chat-first, document-based coding agent over a deterministic source-evidence
+core. No LLM, no network and no runtime code execution at scan time.
+
+Source evidence — the scanner, the Structured Code Twin store, its Code Map
+projection, the advisory context builder and the Memory-to-Code-Twin link — is
+**internal support**, never a product surface: the desktop presents no
+code-twin view, no source-tree pane and no Code Map, and the client is not on
+the ``twin`` test route.
 
 ## Layout
 
@@ -48,13 +53,16 @@ execution at scan time.
   3.9.0, additive over 3.8.0). Freshness is a returned comparison against
   authoritative Twin state — never a persisted assertion — and the two actions
   write nothing, so Memory authority is untouched. The M4.5/v2c Code Twin link
-  workflow is the `Code Twin` tab of that same `memory` destination: it binds a
-  link, re-reads the freshness the Twin reports against the held link, and opens
-  the exact entity only after the existing `get_twin` read returns the artifact
-  whose id equals the link's `entity_id`. Binding and comparing are separate
+  workflow was the `Code Twin` tab of that same `memory` destination: it bound a
+  link, re-read the freshness the Twin reports against the held link, and opened
+  the exact entity only after the existing `get_twin` read returned the artifact
+  whose id equals the link's `entity_id`. Binding and comparing were separate
   actions on purpose — a fresh bind always agrees with itself, so only a held
-  link can show `stale`, `historical` or `missing`. The desktop narrows the
-  returned `actionable` and never widens it. The M4.5/v2a package boundary
+  link can show `stale`, `historical` or `missing`. **UI-TRANSITION-1 removed
+  the tab**; the two actions, the `get_twin` read and `memory_twin_link.py` are
+  retained unchanged as the headless evidence-link port, and nothing in the
+  desktop reaches them. The desktop narrowed the returned `actionable` and never
+  widened it. The M4.5/v2a package boundary
   is `memory_package.py` (two
   profiles: a least-disclosure `export` and a local-sensitive `backup`) with the
   offline operator CLI `memory_package_cli.py`; both are outside the desktop and
