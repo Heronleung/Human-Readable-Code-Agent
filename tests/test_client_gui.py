@@ -391,6 +391,10 @@ class MainWindowLayoutTests(unittest.TestCase):
         window = MainWindow()
         window._root = "/home/heron/projects/Human-Readable-Code-Agent/" + "x" * 120
         window._update_status()
+        # Mode A collapses the diagnostic row by default; Details reveals it.
+        self.assertTrue(all(lbl.isHidden() for lbl in window._diagnostic_labels))
+        window._status_details_button.setChecked(True)
+        self.assertTrue(all(not lbl.isHidden() for lbl in window._diagnostic_labels))
         window.resize(1360, 840)
         window.show()
         QApplication.processEvents()
@@ -939,9 +943,17 @@ class ProviderReadinessGuiTests(unittest.TestCase):
         window = MainWindow()
         self.assertEqual(window.settings_button.text(), "Settings")
         self.assertEqual(window.settings_button.accessibleName(), "Settings")
-        # The Settings gear sits directly left of Open Project in the toolbar.
+        # Mode A: the provider readiness chip sits between the primary actions
+        # and the Settings ghost action, which closes the command bar.
         bar = window.settings_button.parentWidget().layout()
-        self.assertLess(bar.indexOf(window.settings_button), bar.indexOf(window.open_project_button))
+        self.assertLess(
+            bar.indexOf(window.open_project_button),
+            bar.indexOf(window._provider_status_label),
+        )
+        self.assertLess(
+            bar.indexOf(window._provider_status_label),
+            bar.indexOf(window.settings_button),
+        )
 
     def test_provider_status_region_is_reserved(self):
         window = MainWindow()
@@ -1114,12 +1126,14 @@ class SettingsDialogTests(unittest.TestCase):
                 self.assertEqual(button.minimumHeight(), style.COMMAND_BAR_BUTTON_HEIGHT)
                 self.assertEqual(button.maximumHeight(), style.COMMAND_BAR_BUTTON_HEIGHT)
 
-    def test_open_project_remains_primary_others_secondary(self):
+    def test_command_bar_uses_the_named_action_vocabulary(self):
+        # Mode A: the command bar carries explicit roles rather than one
+        # undifferentiated button class. Open Project and Scan are named
+        # secondary actions; Settings is a quiet ghost action.
         window = MainWindow()
-        self.assertEqual(window.open_project_button.objectName(), "primaryButton")
-        for button in (window.settings_button, window.scan_button):
-            with self.subTest(button=button.text()):
-                self.assertEqual(button.objectName(), "commandBarButton")
+        self.assertEqual(window.open_project_button.objectName(), "secondaryButton")
+        self.assertEqual(window.scan_button.objectName(), "secondaryButton")
+        self.assertEqual(window.settings_button.objectName(), "ghostButton")
 
     def test_dialog_minimum_geometry(self):
         window = MainWindow()

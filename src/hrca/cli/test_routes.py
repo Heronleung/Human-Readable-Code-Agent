@@ -175,7 +175,12 @@ UNROUTED_MODULES: Dict[str, str] = {
     "test_client_gui_memory": "requires the optional PySide6 desktop extra",
     "test_client_gui_memory_query": "requires the optional PySide6 desktop extra",
     "test_client_gui_memory_review": "requires the optional PySide6 desktop extra",
+    "test_client_gui_mode_a": "requires the optional PySide6 desktop extra",
     "test_client_gui_rule_delta": "requires the optional PySide6 desktop extra",
+    "test_mode_a_visual_contract": (
+        "requires the optional PySide6 desktop extra, which the core route "
+        "must not depend on"
+    ),
 }
 
 # The route surface. Every entry is a test *module* name (no package prefix, no
@@ -325,6 +330,7 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_client_gui_memory",
         "test_client_gui_memory_query",
         "test_client_gui_memory_review",
+        "test_client_gui_mode_a",
         "test_client_gui_rule_delta",
         "test_codemap",
         "test_codemap_draft",
@@ -355,6 +361,7 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_memory_replay",
         "test_memory_revisions",
         "test_memory_store",
+        "test_mode_a_visual_contract",
         "test_planning",
         "test_proposal",
         "test_provider",

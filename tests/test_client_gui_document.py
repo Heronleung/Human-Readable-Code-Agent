@@ -136,6 +136,10 @@ class DocumentSurfaceTests(unittest.TestCase):
         self.assertEqual(self.window._document_base_revision_id, "rev:1")
         self.assertFalse(self.window._document_dirty)
         self.assertEqual(self.window._document_candidate_id, "cand:c1")
+        # Mode A gates Save on there being something to write: a clean document
+        # with a saved revision has nothing to save, an edited one does.
+        self.assertFalse(self.window._document_save_button.isEnabled())
+        self.window._document_editor.setPlainText("changed")
         self.assertTrue(self.window._document_save_button.isEnabled())
 
     def test_editor_edit_marks_dirty_and_save_clears(self):
@@ -247,6 +251,9 @@ class LibrarySelectionTests(unittest.TestCase):
             }
         )
         self.assertEqual(self.window._document_id, "doc:b")
+        # Mode A: a freshly applied, clean document has nothing to save yet.
+        self.assertFalse(self.window._document_save_button.isEnabled())
+        self.window._document_editor.setPlainText("edited")
         self.assertTrue(self.window._document_save_button.isEnabled())
 
     def test_refresh_preserves_selection_by_document_id(self):

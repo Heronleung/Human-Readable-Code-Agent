@@ -46,6 +46,12 @@ GAP_GROUP = SPACE_16
 RADIUS_CONTAINER = 2
 RADIUS_CHIP = 2
 
+# Slightly softer interactive surfaces remain restrained and desktop-native.
+# These additive roles do not alter the Win32 credential sheet unless its
+# adapter explicitly opts into them.
+RADIUS_INTERACTIVE = 4
+FOCUS_RING_WIDTH = 2
+
 # ---------------------------------------------------------------------------
 # Border / stroke roles — crisp one-pixel neutral borders.
 # ---------------------------------------------------------------------------
@@ -170,6 +176,8 @@ __all__ = [
     "GAP_GROUP",
     "RADIUS_CONTAINER",
     "RADIUS_CHIP",
+    "RADIUS_INTERACTIVE",
+    "FOCUS_RING_WIDTH",
     "BORDER_WIDTH",
     "FOCUS_BORDER_WIDTH",
     "FONT_BODY",

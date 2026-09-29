@@ -104,17 +104,20 @@ newline-delimited JSON on stdin/stdout. It opens a project root through the
 boundary and submits the deterministic read-only scan. The boundary is the only
 place that imports the deterministic core (`scanner`, `planning`, `report`) and
 the workspace filesystem policy; the client consumes only the versioned
-contract in `hrca.contract`.
+contract in `hrca.core.contract`.
 
 The client presents a document-first product surface (all presentation-only; no
 semantics are invented):
 
 - **Document workspace (primary)** — a full-height Working Document editor with a
-  document header (selector, New, Open, saved/unsaved state) and a footer where
-  Save is the primary action and the candidate actions (Create candidate /
-  Review candidate / Adopt) are contextual. The app-owned **document library**
-  explorer sits immediately right of the navigation rail and is the app's only
-  tree.
+  document header (dynamic title, saved/unsaved state) and a footer where Save is
+  the primary action and the single contextual preview action sits beside it.
+  Review and adoption live in **Preview**, not here. With no document open the
+  editor is replaced by a bounded empty state offering **New document** and
+  **Open project**, and a hint names the one action that would continue. The
+  app-owned **document library** explorer sits immediately right of the
+  navigation rail and is the app's only tree; its Trash strip collapses to
+  nothing when the trash is empty.
 - **Preview, Versions, Memory, Change Review and Validation Evidence** — the
   remaining destinations. **Preview** is a read-only, version-bound candidate
   review surface. **Versions** is the accepted-version drawer. **Memory** is the
@@ -125,7 +128,10 @@ semantics are invented):
   unavailable in this read-only slice. **Validation Evidence** carries Problems,
   Tests and Evidence. **Agent Chat** is the seam the chat-first surface lands on.
 - **A single-row status bar** — a transient message plus four persistent fields
-  (root, repository, provider, validation state).
+  (root, repository, provider, validation state), with a **Details** toggle that
+  reveals the diagnostic row (collapsed by default). The provider's live
+  readiness is carried as a chip in the command bar rather than a separate
+  strip.
 
 As of **P4.4a** the shell is document-first. A compact labelled navigation rail
 presents **Document** and **Preview** as the only always-visible primary
@@ -143,6 +149,15 @@ and its editable draft, the advisory context builder and the
 Memory-to-Code-Twin evidence link all remain reachable through the boundary and
 the offline operator CLIs. No protocol action, contract version, schema or store
 was changed, and every persisted record stays readable.
+
+As of the **Mode A** visual pass (ported onto the reorganised client), the shell
+carries an explicit hierarchy: a small additive token layer (`RADIUS_INTERACTIVE`,
+`FOCUS_RING_WIDTH`) and a named button vocabulary — **secondary**, **ghost** and
+**danger** — with visible focus rings, a subtler selected state on the navigation
+rail, a bordered editor and preview surface, and the provider's readiness as a
+command-bar chip. Diagnostics collapse behind **Details**; the library's organise
+row appears only when something is selected. Nothing here changes what the client
+may do: it is presentation over the same boundary contract.
 
 As of **P4.5**, **Preview** is a read-only, version-bound candidate review
 surface fed by a new `preview_document` boundary read-model (no package
