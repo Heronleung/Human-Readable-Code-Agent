@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import app_package, delta_candidate, delta_verifier, rule_delta
+from hrca.execution import app_package, delta_candidate, delta_verifier, rule_delta
 
 _FP = "a" * 64
 

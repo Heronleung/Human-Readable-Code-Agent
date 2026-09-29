@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 
-from hrca import document, version_store
+from hrca.authoring import document, version_store
 
 _NOW = "2026-09-09T00:00:00+00:00"
 
@@ -99,7 +99,8 @@ class LegacyIsolationTests(_Base, unittest.TestCase):
     def test_legacy_twin_store_is_untouched(self):
         # A twin.json under a workspace namespace must not be listed as a
         # document, and saving documents must not create/alter twin files.
-        from hrca import twin, twin_store
+        from hrca import twin
+        from hrca.twin import twin_store
 
         wsid = twin.workspace_id_for("/tmp/legacy-workspace")
         twin_store.save(self.base, wsid, {"schema_version": twin.TWIN_SCHEMA_VERSION, "artifacts": []})

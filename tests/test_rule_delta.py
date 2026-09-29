@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import rule_delta
+from hrca.execution import rule_delta
 
 
 def _delta(**overrides):

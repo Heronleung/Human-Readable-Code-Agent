@@ -11,8 +11,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtWidgets import QApplication, QLabel
 
-    from hrca import client, contract
-    from hrca.client import MainWindow
+    from hrca.core import contract
+    from hrca.ui import client
+    from hrca.ui.client import MainWindow
 
     HAS_PYSIDE6 = True
 except ImportError:  # pragma: no cover - exercised in the no-Qt environment
@@ -135,6 +136,10 @@ class DocumentSurfaceTests(unittest.TestCase):
         self.assertEqual(self.window._document_base_revision_id, "rev:1")
         self.assertFalse(self.window._document_dirty)
         self.assertEqual(self.window._document_candidate_id, "cand:c1")
+        # Mode A gates Save on there being something to write: a clean document
+        # with a saved revision has nothing to save, an edited one does.
+        self.assertFalse(self.window._document_save_button.isEnabled())
+        self.window._document_editor.setPlainText("changed")
         self.assertTrue(self.window._document_save_button.isEnabled())
 
     def test_editor_edit_marks_dirty_and_save_clears(self):
@@ -246,6 +251,9 @@ class LibrarySelectionTests(unittest.TestCase):
             }
         )
         self.assertEqual(self.window._document_id, "doc:b")
+        # Mode A: a freshly applied, clean document has nothing to save yet.
+        self.assertFalse(self.window._document_save_button.isEnabled())
+        self.window._document_editor.setPlainText("edited")
         self.assertTrue(self.window._document_save_button.isEnabled())
 
     def test_refresh_preserves_selection_by_document_id(self):
@@ -350,6 +358,41 @@ class PreviewSurfaceTests(unittest.TestCase):
         self.window._on_preview_error("document_not_found")
         self.assertEqual(self.window._preview_document_label.text(), "")
         self.assertIn("No document", self.window._preview_state_label.text())
+
+    def test_preview_load_reports_no_operation_outcome(self):
+        # Loading a preview is a passive read, so it never leaves a success
+        # token in the global strip; the destination's own badge carries the
+        # truthful state.
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:d1"
+        self.window._refresh_preview()
+
+        self.window._on_preview_loaded(self.window._preview_generation, _preview())
+
+        status = self.window.status_label.text()
+        self.assertEqual(status, "Status: idle — ready")
+        self.assertNotIn("success", status)
+        self.assertNotIn("preview ready", status)
+        self.assertEqual(self.window._preview_state_label.text(), "Candidate — Current")
+
+    def test_late_preview_response_leaves_status_untouched(self):
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._document_id = "doc:d1"
+        self.window._refresh_preview()  # generation 1
+        self.window._refresh_preview()  # generation 2
+        before = self.window.status_label.text()
+
+        # A late response for generation 1 is discarded: it neither paints the
+        # surface nor rewrites the strip.
+        self.window._on_preview_loaded(1, _preview(name="old.md"))
+        self.assertEqual(self.window.status_label.text(), before)
+
+        # The current generation's response resolves the read to neutral.
+        self.window._on_preview_loaded(2, _preview(name="new.md"))
+        self.assertIn("new.md", self.window._preview_document_label.text())
+        self.assertEqual(self.window.status_label.text(), "Status: idle — ready")
 
     def test_unsaved_text_notes_preview_is_saved_only(self):
         self.window._send = _FakeSend()

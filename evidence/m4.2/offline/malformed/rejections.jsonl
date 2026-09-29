@@ -1,0 +1,4 @@
+{"bytes":17,"digest":"sha256:946fefe1ec51413c960acf53bce99af251f40cfc192d71b4a291909ed0c84121","reason":"hook input is not valid JSON","record_kind":"capture_rejection"}
+{"bytes":7,"digest":"sha256:a615eeaee21de5179de080de8c3052c8da901138406ba71c38c032845f7d54f4","reason":"hook input is not a JSON mapping","record_kind":"capture_rejection"}
+{"bytes":0,"digest":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","reason":"hook input is empty","record_kind":"capture_rejection"}
+{"bytes":300010,"digest":"sha256:85f59f848ebc2cd8dcfeca6ef0ef73bf82553a372061b307fe1cc7803559da53","reason":"hook input exceeds the bounded size","record_kind":"capture_rejection"}

@@ -8,9 +8,18 @@ deterministic-versus-provider authority mapping.
 
 from __future__ import annotations
 
+import ast
+import os
 import unittest
 
-from hrca import advisory
+from hrca.twin import advisory
+
+_ADVISORY_SOURCE = os.path.normpath(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "src", "hrca", "twin", "advisory.py",
+    )
+)
 
 
 def _ready_proposal():
@@ -314,6 +323,99 @@ class AuthorityTests(unittest.TestCase):
             advisory.STATE_PROVIDER_FAILURE,
         ):
             self.assertIn(state, advisory.ADVISORY_STATES)
+
+
+# The provider-payload contract this domain used to own now lives with the
+# provider seam (B-R2), because the *transport* needs it too and a seam must not
+# depend on a capability. ``twin.advisory`` re-exports it, so every name below
+# still resolves here and resolves to the same object — not a copy.
+_MOVED_CONTRACT_SYMBOLS = (
+    "ADVISORY_SCHEMA_VERSION",
+    "MAX_REQUEST_BYTES",
+    "MAX_CONTEXT_ITEMS",
+    "MAX_OUTPUT_TOKENS",
+    "MAX_PROVIDER_FIELD_CHARS",
+    "MAX_PROVIDER_LIST_ITEMS",
+    "MAX_PLAN_SUGGESTIONS",
+    "TIMEOUT_SECONDS",
+    "valid_string_list",
+    "valid_plan_suggestions",
+    "validate_advisory_payload",
+    "normalize_payload",
+)
+
+# What stayed Twin-domain: the disclosure decision and the vocabulary it reports
+# through. A contract move must not have taken any of it.
+_DOMAIN_SYMBOLS = (
+    "ADVISORY_GENERATOR",
+    "MAX_SOURCE_EXCERPT_LINES",
+    "MAX_SOURCE_EXCERPT_CHARS",
+    "STATE_READY",
+    "STATE_TIMEOUT",
+    "ADVISORY_STATES",
+    "DENY_SECRET_LIKE",
+    "DENY_OVER_LIMIT",
+    "is_secret_like",
+    "entity_anchors",
+    "slice_excerpt",
+    "build_context",
+    "advisory_token_for",
+    "build_provider_request",
+    "assemble_result",
+    "deterministic_authority",
+)
+
+
+class ContractReExportTests(unittest.TestCase):
+    """The moved contract is owned elsewhere and re-exported here (B-R2)."""
+
+    def test_every_contract_symbol_is_the_same_object(self):
+        from hrca.integrations import advisory_contract
+
+        for name in _MOVED_CONTRACT_SYMBOLS:
+            with self.subTest(name=name):
+                self.assertIs(
+                    getattr(advisory, name), getattr(advisory_contract, name), name
+                )
+
+    def test_the_contract_is_not_reimplemented_here(self):
+        # A re-export is an import, not a second definition: if this module
+        # defined the validator again the two could drift while still comparing
+        # equal today.
+        with open(_ADVISORY_SOURCE, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        defined = {
+            node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+        }
+        for name in ("validate_advisory_payload", "normalize_payload",
+                     "valid_string_list", "valid_plan_suggestions"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, defined)
+
+    def test_the_canonical_serializer_is_reused_not_recopied(self):
+        from hrca.core import storage
+
+        self.assertIs(storage.dumps, advisory.dumps)
+
+    def test_the_domain_kept_the_disclosure_vocabulary(self):
+        for name in _DOMAIN_SYMBOLS:
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(advisory, name), name)
+
+    def test_the_schema_version_and_bounds_are_unchanged(self):
+        self.assertEqual("1.0.0", advisory.ADVISORY_SCHEMA_VERSION)
+        self.assertEqual(64 * 1024, advisory.MAX_REQUEST_BYTES)
+        self.assertEqual(32, advisory.MAX_CONTEXT_ITEMS)
+        self.assertEqual(2048, advisory.MAX_OUTPUT_TOKENS)
+        self.assertEqual(4000, advisory.MAX_PROVIDER_FIELD_CHARS)
+        self.assertEqual(20, advisory.MAX_PROVIDER_LIST_ITEMS)
+        self.assertEqual(50, advisory.MAX_PLAN_SUGGESTIONS)
+        self.assertEqual(30.0, advisory.TIMEOUT_SECONDS)
+
+    def test_the_domain_bounds_are_still_the_domains_own(self):
+        # The excerpt window is a disclosure decision, so it did not move.
+        self.assertEqual(400, advisory.MAX_SOURCE_EXCERPT_LINES)
+        self.assertEqual(8 * 1024, advisory.MAX_SOURCE_EXCERPT_CHARS)
 
 
 if __name__ == "__main__":

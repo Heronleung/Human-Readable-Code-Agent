@@ -13,7 +13,8 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from hrca import contract, credential_host, credential_store
+from hrca.core import contract
+from hrca.integrations import credential_host, credential_store
 
 _SECRET_LIKE = "secret-token-abc123"
 

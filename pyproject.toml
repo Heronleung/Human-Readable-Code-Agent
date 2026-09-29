@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hrca"
 version = "0.1.0"
-description = "Deterministic static scanner for a human-readable code twin (Phase 1 baseline)."
+description = "PrimaAgent — a chat-first, document-based coding agent over a deterministic source-evidence core."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Heronleung" }]
-keywords = ["ast", "static-analysis", "scanner", "code-twin"]
+keywords = ["ast", "static-analysis", "scanner", "coding-agent"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Programming Language :: Python :: 3",
@@ -24,6 +24,9 @@ hrca-scan = "hrca.cli:main"
 hrca-backend = "hrca.boundary:main"
 hrca-client = "hrca.client:main"
 hrca-provider = "hrca.provider_cli:main"
+hrca-memory = "hrca.memory_cli:main"
+hrca-hooks = "hrca.hook_capture:main"
+hrca-memory-package = "hrca.memory_package_cli:main"
 
 # Optional extras keep the deterministic core and its tests installable without
 # Qt. The desktop extra adds PySide6; the packaging extra adds PyInstaller for

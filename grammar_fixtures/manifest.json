@@ -1,0 +1,59 @@
+{
+  "corpus": "grammar_fixtures",
+  "notes": [
+    "This corpus exists to make the scanner's grammar dependence observable, not to test the scanner's opinion of it.",
+    "Expectations are stated per grammar capability, never per scanner release: a case says what the Python grammar can express, and the scan is then checked against the grammar it reported reading with.",
+    "A case marked grammar-independent must hold under every reported grammar; one marked grammar-dependent must hold in the branch its capability selects."
+  ],
+  "capability": {
+    "implementation": "cpython",
+    "pep695": {
+      "minimum_version": "3.12",
+      "reason": "PEP 695 type parameters and the type statement entered the CPython grammar in 3.12."
+    },
+    "note": "The version rule is stated for the implementation family named here. For any other family the expectation is unverified rather than assumed, because this file cannot speak for a grammar it does not name."
+  },
+  "cases": [
+    {
+      "file": "plain.py",
+      "grammar_independent": true,
+      "symbols": [
+        "plain",
+        "plain.Adder",
+        "plain.Adder.run",
+        "plain.Adder.run.self",
+        "plain.Adder.run.value",
+        "plain.add",
+        "plain.add.left",
+        "plain.add.right"
+      ],
+      "parse_error": false
+    },
+    {
+      "file": "pep695.py",
+      "grammar_independent": false,
+      "capability": "pep695",
+      "when_capable": {
+        "symbols": [
+          "pep695",
+          "pep695.Box",
+          "pep695.Box.get",
+          "pep695.Box.get.self",
+          "pep695.identity",
+          "pep695.identity.value"
+        ],
+        "parse_error": false
+      },
+      "when_not_capable": {
+        "symbols": [],
+        "parse_error": true
+      }
+    }
+  ],
+  "unmodelled": {
+    "names": [
+      "Alias"
+    ],
+    "reason": "A PEP 695 type statement declares an alias the scanner does not model as a symbol, so it is absent from both branches rather than invented in the capable one."
+  }
+}

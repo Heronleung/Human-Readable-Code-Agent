@@ -9,8 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtWidgets import QApplication
-    from hrca import contract
-    from hrca.client import MainWindow
+    from hrca.core import contract
+    from hrca.ui.client import MainWindow
     HAS_PYSIDE6 = True
 except ImportError:
     HAS_PYSIDE6 = False

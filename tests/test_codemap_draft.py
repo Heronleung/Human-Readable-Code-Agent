@@ -12,7 +12,8 @@ from __future__ import annotations
 import os
 import unittest
 
-from hrca import codemap, codemap_draft, scanner
+from hrca.source import scanner
+from hrca.twin import codemap, codemap_draft
 
 _FIXTURE_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "codemap_fixtures"

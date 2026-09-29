@@ -8,9 +8,12 @@ import tempfile
 import unittest
 from unittest import mock
 
-from hrca import boundary, contract, twin, twin_store
-from hrca.client_core import build_fixture_task
-from hrca.contract import dumps, loads
+from hrca import boundary, memory, twin
+from hrca.core import contract, workspace
+from hrca.memory import memory_docs, memory_store
+from hrca.twin import twin_store
+from hrca.boundary.client_core import build_fixture_task
+from hrca.core.contract import dumps, loads
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.normpath(os.path.join(_HERE, "..", "fixtures"))
@@ -807,6 +810,1279 @@ class BoundaryProposalTests(unittest.TestCase):
         draft_path = twin_store.workspace_draft_path(self.store_base, self.wsid)
         self.assertTrue(os.path.isfile(draft_path))
         self.assertFalse(draft_path.startswith(FIXTURES))
+
+
+# The registry's contents, in registration order. Held as one literal so the
+# tests below pin the *whole* set rather than a count, and so adding an action
+# to the registry without extending this tuple is a failure rather than a
+# silently updated expectation.
+_EXPECTED_REGISTRY = (
+    (contract.ACTION_GET_TREE, boundary._get_tree_result),
+    (contract.ACTION_GET_DOCUMENT, boundary._get_document_result),
+    (contract.ACTION_DOCUMENT_LIST, boundary._list_documents_result),
+    (contract.ACTION_DOCUMENT_LIST_VERSIONS, boundary._list_versions_result),
+    (contract.ACTION_DOCUMENT_GET_CANDIDATE, boundary._get_candidate_result),
+    (contract.ACTION_DOCUMENT_PREVIEW, boundary._preview_document_result),
+    (contract.ACTION_MEMORY_DOCUMENTS, boundary._get_memory_documents_result),
+    (contract.ACTION_MEMORY_RECORD, boundary._get_memory_record_result),
+    (contract.ACTION_MEMORY_SEARCH, boundary._search_memory_result),
+    (contract.ACTION_MEMORY_RESUME, boundary._memory_resume_result),
+    (contract.ACTION_MEMORY_HISTORY, boundary._get_memory_history_result),
+    (contract.ACTION_MEMORY_EFFECTIVE, boundary._resolve_memory_effective_result),
+    # The scan family: five synonyms of one session-free pipeline, reached
+    # through the registry's only adapter.
+    (contract.ACTION_SCAN, boundary._scan_handler),
+    (contract.ACTION_READ, boundary._scan_handler),
+    (contract.ACTION_ANALYZE, boundary._scan_handler),
+    (contract.ACTION_INSPECT, boundary._scan_handler),
+    (contract.ACTION_PLAN, boundary._scan_handler),
+    # The complete Twin action family (B4): the P3.3 Triple-Twin protocol, the
+    # P3.4 editable Code Map draft / Intent Delta protocol, the P4.1 proposal
+    # planner and the M4.5/v2b Memory-Twin bridge — thirteen actions from four
+    # contract groups, migrated as one unit because ``sync_twin`` writes the
+    # store the other three groups read.
+    (contract.ACTION_SYNC_TWIN, boundary._sync_twin_result),
+    (contract.ACTION_GET_TWIN, boundary._get_twin_result),
+    (contract.ACTION_GET_ANCHOR, boundary._get_anchor_result),
+    (contract.ACTION_GET_CODE_MAP, boundary._get_code_map_result),
+    (contract.ACTION_SAVE_DRAFT, boundary._save_draft_result),
+    (contract.ACTION_GET_DRAFT, boundary._get_draft_result),
+    (contract.ACTION_DISCARD_DRAFT, boundary._discard_draft_result),
+    (contract.ACTION_RESET_DRAFT, boundary._reset_draft_result),
+    (contract.ACTION_COMPARE_DRAFT, boundary._compare_draft_result),
+    (contract.ACTION_GENERATE_INTENT_DELTA, boundary._generate_intent_delta_result),
+    (contract.ACTION_PLAN_PROPOSAL, boundary._plan_proposal_result),
+    (contract.ACTION_MEMORY_CODE_LINK, boundary._get_memory_code_link_result),
+    (contract.ACTION_MEMORY_CODE_FRESHNESS,
+     boundary._resolve_memory_code_freshness_result),
+)
+
+# Actions a reader might expect in the registry and that are deliberately held
+# back, with the reason. B4 moved the whole Twin family out of this table: the
+# three entries it held (``sync_twin``, and the two Memory-Twin bridges) are now
+# registered, and the reasons that remain are authority reasons, not family
+# reasons.
+_HELD_BACK = {
+    contract.ACTION_OPEN_PROJECT: "it mutates in-memory session state",
+    contract.ACTION_DOCUMENT_SAVE: "it writes the version store",
+    contract.ACTION_DOCUMENT_ADOPT: "it changes accepted state",
+    contract.ACTION_LIBRARY_GET: "it creates and persists the library store",
+    contract.ACTION_GET_PACKAGE: "package/runner group",
+    contract.ACTION_GET_READINESS: "provider/credential seam",
+    contract.ACTION_MEMORY_CORRECTION: "the one writing Memory action",
+}
+
+# -- the registered authority ledger (B4) ---------------------------------
+#
+# Registering an action confers no authority: every entry in
+# ``_BOUNDARY_HANDLER_ENTRIES`` names the handler the dispatch chain called
+# before the migration, so a migrated action answers exactly as it did. What is
+# *not* true is that the registered set is read-only — ``sync_twin`` writes the
+# Twin store, three draft actions write the draft store, and two actions read a
+# clock. This ledger is where those facts live, per action, instead of in a
+# blanket sentence that a later migration would silently falsify.
+#
+# It is hand-authored from reading each handler, not generated from the code:
+# ``tests/test_architecture.py`` reads this table *statically* (that module
+# imports nothing from ``hrca``) and independently derives the same four facts
+# from each handler's boundary-local call closure. A handler that grows a store
+# write, a clock read or a Twin reach without this table changing is a failing
+# test, and so is a table entry the closure cannot account for.
+
+# The four authority facts a registered action may carry. A name absent from an
+# action's entry is declared False for that action.
+AUTHORITY_NAMES = frozenset(
+    {"reaches_twin", "writes_store", "reads_clock", "reaches_privileged"}
+)
+
+# No registered action carries ``reaches_privileged``. It is declared here so
+# the vocabulary is complete and so the privileged-surface invariant in
+# ``tests/test_architecture.py`` has a name to reject.
+PRIVILEGED_AUTHORITY = "reaches_privileged"
+
+_REGISTERED_AUTHORITY = {
+    # Registered by B3a / B3b-A: the read-only workspace and document reads.
+    contract.ACTION_GET_TREE: frozenset(),
+    contract.ACTION_GET_DOCUMENT: frozenset(),
+    contract.ACTION_DOCUMENT_LIST: frozenset(),
+    contract.ACTION_DOCUMENT_LIST_VERSIONS: frozenset(),
+    contract.ACTION_DOCUMENT_GET_CANDIDATE: frozenset(),
+    contract.ACTION_DOCUMENT_PREVIEW: frozenset(),
+    # Registered by B3b-B: the read-only Memory reads.
+    contract.ACTION_MEMORY_DOCUMENTS: frozenset(),
+    contract.ACTION_MEMORY_RECORD: frozenset(),
+    contract.ACTION_MEMORY_SEARCH: frozenset(),
+    contract.ACTION_MEMORY_RESUME: frozenset(),
+    contract.ACTION_MEMORY_HISTORY: frozenset(),
+    contract.ACTION_MEMORY_EFFECTIVE: frozenset(),
+    # Registered by B3b-H: the five scan synonyms.
+    contract.ACTION_SCAN: frozenset(),
+    contract.ACTION_READ: frozenset(),
+    contract.ACTION_ANALYZE: frozenset(),
+    contract.ACTION_INSPECT: frozenset(),
+    contract.ACTION_PLAN: frozenset(),
+    # Registered by B4. ``sync_twin`` reconciles and persists the Twin store and
+    # stamps it with the current time — the one action in the family that
+    # produces the evidence the others read.
+    contract.ACTION_SYNC_TWIN: frozenset(
+        {"reaches_twin", "writes_store", "reads_clock"}
+    ),
+    contract.ACTION_GET_TWIN: frozenset({"reaches_twin"}),
+    contract.ACTION_GET_ANCHOR: frozenset({"reaches_twin"}),
+    contract.ACTION_GET_CODE_MAP: frozenset({"reaches_twin"}),
+    # ``save_draft`` writes the per-workspace draft store and stamps it.
+    contract.ACTION_SAVE_DRAFT: frozenset(
+        {"reaches_twin", "writes_store", "reads_clock"}
+    ),
+    contract.ACTION_GET_DRAFT: frozenset({"reaches_twin"}),
+    # Discard and reset remove the saved draft; neither reads a clock.
+    contract.ACTION_DISCARD_DRAFT: frozenset({"reaches_twin", "writes_store"}),
+    contract.ACTION_RESET_DRAFT: frozenset({"reaches_twin", "writes_store"}),
+    contract.ACTION_COMPARE_DRAFT: frozenset({"reaches_twin"}),
+    contract.ACTION_GENERATE_INTENT_DELTA: frozenset({"reaches_twin"}),
+    contract.ACTION_PLAN_PROPOSAL: frozenset({"reaches_twin"}),
+    contract.ACTION_MEMORY_CODE_LINK: frozenset({"reaches_twin"}),
+    contract.ACTION_MEMORY_CODE_FRESHNESS: frozenset({"reaches_twin"}),
+}
+
+
+class BoundaryHandlerRegistryTests(unittest.TestCase):
+    """The B3a registry proof: one action registered, everything else legacy.
+
+    The registry is deliberately an internal implementation detail, so these
+    tests reach it directly rather than through the protocol. What they hold is
+    that it is deterministic, that a bad registration fails while it is being
+    built rather than when a request arrives, that it owns exactly one action,
+    and that `get_tree` — the action it owns — is byte-for-byte the same as it
+    was on the dispatch chain.
+    """
+
+    def test_the_registry_is_constructed_when_the_module_loads(self):
+        # Built at import, so a duplicate or a non-callable entry is a startup
+        # failure rather than a request-time surprise.
+        self.assertIsInstance(boundary._BOUNDARY_HANDLERS, boundary._HandlerRegistry)
+
+    def test_the_registry_owns_the_read_only_actions(self):
+        self.assertEqual(
+            tuple(action for action, _ in _EXPECTED_REGISTRY),
+            boundary._BOUNDARY_HANDLERS.actions(),
+        )
+
+    def test_the_registered_handler_is_the_existing_handler(self):
+        self.assertIs(
+            boundary._get_tree_result,
+            boundary._BOUNDARY_HANDLERS.resolve(contract.ACTION_GET_TREE),
+        )
+
+    def test_the_entries_name_the_action_by_contract_constant(self):
+        # Every entry pairs a contract constant with the very handler the chain
+        # used to call for it: the registry took over dispatch, it did not
+        # replace the handler.
+        self.assertEqual(_EXPECTED_REGISTRY, boundary._BOUNDARY_HANDLER_ENTRIES)
+
+    def test_no_other_allowed_action_is_registered(self):
+        # Exactly the actions ``_EXPECTED_REGISTRY`` names are registered, and
+        # every other allowed action is still on the chain it always used. The
+        # counts are derived rather than written down: this comment used to name
+        # them, and went stale at two of the four migrations that followed.
+        registered = {
+            action
+            for action in contract.ALLOWED_ACTIONS
+            if boundary._BOUNDARY_HANDLERS.resolve(action) is not None
+        }
+        self.assertEqual(
+            {action for action, _ in _EXPECTED_REGISTRY}, registered
+        )
+        self.assertEqual(
+            len(contract.ALLOWED_ACTIONS) - len(_EXPECTED_REGISTRY),
+            len([a for a in contract.ALLOWED_ACTIONS
+                 if boundary._BOUNDARY_HANDLERS.resolve(a) is None]),
+        )
+
+    def test_actions_held_for_later_packages_are_not_registered(self):
+        for action, why in sorted(_HELD_BACK.items()):
+            with self.subTest(action=action):
+                self.assertIsNone(
+                    boundary._BOUNDARY_HANDLERS.resolve(action), why
+                )
+
+    def test_no_memory_action_that_writes_is_registered(self):
+        # The Memory read group is read-only by construction, and B4 registered
+        # the two Memory-Twin bridge actions alongside the Twin family. The one
+        # action that appends to a Memory store must never drift in because its
+        # neighbours did.
+        self.assertIsNone(
+            boundary._BOUNDARY_HANDLERS.resolve(contract.ACTION_MEMORY_CORRECTION)
+        )
+
+    def test_no_privileged_action_is_registered(self):
+        # The registry owns dispatch, never authority. These actions carry a
+        # privilege — a provider request, a credential, an isolated runner, a
+        # container — that the registered set must never hold, and no Twin
+        # action is among them any more: B4 migrated the family that does not.
+        for action in (
+            contract.ACTION_RUN_PACKAGE,
+            contract.ACTION_PLAN_ADVISORY,
+            contract.ACTION_PREPARE_ADVISORY,
+            contract.ACTION_MANAGE_CREDENTIAL,
+            contract.ACTION_REMOVE_CREDENTIAL,
+            contract.ACTION_GET_READINESS,
+            contract.ACTION_RULE_DELTA_RUN,
+            contract.ACTION_INTERPRET_RULE_DELTA,
+        ):
+            with self.subTest(action=action):
+                self.assertIsNone(boundary._BOUNDARY_HANDLERS.resolve(action))
+
+    def test_registration_order_is_deterministic(self):
+        registry = boundary._HandlerRegistry(
+            [
+                (contract.ACTION_GET_TREE, boundary._get_tree_result),
+                (contract.ACTION_OPEN_PROJECT, boundary._open_project_result),
+                (contract.ACTION_GET_DOCUMENT, boundary._get_document_result),
+            ]
+        )
+        self.assertEqual(
+            (
+                contract.ACTION_GET_TREE,
+                contract.ACTION_OPEN_PROJECT,
+                contract.ACTION_GET_DOCUMENT,
+            ),
+            registry.actions(),
+        )
+        # And the same entries in the same order give the same result twice.
+        again = boundary._HandlerRegistry(
+            [
+                (contract.ACTION_GET_TREE, boundary._get_tree_result),
+                (contract.ACTION_OPEN_PROJECT, boundary._open_project_result),
+                (contract.ACTION_GET_DOCUMENT, boundary._get_document_result),
+            ]
+        )
+        self.assertEqual(registry.actions(), again.actions())
+
+    def test_duplicate_registration_is_refused_while_building(self):
+        with self.assertRaises(boundary._RegistryError) as caught:
+            boundary._HandlerRegistry(
+                [
+                    (contract.ACTION_GET_TREE, boundary._get_tree_result),
+                    (contract.ACTION_GET_TREE, boundary._get_tree_result),
+                ]
+            )
+        self.assertIn("duplicate", str(caught.exception))
+
+    def test_a_non_callable_handler_is_refused_while_building(self):
+        for bad in (None, "not callable", 5, {}):
+            with self.subTest(handler=bad):
+                with self.assertRaises(boundary._RegistryError) as caught:
+                    boundary._HandlerRegistry([(contract.ACTION_GET_TREE, bad)])
+                self.assertIn("callable", str(caught.exception))
+
+    def test_an_action_the_contract_does_not_allow_is_refused(self):
+        for bad in ("no_such_action", "", 5, None):
+            with self.subTest(action=bad):
+                with self.assertRaises(boundary._RegistryError):
+                    boundary._HandlerRegistry([(bad, boundary._get_tree_result)])
+
+    def test_resolve_is_total_for_every_input_the_dispatcher_can_hand_it(self):
+        for value in (None, 5, [], {}, "", "no_such_action"):
+            with self.subTest(value=value):
+                self.assertIsNone(boundary._BOUNDARY_HANDLERS.resolve(value))
+
+    def test_get_tree_returns_the_result_the_handler_produces(self):
+        req_open = _workspace_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        req_tree = _workspace_request(contract.ACTION_GET_TREE)
+        _, responses, _ = _run(dumps(req_open), dumps(req_tree))
+        tree_env = loads(responses[1])
+        self.assertTrue(tree_env["ok"])
+        self.assertEqual("cid-ws", tree_env["correlation_id"])
+        self.assertEqual(
+            workspace.build_tree(os.path.realpath(FIXTURES)), tree_env["result"]
+        )
+
+    def test_get_tree_envelope_shape_is_unchanged(self):
+        req_tree = _workspace_request(contract.ACTION_GET_TREE)
+        env = _first_response(dumps(req_tree))
+        self.assertEqual(
+            {"contract_version", "correlation_id", "ok", "error"}, set(env)
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("project_not_open", env["error"]["code"])
+        self.assertEqual(
+            contract.CONTRACT_VERSION, env["contract_version"]
+        )
+
+    def test_get_tree_without_an_accepted_root_still_refuses(self):
+        env = _first_response(dumps(_workspace_request(contract.ACTION_GET_TREE)))
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "project_not_open")
+
+    def test_a_wrong_contract_version_is_refused_before_the_registry(self):
+        # If the version check ran after dispatch, this would report
+        # ``project_not_open`` for a registered action. It reports the version
+        # refusal, so the registry is never reached.
+        req = _workspace_request(
+            contract.ACTION_GET_TREE, contract_version="0.0.1"
+        )
+        env = _first_response(dumps(req))
+        self.assertFalse(env["ok"])
+        self.assertEqual("unknown_contract_version", env["error"]["code"])
+
+    def test_an_unknown_action_still_gets_the_bounded_refusal(self):
+        env = _first_response(dumps(_workspace_request("no_such_action")))
+        self.assertFalse(env["ok"])
+        self.assertEqual("action_not_allowed", env["error"]["code"])
+        self.assertEqual(
+            contract.error_message("action_not_allowed"), env["error"]["message"]
+        )
+        self.assertEqual(
+            "action is not allowed by the read-only boundary",
+            env["error"]["message"],
+        )
+
+    def test_unregistered_actions_keep_working_through_the_legacy_chain(self):
+        # `open_project` and `get_document` are both allowed, both unregistered,
+        # and both still served — the registry did not take them over.
+        req_open = _workspace_request(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        req_doc = _workspace_request(
+            contract.ACTION_GET_DOCUMENT, path="app/main.py"
+        )
+        _, responses, _ = _run(dumps(req_open), dumps(req_doc))
+        self.assertTrue(loads(responses[0])["ok"])
+        doc_env = loads(responses[1])
+        self.assertTrue(doc_env["ok"])
+        self.assertEqual("main.py", doc_env["result"]["name"])
+
+
+class BoundaryRegisteredReadTests(unittest.TestCase):
+    """The six registered read actions, exercised end to end.
+
+    These go through ``handle_request``, so they exercise the registry itself:
+    the architecture tests prove no legacy ``elif`` still claims these actions,
+    and these prove the actions still answer exactly as they did.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.session = boundary.WorkspaceSession(store_base=self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _do(self, action, **overrides):
+        return boundary.handle_request(
+            _workspace_request(action, **overrides), self.session
+        )
+
+    def _make_document(self, name="notes.md"):
+        created = self._do(contract.ACTION_DOCUMENT_CREATE, name=name)
+        self.assertTrue(created["ok"])
+        return created["result"]["document"]["document_id"]
+
+    def _make_candidate(self):
+        document_id = self._make_document()
+        saved = self._do(
+            contract.ACTION_DOCUMENT_SAVE,
+            document_id=document_id,
+            content="v1",
+            base_revision_id=None,
+        )
+        self.assertTrue(saved["ok"])
+        created = self._do(
+            contract.ACTION_DOCUMENT_CREATE_CANDIDATE, document_id=document_id
+        )
+        self.assertTrue(created["ok"])
+        return document_id, created["result"]["candidate"]["candidate_id"]
+
+    # -- get_document ----------------------------------------------------
+
+    def test_get_document_reads_a_permitted_file(self):
+        self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        env = self._do(contract.ACTION_GET_DOCUMENT, path="app/main.py")
+        self.assertTrue(env["ok"])
+        self.assertEqual("main.py", env["result"]["name"])
+        self.assertEqual("source", env["result"]["kind"])
+
+    def test_get_document_refuses_without_an_accepted_root(self):
+        env = self._do(contract.ACTION_GET_DOCUMENT, path="app/main.py")
+        self.assertFalse(env["ok"])
+        self.assertEqual("project_not_open", env["error"]["code"])
+
+    def test_get_document_refuses_a_path_that_escapes(self):
+        self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        env = self._do(contract.ACTION_GET_DOCUMENT, path="../escape.py")
+        self.assertFalse(env["ok"])
+        self.assertEqual("path_not_allowed", env["error"]["code"])
+
+    def test_get_document_is_unavailable_for_a_missing_file(self):
+        self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        env = self._do(contract.ACTION_GET_DOCUMENT, path="nope.py")
+        self.assertTrue(env["ok"])
+        self.assertEqual("unavailable", env["result"]["kind"])
+        self.assertEqual("path_not_found", env["result"]["reason"])
+
+    # -- list_documents --------------------------------------------------
+
+    def test_list_documents_starts_empty(self):
+        env = self._do(contract.ACTION_DOCUMENT_LIST)
+        self.assertTrue(env["ok"])
+        self.assertEqual([], env["result"]["documents"])
+
+    def test_list_documents_lists_a_created_document(self):
+        document_id = self._make_document()
+        env = self._do(contract.ACTION_DOCUMENT_LIST)
+        self.assertTrue(env["ok"])
+        self.assertEqual(
+            [document_id], [d["document_id"] for d in env["result"]["documents"]]
+        )
+
+    def test_list_documents_refuses_an_invalid_request_never(self):
+        # The action takes no arguments, so the only way it could refuse is a
+        # malformed envelope — which the dispatcher refuses before dispatch.
+        env = boundary.handle_request(
+            {"contract_version": "0.0.1", "action": contract.ACTION_DOCUMENT_LIST}
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("unknown_contract_version", env["error"]["code"])
+
+    # -- list_versions ---------------------------------------------------
+
+    def test_list_versions_reads_an_existing_document(self):
+        document_id = self._make_document()
+        env = self._do(
+            contract.ACTION_DOCUMENT_LIST_VERSIONS, document_id=document_id
+        )
+        self.assertTrue(env["ok"])
+        self.assertEqual([], env["result"]["versions"])
+
+    def test_list_versions_refuses_a_missing_document(self):
+        env = self._do(
+            contract.ACTION_DOCUMENT_LIST_VERSIONS, document_id="doc:absent"
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("document_not_found", env["error"]["code"])
+
+    def test_list_versions_refuses_an_invalid_request(self):
+        env = self._do(contract.ACTION_DOCUMENT_LIST_VERSIONS)
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- get_candidate ---------------------------------------------------
+
+    def test_get_candidate_reads_a_created_candidate(self):
+        document_id, candidate_id = self._make_candidate()
+        env = self._do(
+            contract.ACTION_DOCUMENT_GET_CANDIDATE,
+            document_id=document_id,
+            candidate_id=candidate_id,
+        )
+        self.assertTrue(env["ok"])
+        self.assertEqual(candidate_id, env["result"]["candidate"]["candidate_id"])
+
+    def test_get_candidate_refuses_an_unknown_candidate(self):
+        document_id = self._make_document()
+        env = self._do(
+            contract.ACTION_DOCUMENT_GET_CANDIDATE,
+            document_id=document_id,
+            candidate_id="cand:absent",
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("candidate_not_found", env["error"]["code"])
+
+    def test_get_candidate_refuses_an_invalid_request(self):
+        env = self._do(contract.ACTION_DOCUMENT_GET_CANDIDATE)
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- preview_document ------------------------------------------------
+
+    def test_preview_document_reads_a_created_document(self):
+        document_id = self._make_document()
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=document_id)
+        self.assertTrue(env["ok"])
+        self.assertIn("binding", env["result"])
+        self.assertIn("evidence", env["result"])
+        # A document with no candidate has no bound evidence yet, and the
+        # preview says so rather than inventing an execution outcome.
+        self.assertIsNone(env["result"]["evidence"])
+
+    def test_preview_document_reports_evidence_for_a_bound_candidate(self):
+        document_id, _ = self._make_candidate()
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=document_id)
+        self.assertTrue(env["ok"])
+        evidence = env["result"]["evidence"]
+        self.assertIsNotNone(evidence)
+        # Previewing is not executing: the read-model says so explicitly.
+        self.assertFalse(evidence["execution_performed"])
+
+    def test_preview_document_refuses_a_missing_document(self):
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id="doc:absent")
+        self.assertFalse(env["ok"])
+        self.assertEqual("document_not_found", env["error"]["code"])
+
+    def test_preview_document_refuses_an_invalid_request(self):
+        env = self._do(contract.ACTION_DOCUMENT_PREVIEW)
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- what the registered set does and does not need -------------------
+
+    def test_the_store_backed_reads_need_no_project_root(self):
+        # Four of the six read the app-data store rather than the accepted
+        # repository, so they have no ``project_not_open`` path at all. Only
+        # ``get_document`` and ``get_tree`` are root-scoped.
+        self.assertTrue(self._do(contract.ACTION_DOCUMENT_LIST)["ok"])
+        document_id = self._make_document()
+        self.assertTrue(
+            self._do(
+                contract.ACTION_DOCUMENT_LIST_VERSIONS, document_id=document_id
+            )["ok"]
+        )
+        self.assertTrue(
+            self._do(contract.ACTION_DOCUMENT_PREVIEW, document_id=document_id)["ok"]
+        )
+        self.assertIsNone(self.session.root)
+
+    def test_dispatch_really_goes_through_the_registry(self):
+        # The direct proof of the seam: replace a registry entry and watch the
+        # registered handler answer. If the legacy chain still owned this
+        # action, the spy would never be called.
+        self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        seen = []
+        real = boundary._get_document_result
+
+        def spy(request, session):
+            seen.append(request.get("action"))
+            return real(request, session)
+
+        with mock.patch.dict(
+            boundary._BOUNDARY_HANDLERS._handlers,
+            {contract.ACTION_GET_DOCUMENT: spy},
+        ):
+            env = self._do(contract.ACTION_GET_DOCUMENT, path="app/main.py")
+        self.assertEqual(["get_document"], seen)
+        self.assertTrue(env["ok"])
+        self.assertEqual("main.py", env["result"]["name"])
+
+
+_MEMORY_EVENTS = [
+    {"event_type": "run_started", "source_event_id": "e1", "payload": {}},
+    {
+        "event_type": "run_progress",
+        "source_event_id": "e2",
+        "payload": {},
+        "paths": ["pkg/mod.py"],
+        "decisions": [{"summary": "chose option A", "source_id": "d-1"}],
+        "evidence": [
+            {
+                "kind": "artifact",
+                "artifact_ref": "pkg/mod.py",
+                "digest": "sha256:" + "a" * 64,
+            }
+        ],
+    },
+    {
+        "event_type": "run_terminated",
+        "source_event_id": "e3",
+        "outcome": "completed",
+        "payload": {},
+    },
+    {"event_type": "stream_ended", "source_event_id": "e4", "payload": {}},
+]
+
+
+class BoundaryRegisteredMemoryReadTests(unittest.TestCase):
+    """The six registered read-only Memory actions, exercised end to end.
+
+    Like the document group, these go through ``handle_request`` so they
+    exercise the registry: the architecture tests prove no legacy ``elif``
+    claims them, and these prove they still answer exactly as they did.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = self._tmp.name
+        self.session = boundary.WorkspaceSession(store_base=self.base)
+        session_payload = {
+            "adapter": "smoke",
+            "session_id": "s-1",
+            "events": _MEMORY_EVENTS,
+            "project": {"source_id": "p-1", "name": "P1"},
+            "work_package": {"source_id": "w-1", "title": "W1"},
+        }
+        store, error, _ = memory.ingest_session(session_payload)
+        self.assertIsNone(error)
+        self.run_id = store["agent_run"]["id"]
+        self.evidence_id = store["evidence"][0]["id"]
+        self.assertIsNone(memory_store.save(self.base, self.run_id, store))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _do(self, action, **overrides):
+        return boundary.handle_request(
+            _workspace_request(action, **overrides), self.session
+        )
+
+    # -- get_memory_documents --------------------------------------------
+
+    def test_get_memory_documents_projects_a_seeded_run(self):
+        env = self._do(contract.ACTION_MEMORY_DOCUMENTS)
+        self.assertTrue(env["ok"])
+        self.assertEqual(1, env["result"]["run_count"])
+        self.assertFalse(env["result"]["truncated"])
+
+    def test_get_memory_documents_refuses_an_unsupported_document_type(self):
+        env = self._do(contract.ACTION_MEMORY_DOCUMENTS, documents=["nope"])
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    def test_get_memory_documents_refuses_an_unsupported_origin(self):
+        env = self._do(contract.ACTION_MEMORY_DOCUMENTS, origin="bogus")
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- get_memory_record -----------------------------------------------
+
+    def test_get_memory_record_resolves_an_exact_evidence_record(self):
+        env = self._do(
+            contract.ACTION_MEMORY_RECORD,
+            run_id=self.run_id,
+            kind="evidence",
+            record_id=self.evidence_id,
+        )
+        self.assertTrue(env["ok"])
+        self.assertEqual(self.evidence_id, env["result"]["record_id"])
+        self.assertEqual("evidence", env["result"]["kind"])
+
+    def test_get_memory_record_refuses_an_unsupported_kind(self):
+        env = self._do(
+            contract.ACTION_MEMORY_RECORD,
+            run_id=self.run_id,
+            kind="nope",
+            record_id=self.evidence_id,
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("memory_kind_not_supported", env["error"]["code"])
+
+    def test_get_memory_record_refuses_an_absent_record(self):
+        env = self._do(
+            contract.ACTION_MEMORY_RECORD,
+            run_id=self.run_id,
+            kind="evidence",
+            record_id="evidence:absent",
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("memory_record_not_found", env["error"]["code"])
+
+    def test_get_memory_record_refuses_an_unknown_run(self):
+        env = self._do(
+            contract.ACTION_MEMORY_RECORD,
+            run_id="run:nope",
+            kind="evidence",
+            record_id=self.evidence_id,
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("memory_run_not_found", env["error"]["code"])
+
+    def test_get_memory_record_refuses_an_invalid_request(self):
+        env = self._do(contract.ACTION_MEMORY_RECORD, kind="evidence")
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- search_memory ---------------------------------------------------
+
+    def test_search_memory_returns_bounded_hits(self):
+        env = self._do(contract.ACTION_MEMORY_SEARCH)
+        self.assertTrue(env["ok"])
+        self.assertGreater(env["result"]["hit_count"], 0)
+        self.assertEqual("hrca-memory-query", env["result"]["generator"])
+
+    def test_search_memory_refuses_an_invalid_limit(self):
+        env = self._do(contract.ACTION_MEMORY_SEARCH, limit="ten")
+        self.assertFalse(env["ok"])
+        self.assertEqual("memory_query_invalid", env["error"]["code"])
+
+    def test_search_memory_refuses_an_unknown_order(self):
+        env = self._do(contract.ACTION_MEMORY_SEARCH, order="nope")
+        self.assertFalse(env["ok"])
+        self.assertEqual("memory_query_invalid", env["error"]["code"])
+
+    # -- memory_resume ---------------------------------------------------
+
+    def test_memory_resume_composes_over_the_run_set(self):
+        env = self._do(contract.ACTION_MEMORY_RESUME)
+        self.assertTrue(env["ok"])
+        self.assertIn("runs_truncated", env["result"])
+
+    # -- get_memory_history ----------------------------------------------
+
+    def test_get_memory_history_lists_a_run(self):
+        env = self._do(contract.ACTION_MEMORY_HISTORY, run_id=self.run_id)
+        self.assertTrue(env["ok"])
+
+    def test_get_memory_history_refuses_a_missing_run_id(self):
+        env = self._do(contract.ACTION_MEMORY_HISTORY)
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- resolve_memory_effective ----------------------------------------
+
+    def test_resolve_memory_effective_resolves_a_run(self):
+        # Unlike the other five, this one requires a document type: it resolves
+        # *one* effective document, so a run id alone does not name a request.
+        env = self._do(
+            contract.ACTION_MEMORY_EFFECTIVE,
+            run_id=self.run_id,
+            document_type="session_summary",
+        )
+        self.assertTrue(env["ok"])
+
+    def test_resolve_memory_effective_refuses_a_missing_document_type(self):
+        env = self._do(contract.ACTION_MEMORY_EFFECTIVE, run_id=self.run_id)
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    def test_resolve_memory_effective_refuses_a_non_string_document_type(self):
+        env = self._do(
+            contract.ACTION_MEMORY_EFFECTIVE, run_id=self.run_id, document_type=5
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- what the registered set does and does not need -------------------
+
+    def test_the_memory_reads_need_no_project_root(self):
+        # All six read the app-data store, never the accepted repository, so
+        # none of them has a ``project_not_open`` path.
+        self.assertIsNone(self.session.root)
+        for action, overrides in (
+            (contract.ACTION_MEMORY_DOCUMENTS, {}),
+            (contract.ACTION_MEMORY_SEARCH, {}),
+            (contract.ACTION_MEMORY_RESUME, {}),
+            (contract.ACTION_MEMORY_HISTORY, {"run_id": self.run_id}),
+            (
+                contract.ACTION_MEMORY_EFFECTIVE,
+                {"run_id": self.run_id, "document_type": "session_summary"},
+            ),
+        ):
+            with self.subTest(action=action):
+                self.assertTrue(self._do(action, **overrides)["ok"])
+
+    def test_memory_dispatch_really_goes_through_the_registry(self):
+        # The direct proof of the seam, for this group: replace a registry
+        # entry and watch the registered handler answer.
+        seen = []
+        real = boundary._search_memory_result
+
+        def spy(request, session):
+            seen.append(request.get("action"))
+            return real(request, session)
+
+        with mock.patch.dict(
+            boundary._BOUNDARY_HANDLERS._handlers,
+            {contract.ACTION_MEMORY_SEARCH: spy},
+        ):
+            env = self._do(contract.ACTION_MEMORY_SEARCH)
+        self.assertEqual(["search_memory"], seen)
+        self.assertTrue(env["ok"])
+
+    def test_a_wrong_contract_version_is_refused_before_the_registry(self):
+        env = boundary.handle_request(
+            {
+                "contract_version": "0.0.1",
+                "action": contract.ACTION_MEMORY_DOCUMENTS,
+            },
+            self.session,
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("unknown_contract_version", env["error"]["code"])
+
+
+_SCAN_FAMILY = (
+    contract.ACTION_SCAN,
+    contract.ACTION_READ,
+    contract.ACTION_ANALYZE,
+    contract.ACTION_INSPECT,
+    contract.ACTION_PLAN,
+)
+
+
+class BoundaryRegisteredScanTests(unittest.TestCase):
+    """The five scan synonyms, exercised end to end through the registry.
+
+    ``scan``, ``read``, ``analyze``, ``inspect`` and ``plan`` name one
+    pipeline. They are registered as five ordinary keys pointing at the one
+    ``_scan_handler`` adapter, so these tests hold both halves: that each alias
+    still answers, and that they answer *identically*.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.session = boundary.WorkspaceSession(store_base=self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _req(self, action, **overrides):
+        req = contract.build_request(
+            "cid-scan", action, FIXTURES, build_fixture_task(FIXTURES)
+        )
+        req.update(overrides)
+        return req
+
+    def _call(self, action, **overrides):
+        return boundary.handle_request(self._req(action, **overrides), self.session)
+
+    # -- every alias still runs the pipeline -----------------------------
+
+    def test_every_scan_alias_runs_the_pipeline(self):
+        for action in _SCAN_FAMILY:
+            with self.subTest(action=action):
+                env = self._call(action)
+                self.assertTrue(env["ok"])
+                self.assertEqual("cid-scan", env["correlation_id"])
+                # scan -> plan -> report: the scanner evidence, the derived
+                # plan inside the report, and the task identity it was run for.
+                self.assertIn("evidence", env["result"])
+                self.assertIn("report", env["result"])
+                self.assertTrue(env["result"]["report"]["plan"])
+                self.assertEqual("P3.1", env["result"]["task_id"])
+
+    def test_the_five_aliases_are_synonyms(self):
+        # The strongest form of "unchanged": a request that differs only in the
+        # action verb produces a byte-identical result.
+        baseline = self._call(contract.ACTION_SCAN)["result"]
+        for action in _SCAN_FAMILY[1:]:
+            with self.subTest(action=action):
+                self.assertEqual(baseline, self._call(action)["result"])
+
+    def test_every_scan_alias_refuses_an_empty_path(self):
+        for action in _SCAN_FAMILY:
+            with self.subTest(action=action):
+                env = self._call(action, path="")
+                self.assertFalse(env["ok"])
+                self.assertEqual("invalid_request", env["error"]["code"])
+
+    def test_every_scan_alias_refuses_a_mutating_task(self):
+        for action in _SCAN_FAMILY:
+            with self.subTest(action=action):
+                task = dict(build_fixture_task(FIXTURES))
+                task["allowed_actions"] = ["edit"]
+                env = self._call(action, task=task)
+                self.assertFalse(env["ok"])
+                self.assertEqual("action_not_allowed", env["error"]["code"])
+
+    def test_a_wrong_contract_version_is_refused_before_scan_dispatch(self):
+        env = boundary.handle_request(
+            self._req(contract.ACTION_SCAN, contract_version="0.0.1"), self.session
+        )
+        self.assertFalse(env["ok"])
+        self.assertEqual("unknown_contract_version", env["error"]["code"])
+
+    def test_a_non_dict_request_is_still_invalid_request(self):
+        env = boundary.handle_request("not-a-dict", self.session)
+        self.assertFalse(env["ok"])
+        self.assertEqual("invalid_request", env["error"]["code"])
+
+    # -- one handler, reached through the registry ------------------------
+
+    def test_all_five_aliases_resolve_through_the_registry(self):
+        for action in _SCAN_FAMILY:
+            with self.subTest(action=action):
+                self.assertIs(
+                    boundary._scan_handler,
+                    boundary._BOUNDARY_HANDLERS.resolve(action),
+                )
+
+    def test_the_five_aliases_share_one_handler(self):
+        handlers = {
+            boundary._BOUNDARY_HANDLERS.resolve(action) for action in _SCAN_FAMILY
+        }
+        self.assertEqual({boundary._scan_handler}, handlers)
+        self.assertIs(boundary._scan_handler, boundary._scan_handler)
+
+    def test_the_scan_handler_ignores_its_session(self):
+        # A session double records every attribute access, call and item get.
+        # The adapter must record none of them — it reads the request and
+        # nothing else.
+        request = self._req(contract.ACTION_SCAN)
+        sentinel = mock.Mock()
+        via_adapter = boundary._scan_handler(request, sentinel)
+        self.assertEqual([], sentinel.mock_calls)
+        self.assertEqual(boundary._scan_result(request), via_adapter)
+
+    def test_scan_dispatch_really_goes_through_the_registry(self):
+        seen = []
+        real = boundary._scan_result
+
+        def spy(request):
+            seen.append(request.get("action"))
+            return real(request)
+
+        with mock.patch.object(boundary, "_scan_result", spy):
+            env = self._call(contract.ACTION_ANALYZE)
+        self.assertEqual(["analyze"], seen)
+        self.assertTrue(env["ok"])
+
+    def test_no_legacy_branch_owns_a_scan_alias(self):
+        # The group branch is gone, not narrowed: every one of the five is
+        # registered, so none may be reachable through the chain.
+        for action in _SCAN_FAMILY:
+            with self.subTest(action=action):
+                self.assertIn(action, boundary._BOUNDARY_HANDLERS.actions())
+
+
+# -- the registered Twin family (B4) --------------------------------------
+#
+# Thirteen actions from four contract groups, migrated as one unit. Like the
+# read, Memory-read and scan classes above, these go through
+# ``handle_request`` so they exercise the registry: the architecture tests prove
+# no legacy ``elif`` claims them, and these prove they still answer exactly as
+# they did. The four groups are named here so a member drifting out of its group
+# is a failing test rather than a quietly shrunken family.
+
+_TWIN_FAMILY = (
+    contract.ACTION_SYNC_TWIN,
+    contract.ACTION_GET_TWIN,
+    contract.ACTION_GET_ANCHOR,
+    contract.ACTION_GET_CODE_MAP,
+    contract.ACTION_SAVE_DRAFT,
+    contract.ACTION_GET_DRAFT,
+    contract.ACTION_DISCARD_DRAFT,
+    contract.ACTION_RESET_DRAFT,
+    contract.ACTION_COMPARE_DRAFT,
+    contract.ACTION_GENERATE_INTENT_DELTA,
+    contract.ACTION_PLAN_PROPOSAL,
+    contract.ACTION_MEMORY_CODE_LINK,
+    contract.ACTION_MEMORY_CODE_FRESHNESS,
+)
+
+# ``(action, handler)`` in the order the registry holds them, so an entry that
+# stops naming the handler the chain used to call is caught here.
+_TWIN_FAMILY_HANDLERS = (
+    (contract.ACTION_SYNC_TWIN, boundary._sync_twin_result),
+    (contract.ACTION_GET_TWIN, boundary._get_twin_result),
+    (contract.ACTION_GET_ANCHOR, boundary._get_anchor_result),
+    (contract.ACTION_GET_CODE_MAP, boundary._get_code_map_result),
+    (contract.ACTION_SAVE_DRAFT, boundary._save_draft_result),
+    (contract.ACTION_GET_DRAFT, boundary._get_draft_result),
+    (contract.ACTION_DISCARD_DRAFT, boundary._discard_draft_result),
+    (contract.ACTION_RESET_DRAFT, boundary._reset_draft_result),
+    (contract.ACTION_COMPARE_DRAFT, boundary._compare_draft_result),
+    (contract.ACTION_GENERATE_INTENT_DELTA, boundary._generate_intent_delta_result),
+    (contract.ACTION_PLAN_PROPOSAL, boundary._plan_proposal_result),
+    (contract.ACTION_MEMORY_CODE_LINK, boundary._get_memory_code_link_result),
+    (contract.ACTION_MEMORY_CODE_FRESHNESS,
+     boundary._resolve_memory_code_freshness_result),
+)
+
+# The actions that reach the accepted repository root, so they refuse with
+# ``project_not_open`` on a session that has accepted none. The two bridge
+# actions are not among them: they resolve their entity against the session's
+# Twin *store*, not the root.
+_TWIN_FAMILY_ROOT_SCOPED = (
+    contract.ACTION_SYNC_TWIN,
+    contract.ACTION_GET_TWIN,
+    contract.ACTION_GET_ANCHOR,
+    contract.ACTION_GET_CODE_MAP,
+    contract.ACTION_SAVE_DRAFT,
+    contract.ACTION_GET_DRAFT,
+    contract.ACTION_DISCARD_DRAFT,
+    contract.ACTION_RESET_DRAFT,
+    contract.ACTION_COMPARE_DRAFT,
+    contract.ACTION_GENERATE_INTENT_DELTA,
+    contract.ACTION_PLAN_PROPOSAL,
+)
+
+
+class BoundaryRegisteredTwinFamilyTests(unittest.TestCase):
+    """The thirteen Twin-family actions, end to end through the registry."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.store_base = self._tmp.name
+        self.session = boundary.WorkspaceSession(store_base=self.store_base)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _do(self, action, **overrides):
+        return boundary.handle_request(_twin_request(action, **overrides), self.session)
+
+    def _open_sync(self):
+        open_env = self._do(contract.ACTION_OPEN_PROJECT, path=FIXTURES)
+        self.assertTrue(open_env["ok"])
+        sync_env = self._do(contract.ACTION_SYNC_TWIN, task={})
+        self.assertTrue(sync_env["ok"])
+        return sync_env
+
+    def _blocks(self):
+        return self._do(contract.ACTION_GET_CODE_MAP)["result"]["blocks"]
+
+    def _purpose_operation(self, value="entry point for the service"):
+        blocks = self._blocks()
+        module_id = next(
+            block["block_id"]
+            for block in blocks
+            if block.get("block_type") == "entity"
+            and (block.get("payload") or {}).get("kind") == "module"
+            and (block.get("payload") or {}).get("locator") == "app.service"
+        )
+        purpose_id = next(
+            block["block_id"]
+            for block in blocks
+            if block.get("block_type") == "purpose"
+            and block.get("parent_id") == module_id
+        )
+        return {
+            "op": "replace_description",
+            "target_block_id": purpose_id,
+            "proposed_text": value,
+        }
+
+    def _seed_link_record(self):
+        """Store one Memory run holding a ``code_entity_link`` for a real symbol."""
+        events = [
+            {"event_type": "run_started", "source_event_id": "e1", "payload": {}},
+            {
+                "event_type": "run_progress",
+                "source_event_id": "e2",
+                "payload": {},
+                "paths": ["app/service.py"],
+                "code_entities": [
+                    {"path": "app/service.py", "symbol": "app.service.Service.handle"}
+                ],
+            },
+            {
+                "event_type": "run_terminated",
+                "source_event_id": "e3",
+                "outcome": "completed",
+                "payload": {},
+            },
+            {"event_type": "stream_ended", "source_event_id": "e4", "payload": {}},
+        ]
+        store, error, _ = memory.ingest_session(
+            {
+                "adapter": "smoke",
+                "session_id": "s-1",
+                "events": events,
+                "project": {"source_id": "p-1", "name": "P1"},
+                "work_package": {"source_id": "w-1", "title": "W1"},
+            }
+        )
+        self.assertIsNone(error, error)
+        run_id = store["agent_run"]["id"]
+        self.assertIsNone(memory_store.save(self.store_base, run_id, store))
+        return run_id, store["code_entity_links"][0]["id"]
+
+    # -- what the registry owns ------------------------------------------
+
+    def test_the_family_is_the_union_of_four_contract_groups(self):
+        union = (
+            contract.TWIN_ACTIONS
+            | contract.DRAFT_ACTIONS
+            | contract.PROPOSAL_ACTIONS
+            | contract.MEMORY_CODE_LINK_ACTIONS
+        )
+        self.assertEqual(union, set(_TWIN_FAMILY))
+        self.assertEqual(13, len(_TWIN_FAMILY))
+
+    def test_every_family_action_is_registered(self):
+        registered = boundary._BOUNDARY_HANDLERS.actions()
+        for action in _TWIN_FAMILY:
+            with self.subTest(action=action):
+                self.assertIn(action, registered)
+
+    def test_every_family_entry_is_the_existing_handler(self):
+        # Migration moved dispatch, never authority: the object the registry
+        # answers with is the very function the chain called before B4.
+        for action, handler in _TWIN_FAMILY_HANDLERS:
+            with self.subTest(action=action):
+                self.assertIs(handler, boundary._BOUNDARY_HANDLERS.resolve(action))
+                self.assertIs(handler, getattr(boundary, handler.__name__))
+
+    def test_every_family_action_answers_through_the_registry(self):
+        # The direct proof of the seam, for every member: replace the registry
+        # entry and watch the replacement answer. If the legacy chain still
+        # owned one of these, the real handler would answer instead.
+        for action in _TWIN_FAMILY:
+            with self.subTest(action=action):
+                with mock.patch.dict(
+                    boundary._BOUNDARY_HANDLERS._handlers,
+                    {action: lambda request, session: {"probed": request.get("action")}},
+                ):
+                    env = self._do(action)
+                self.assertTrue(env["ok"], env)
+                self.assertEqual({"probed": action}, env["result"])
+
+    # -- the actions still answer ----------------------------------------
+
+    def test_sync_twin_synchronizes_and_persists(self):
+        sync_env = self._open_sync()
+        self.assertEqual("synchronized", sync_env["result"]["state"])
+        self.assertTrue(sync_env["result"]["persisted"])
+        self.assertGreater(sync_env["result"]["counts"]["artifacts"], 0)
+
+    def test_get_twin_returns_a_projection_bundle(self):
+        self._open_sync()
+        env = self._do(
+            contract.ACTION_GET_TWIN, task={"selector": "app/service.py"}
+        )
+        self.assertTrue(env["ok"], env)
+        self.assertEqual("app/service.py", env["result"]["projection"]["path"])
+
+    def test_get_anchor_navigates_a_behavior_node(self):
+        self._open_sync()
+        bundle = self._do(
+            contract.ACTION_GET_TWIN, task={"selector": "app.service.Service.handle"}
+        )["result"]
+        node_id = bundle["behavior_nodes"][0]["id"]
+        env = self._do(contract.ACTION_GET_ANCHOR, task={"node_id": node_id})
+        self.assertTrue(env["ok"], env)
+        self.assertTrue(env["result"]["available"])
+
+    def test_get_code_map_returns_blocks_and_entities(self):
+        self._open_sync()
+        env = self._do(contract.ACTION_GET_CODE_MAP)
+        self.assertTrue(env["ok"], env)
+        self.assertTrue(env["result"]["blocks"])
+        self.assertTrue(env["result"]["entities"])
+        self.assertIsNone(env["result"]["draft"])
+
+    def test_save_draft_persists_and_get_draft_reads_it_back(self):
+        self._open_sync()
+        save_env = self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={"operations": [self._purpose_operation()]},
+        )
+        self.assertTrue(save_env["ok"], save_env)
+        self.assertTrue(save_env["result"]["persisted"])
+        get_env = self._do(contract.ACTION_GET_DRAFT)
+        self.assertTrue(get_env["ok"], get_env)
+        self.assertEqual(save_env["result"]["draft"], get_env["result"]["draft"])
+
+    def test_compare_draft_lists_the_typed_operations(self):
+        self._open_sync()
+        self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={"operations": [self._purpose_operation()]},
+        )
+        env = self._do(contract.ACTION_COMPARE_DRAFT)
+        self.assertTrue(env["ok"], env)
+        self.assertEqual(1, len(env["result"]["operations"]))
+
+    def test_generate_intent_delta_and_plan_proposal(self):
+        self._open_sync()
+        self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={"operations": [self._purpose_operation()]},
+        )
+        delta_env = self._do(contract.ACTION_GENERATE_INTENT_DELTA)
+        self.assertTrue(delta_env["ok"], delta_env)
+        self.assertFalse(delta_env["result"]["no_change"])
+        proposal_env = self._do(contract.ACTION_PLAN_PROPOSAL)
+        self.assertTrue(proposal_env["ok"], proposal_env)
+        self.assertEqual("ready", proposal_env["result"]["state"])
+
+    def test_discard_draft_removes_the_saved_draft(self):
+        self._open_sync()
+        self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={"operations": [self._purpose_operation()]},
+        )
+        env = self._do(contract.ACTION_DISCARD_DRAFT)
+        self.assertTrue(env["ok"], env)
+        self.assertTrue(env["result"]["discarded"])
+        self.assertIsNone(env["result"]["draft"])
+        # With no saved draft left, the read reports absence rather than a
+        # stale copy of what was discarded.
+        self.assertEqual(
+            "draft_not_found", self._do(contract.ACTION_GET_DRAFT)["error"]["code"]
+        )
+
+    def test_reset_draft_removes_the_saved_operations(self):
+        self._open_sync()
+        self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={"operations": [self._purpose_operation()]},
+        )
+        env = self._do(contract.ACTION_RESET_DRAFT)
+        self.assertTrue(env["ok"], env)
+        self.assertTrue(env["result"]["reset"])
+        self.assertIsNone(env["result"]["draft"])
+        self.assertEqual(
+            "draft_not_found",
+            self._do(contract.ACTION_COMPARE_DRAFT)["error"]["code"],
+        )
+
+    # -- the bridge, which reaches Twin on Memory's behalf ----------------
+
+    def test_the_memory_code_twin_bridge_binds_and_resolves_freshness(self):
+        self._open_sync()
+        run_id, record_id = self._seed_link_record()
+        link_env = self._do(
+            contract.ACTION_MEMORY_CODE_LINK,
+            entity_id="artifact:method:app.service.Service.handle",
+            entity_kind="method",
+            run_id=run_id,
+            record_id=record_id,
+            kind=memory_docs.LINK_CODE_ENTITY,
+        )
+        self.assertTrue(link_env["ok"], link_env)
+        fresh_env = self._do(
+            contract.ACTION_MEMORY_CODE_FRESHNESS, **link_env["result"]
+        )
+        self.assertTrue(fresh_env["ok"], fresh_env)
+        self.assertEqual("current", fresh_env["result"]["freshness"])
+
+    # -- refusals ---------------------------------------------------------
+
+    def test_a_root_scoped_family_action_refuses_without_a_project_root(self):
+        for action in _TWIN_FAMILY_ROOT_SCOPED:
+            with self.subTest(action=action):
+                env = self._do(action, task={})
+                self.assertFalse(env["ok"], env)
+                self.assertEqual("project_not_open", env["error"]["code"])
+
+    def test_the_draft_actions_refuse_when_no_draft_exists(self):
+        self._open_sync()
+        for action in (
+            contract.ACTION_GET_DRAFT,
+            contract.ACTION_COMPARE_DRAFT,
+            contract.ACTION_GENERATE_INTENT_DELTA,
+            contract.ACTION_PLAN_PROPOSAL,
+        ):
+            with self.subTest(action=action):
+                env = self._do(action)
+                self.assertFalse(env["ok"], env)
+                self.assertEqual("draft_not_found", env["error"]["code"])
+
+    def test_the_twin_reads_refuse_an_identity_the_evidence_does_not_hold(self):
+        self._open_sync()
+        twin_env = self._do(
+            contract.ACTION_GET_TWIN, task={"selector": "no.such.entity"}
+        )
+        self.assertEqual("twin_not_found", twin_env["error"]["code"])
+        anchor_env = self._do(
+            contract.ACTION_GET_ANCHOR, task={"node_id": "behavior:nope:nope:0"}
+        )
+        self.assertEqual("twin_not_found", anchor_env["error"]["code"])
+
+    def test_a_draft_operation_the_baseline_does_not_hold_is_refused(self):
+        self._open_sync()
+        env = self._do(
+            contract.ACTION_SAVE_DRAFT,
+            task={
+                "operations": [
+                    {
+                        "op": "replace_description",
+                        "target_block_id": "no-such-block",
+                        "proposed_text": "x",
+                    }
+                ]
+            },
+        )
+        self.assertFalse(env["ok"], env)
+        self.assertEqual("draft_invalid", env["error"]["code"])
 
 
 if __name__ == "__main__":

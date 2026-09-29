@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 import unittest
 
-from hrca import delta_transport, provider, rule_delta, rule_delta_interpret
+from hrca.execution import delta_transport, rule_delta, rule_delta_interpret
+from hrca.integrations import provider
 
 
 def _valid_content():

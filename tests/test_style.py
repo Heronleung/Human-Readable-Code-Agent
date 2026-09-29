@@ -19,7 +19,7 @@ try:
     from PySide6.QtGui import QColor, QImage, QPainter
     from PySide6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleOption
 
-    from hrca import style
+    from hrca.ui import style
 
     HAS_PYSIDE6 = True
 except ImportError:  # pragma: no cover - exercised in the no-Qt environment
@@ -152,8 +152,14 @@ class ContrastTests(unittest.TestCase):
 
     def test_chip_text_meets_wcag(self):
         for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
-            for state, token in style.TWIN_STATE_TOKEN.items():
-                with self.subTest(palette=palette.name, state=state):
+            for token in (
+                style.STATE_INFO,
+                style.STATE_SUCCESS,
+                style.STATE_WARNING,
+                style.STATE_ERROR,
+                style.STATE_NEUTRAL,
+            ):
+                with self.subTest(palette=palette.name, token=token):
                     fg = palette.state_fg(token)
                     bg = style.chip_rendered_background(palette, token)
                     self.assertGreaterEqual(
@@ -281,31 +287,8 @@ class StyleFactoryTests(unittest.TestCase):
             f"color: {palette.text_secondary}; font-size: {style.STATUS_FONT_SIZE}px;",
         )
 
-    def test_project_root_label_style(self):
-        palette = style.LIGHT_PALETTE
-        self.assertEqual(
-            style.project_root_label_style(palette),
-            f"color: {palette.text_secondary}; "
-            f"padding: {style.GAP_TIGHT}px {style.INSET}px;",
-        )
-
-    def test_twin_chip_style_uses_state_token(self):
-        palette = style.LIGHT_PALETTE
-        for state, token in style.TWIN_STATE_TOKEN.items():
-            qss = style.twin_chip_style(palette, state)
-            self.assertIn(palette.state_fg(token), qss)
-            self.assertIn(palette.state_bg(token), qss)
-            self.assertIn(f"border-radius: {style.RADIUS_CHIP}px", qss)
-            self.assertIn(f"font-size: {style.STATUS_FONT_SIZE}px", qss)
-
-
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class StylesheetTests(unittest.TestCase):
-    def test_twin_body_selector_targets_label(self):
-        qss = style.build_stylesheet(style.LIGHT_PALETTE)
-        self.assertIn("QLabel#twinBody", qss)
-        self.assertNotIn("QPlainTextEdit#twinBody", qss)
-
     def test_stylesheet_has_no_unresolved_tokens(self):
         for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
             with self.subTest(palette=palette.name):

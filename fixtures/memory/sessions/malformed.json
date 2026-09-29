@@ -1,0 +1,35 @@
+{
+  "adapter": "fixture",
+  "session_id": "sess-malformed-001",
+  "run_key": "run-001",
+  "project": {
+    "source_id": "proj-demo",
+    "name": "Demo Repository"
+  },
+  "events": [
+    "not-an-event-object",
+    {
+      "source_event_id": "ev-000",
+      "source_sequence": 0,
+      "message": "an event with no event_type cannot be placed"
+    },
+    {
+      "event_type": "",
+      "source_event_id": "ev-000b",
+      "message": "an empty event_type is not a usable type"
+    },
+    {
+      "event_type": "run_started",
+      "source_event_id": "ev-001",
+      "source_sequence": 1,
+      "source_timestamp": "2026-01-01T17:00:00Z"
+    },
+    {
+      "event_type": "run_terminated",
+      "source_event_id": "ev-002",
+      "source_sequence": 2,
+      "source_timestamp": "2026-01-01T17:00:01Z",
+      "outcome": "completed"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "adapter": "fixture",
+  "session_id": "sess-unknown-outcome-001",
+  "run_key": "run-001",
+  "project": {
+    "source_id": "proj-demo",
+    "name": "Demo Repository"
+  },
+  "events": [
+    {
+      "event_type": "run_started",
+      "source_event_id": "ev-001",
+      "source_sequence": 1,
+      "source_timestamp": "2026-01-01T14:00:00Z"
+    },
+    {
+      "event_type": "run_terminated",
+      "source_event_id": "ev-002",
+      "source_sequence": 2,
+      "source_timestamp": "2026-01-01T14:00:05Z",
+      "outcome": "abandoned"
+    }
+  ]
+}

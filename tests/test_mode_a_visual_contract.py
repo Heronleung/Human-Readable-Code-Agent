@@ -8,13 +8,13 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from hrca import visual_tokens
+    from hrca.core import visual_tokens
     HAS_TOKENS = True
 except ImportError:
     HAS_TOKENS = False
 
 try:
-    from hrca import style
+    from hrca.ui import style
     HAS_STYLE = True
 except ImportError:
     HAS_STYLE = False

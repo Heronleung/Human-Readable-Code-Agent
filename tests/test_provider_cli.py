@@ -8,7 +8,8 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
-from hrca import credential_store, provider_cli
+from hrca.cli import provider_cli
+from hrca.integrations import credential_store
 
 _SECRET_LIKE = "secret-token-abc123"
 

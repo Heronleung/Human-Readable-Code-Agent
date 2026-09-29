@@ -6,15 +6,7 @@ import json
 import os
 import unittest
 
-from hrca.credential_store import (
-    PROFILE_TARGET_PREFIX,
-    TARGET_NAME,
-    CredentialStoreError,
-    FakeCredentialStore,
-    UnavailableCredentialStore,
-    make_credential_store,
-    profile_target,
-)
+from hrca.integrations.credential_store import PROFILE_TARGET_PREFIX, TARGET_NAME, CredentialStoreError, FakeCredentialStore, UnavailableCredentialStore, make_credential_store, profile_target
 
 
 class FakeCredentialStoreTests(unittest.TestCase):
@@ -122,7 +114,7 @@ class MakeCredentialStoreTests(unittest.TestCase):
     def test_matches_platform(self):
         store = make_credential_store()
         if os.name == "nt":
-            from hrca.credential_store_win import WindowsCredentialStore
+            from hrca.integrations.credential_store_win import WindowsCredentialStore
 
             self.assertIsInstance(store, WindowsCredentialStore)
         else:

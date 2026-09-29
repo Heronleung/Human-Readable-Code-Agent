@@ -1,0 +1,38 @@
+{
+  "adapter": "fixture",
+  "session_id": "sess-invalid-transition-001",
+  "run_key": "run-001",
+  "project": {
+    "source_id": "proj-demo",
+    "name": "Demo Repository"
+  },
+  "events": [
+    {
+      "event_type": "run_progress",
+      "source_event_id": "ev-000",
+      "source_sequence": 0,
+      "source_timestamp": "2026-01-01T16:00:00Z",
+      "message": "progress before any run_started is not a valid transition"
+    },
+    {
+      "event_type": "run_started",
+      "source_event_id": "ev-001",
+      "source_sequence": 1,
+      "source_timestamp": "2026-01-01T16:00:01Z"
+    },
+    {
+      "event_type": "run_terminated",
+      "source_event_id": "ev-002",
+      "source_sequence": 2,
+      "source_timestamp": "2026-01-01T16:00:02Z",
+      "outcome": "completed"
+    },
+    {
+      "event_type": "run_progress",
+      "source_event_id": "ev-003",
+      "source_sequence": 3,
+      "source_timestamp": "2026-01-01T16:00:03Z",
+      "message": "a terminal run is absorbing: this may not reopen it"
+    }
+  ]
+}

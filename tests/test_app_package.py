@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import unittest
 
-from hrca import app_package
+from hrca.execution import app_package
 
 
 def _package(**overrides):

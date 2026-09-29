@@ -8,15 +8,17 @@ validation, and that the credential and raw response never leak.
 
 from __future__ import annotations
 
+import ast
 import json
+import os
 import unittest
 
-from hrca import advisory, deepseek_transport, provider
+from hrca.integrations import advisory_contract, deepseek_transport, provider
 
 
 def _valid_content():
     payload = {
-        "schema_version": advisory.ADVISORY_SCHEMA_VERSION,
+        "schema_version": advisory_contract.ADVISORY_SCHEMA_VERSION,
         "clarification_needs": [],
         "impact": "documentation only",
         "assumptions": [],
@@ -213,7 +215,7 @@ class RequestBoundTests(unittest.TestCase):
         transport = deepseek_transport.DeepSeekProvider(
             credential_getter=lambda: "sk-test", http_post=http_post
         )
-        huge = "x" * (advisory.MAX_REQUEST_BYTES + 100)
+        huge = "x" * (advisory_contract.MAX_REQUEST_BYTES + 100)
         with self.assertRaises(deepseek_transport.TransportError) as ctx:
             transport.generate(_request(context=(huge,)))
         self.assertEqual(ctx.exception.code, "over_limit")
@@ -228,6 +230,90 @@ class CapabilityTests(unittest.TestCase):
         self.assertFalse(caps.streaming)
         self.assertFalse(caps.cancellation)
         self.assertFalse(caps.tool_calling)
+
+
+_TRANSPORT_SOURCE = os.path.normpath(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..", "src", "hrca", "integrations", "deepseek_transport.py",
+    )
+)
+
+
+def _imported_names(path):
+    """Return every module and symbol name the module at ``path`` imports."""
+    with open(path, "r", encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                names.add(node.module.split(".")[-1])
+            for alias in node.names:
+                names.add(alias.name)
+    return names
+
+
+class ContractSeamTests(unittest.TestCase):
+    """The transport takes its payload contract from the provider seam (B-R2).
+
+    It used to reach into :mod:`hrca.twin.advisory` for the schema version, the
+    bounds and the payload validator, which made the one module that opens a
+    socket and reads a credential depend on a capability. This holds the seam
+    from the transport's side; the transitive form of the same rule is held in
+    :mod:`tests.test_architecture`, where the module graph is already available.
+    """
+
+    def test_the_transport_no_longer_imports_the_twin_package(self):
+        imported = _imported_names(_TRANSPORT_SOURCE)
+        self.assertNotIn("twin", imported)
+        self.assertNotIn("advisory", imported)
+
+    def test_the_transport_imports_the_provider_payload_contract(self):
+        self.assertIn("advisory_contract", _imported_names(_TRANSPORT_SOURCE))
+
+    def test_the_transport_uses_the_canonical_serializer_not_a_local_copy(self):
+        from hrca.core import storage
+
+        self.assertIs(storage.dumps, deepseek_transport.dumps)
+
+    def test_the_contract_owns_every_symbol_the_transport_takes_from_it(self):
+        # Every symbol the transport reads off the contract is the contract's
+        # own definition, not a re-export it happens to see.
+        with open(_TRANSPORT_SOURCE, "r", encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        used = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "advisory_contract"
+        }
+        self.assertTrue(used)
+        for name in sorted(used):
+            with self.subTest(name=name):
+                self.assertIn(name, advisory_contract.__all__)
+                self.assertIn(name, vars(advisory_contract))
+
+    def test_the_contract_is_the_reason_the_transport_bounds_itself(self):
+        # The bounds the transport defaults to are the contract's, so a provider
+        # answer can never be accepted against a bound the transport invented.
+        provider_instance = deepseek_transport.DeepSeekProvider()
+        self.assertEqual(
+            advisory_contract.TIMEOUT_SECONDS, provider_instance._timeout
+        )
+        self.assertEqual(
+            advisory_contract.MAX_REQUEST_BYTES, provider_instance._max_request_bytes
+        )
+        self.assertEqual(
+            advisory_contract.MAX_CONTEXT_ITEMS, provider_instance._max_context_items
+        )
+        self.assertEqual(
+            advisory_contract.MAX_OUTPUT_TOKENS, provider_instance._max_output_tokens
+        )
 
 
 if __name__ == "__main__":

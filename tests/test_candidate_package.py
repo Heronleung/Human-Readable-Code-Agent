@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import app_package, candidate_package, verifier
+from hrca.execution import app_package, candidate_package, verifier
 
 _FINGERPRINT = "a" * 64
 

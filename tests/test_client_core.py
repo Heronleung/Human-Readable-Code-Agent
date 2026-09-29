@@ -2,96 +2,19 @@
 
 from __future__ import annotations
 
+import ast
+import importlib.util
 import os
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
-from hrca import contract
-from hrca.client_core import (
-    BLOCK_TYPE_LABELS,
-    CREDENTIAL_ACTION_MESSAGES,
-    CREDENTIAL_ACTION_PENDING,
-    CREDENTIAL_FAILURE_MESSAGES,
-    CREDENTIAL_MASK,
-    DELTA_INTERPRET_STATE_LABELS,
-    INTENT_CLASS_LABELS,
-    OPERATION_LABELS,
-    PROFILE_ACTION_MESSAGES,
-    PROFILE_FAILURE_MESSAGES,
-    PROPOSAL_STATE_LABELS,
-    PROVIDER_READINESS_STATE_LABELS,
-    PROVIDER_STATUS_MESSAGES,
-    PROVIDER_UNAVAILABLE,
-    REPOSITORY_UNVERIFIED,
-    TWIN_AVAILABLE,
-    TWIN_CONFLICT,
-    TWIN_EMPTY,
-    TWIN_LOADING,
-    TWIN_STALE,
-    TWIN_UNSUPPORTED,
-    TWIN_STATES,
-    VALIDATION_FAILED,
-    VALIDATION_IDLE,
-    VALIDATION_OK,
-    VALIDATION_RUNNING,
-    LineBuffer,
-    ResponseRouter,
-    behavior_node_label,
-    block_type_label,
-    credential_action_message,
-    delta_interpret_state_label,
-    profile_failure_message,
-    build_add_profile_request,
-    build_compare_draft_request,
-    build_delete_profile_request,
-    build_discard_draft_request,
-    build_fixture_task,
-    build_generate_intent_delta_request,
-    build_get_anchor_request,
-    build_get_code_map_request,
-    build_get_document_request,
-    build_get_draft_request,
-    build_get_profiles_request,
-    build_get_readiness_request,
-    build_get_tree_request,
-    build_get_twin_request,
-    build_interpret_rule_delta_request,
-    build_manage_credential_request,
-    build_open_project_request,
-    build_plan_proposal_request,
-    build_prepare_rule_delta_request,
-    build_remove_credential_request,
-    build_rename_profile_request,
-    build_request,
-    build_reset_draft_request,
-    build_save_draft_request,
-    build_scan_request,
-    build_scan_task,
-    build_set_active_profile_request,
-    build_sync_twin_request,
-    default_fixture_root,
-    format_delta_disclosure,
-    format_delta_interpret_result,
-    format_draft_operations,
-    format_entity_list,
-    format_intent_delta,
-    format_procedural_document,
-    format_proposal,
-    format_provider_readiness,
-    format_twin_projection,
-    format_twin_sync,
-    intent_class_label,
-    is_twin_source_path,
-    operation_label,
-    proposal_state_label,
-    provider_readiness_state_label,
-    provider_status_message,
-    resolve_backend_command,
-    resolve_credential_host_command,
-    twin_state_from_sync,
-)
+from hrca.core import contract
+from hrca.boundary.client_core import BLOCK_TYPE_LABELS, CREDENTIAL_ACTION_MESSAGES, CREDENTIAL_ACTION_PENDING, CREDENTIAL_FAILURE_MESSAGES, CREDENTIAL_MASK, DELTA_INTERPRET_STATE_LABELS, INTENT_CLASS_LABELS, OPERATION_LABELS, PROFILE_ACTION_MESSAGES, PROFILE_FAILURE_MESSAGES, PROPOSAL_STATE_LABELS, PROVIDER_READINESS_STATE_LABELS, PROVIDER_STATUS_MESSAGES, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, TWIN_AVAILABLE, TWIN_CONFLICT, TWIN_EMPTY, TWIN_LOADING, TWIN_STALE, TWIN_UNSUPPORTED, TWIN_STATES, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, LineBuffer, ResponseRouter, behavior_node_label, block_type_label, credential_action_message, delta_interpret_state_label, profile_failure_message, build_add_profile_request, build_compare_draft_request, build_delete_profile_request, build_discard_draft_request, build_fixture_task, build_generate_intent_delta_request, build_get_anchor_request, build_get_code_map_request, build_get_document_request, build_get_draft_request, build_get_profiles_request, build_get_readiness_request, build_get_tree_request, build_get_twin_request, build_interpret_rule_delta_request, build_manage_credential_request, build_open_project_request, build_plan_proposal_request, build_prepare_rule_delta_request, build_remove_credential_request, build_rename_profile_request, build_request, build_reset_draft_request, build_save_draft_request, build_scan_request, build_scan_task, build_set_active_profile_request, build_sync_twin_request, default_fixture_root, format_delta_disclosure, format_delta_interpret_result, format_draft_operations, format_entity_list, format_intent_delta, format_procedural_document, format_proposal, format_provider_readiness, format_twin_projection, format_twin_sync, intent_class_label, is_twin_source_path, operation_label, proposal_state_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, twin_state_from_sync
+
+
+from hrca.boundary.client_core import MEMORY_TWIN_OPENABLE_STATES, MEMORY_TWIN_REFUSED_SUBSTITUTE, build_memory_code_freshness_request, build_memory_code_link_request, memory_freshness_rows, memory_link_rows, memory_twin_actionable_label, memory_twin_candidate_identities, memory_twin_freshness_label, memory_twin_link_is_openable, memory_twin_link_records, memory_twin_open_refusal, memory_twin_selector_for
 
 
 class LineBufferTests(unittest.TestCase):
@@ -179,12 +102,82 @@ class FixtureTaskTests(unittest.TestCase):
         self.assertEqual(req["task"]["task_id"], "P3.1")
 
 
+def _assert_names_a_runnable_module(command, sentinel):
+    """Assert a resolved ``[interpreter, "-m", module, sentinel]`` can run.
+
+    A resolved command must be *runnable*, not merely spelled correctly.
+    ``-m <name>`` executes a plain module, or a package that ships an executable
+    ``__main__.py``. A module that does not exist, or a package without
+    ``__main__.py``, fails with "No module named ..." only *later*, once the
+    desktop is already trying to start the child.
+
+    Both defects shipped once — ``--serve`` named the ``hrca.boundary`` package
+    (UI-TRANSITION-1R) and ``--credential`` named a module that never existed
+    (1C) — so the rule is stated once here and applied to every resolved
+    command.
+
+    The check is deliberately static: the safe routes run under the dispatch
+    guard, which makes starting a process a failure, so this must not spawn
+    anything to find out.
+    """
+    if command[0] != sys.executable:
+        raise AssertionError("interpreter is not sys.executable: %r" % (command,))
+    if command[1] != "-m":
+        raise AssertionError("launch is not a -m run: %r" % (command,))
+    target = command[2]
+    if command[3] != sentinel:
+        raise AssertionError("wrong sentinel %r for %r" % (command[3], target))
+
+    spec = importlib.util.find_spec(target)
+    if spec is None:
+        raise AssertionError("%s does not exist, so -m cannot run it" % target)
+    if spec.submodule_search_locations is not None:
+        if importlib.util.find_spec(target + ".__main__") is None:
+            raise AssertionError(
+                "%s is a package with no __main__.py, so -m cannot run it" % target
+            )
+
+
 class BackendCommandTests(unittest.TestCase):
     def test_source_resolution(self):
         self.assertEqual(
             resolve_backend_command(frozen=False),
-            [sys.executable, "-m", "hrca.boundary", contract.SERVE_SENTINEL],
+            [sys.executable, "-m", "hrca.cli.app", contract.SERVE_SENTINEL],
         )
+
+    def test_source_resolution_names_an_executable_module(self):
+        _assert_names_a_runnable_module(
+            resolve_backend_command(frozen=False), contract.SERVE_SENTINEL
+        )
+
+    def test_credential_resolution_names_an_executable_module(self):
+        # The same rule for the host the Settings add-credential flow launches:
+        # it named a module that does not exist (UI-TRANSITION-1C).
+        _assert_names_a_runnable_module(
+            resolve_credential_host_command(frozen=False),
+            contract.CREDENTIAL_SENTINEL,
+        )
+
+    def test_the_credential_sentinel_dispatches_to_the_native_host(self):
+        # The resolver names the unified entry, so the dispatch that turns
+        # ``--credential`` into the native host must exist there. Asserted from
+        # the launcher's own source: no process starts and no credential is
+        # involved at any point.
+        origin = importlib.util.find_spec("hrca.cli.app").origin
+        with open(origin, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+
+        branch = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.If) and "CREDENTIAL_SENTINEL" in ast.dump(node.test):
+                branch = node
+                break
+        self.assertIsNotNone(branch, "hrca.cli.app has no --credential branch")
+
+        body = ast.dump(ast.Module(body=branch.body, type_ignores=[]))
+        self.assertIn("credential_host", body)
+        self.assertIn("host_main", body)
+        self.assertIn("Return", body)
 
     def test_frozen_resolution(self):
         self.assertEqual(
@@ -195,7 +188,7 @@ class BackendCommandTests(unittest.TestCase):
     def test_credential_host_source_resolution(self):
         self.assertEqual(
             resolve_credential_host_command(frozen=False),
-            [sys.executable, "-m", "hrca.credential_host"],
+            [sys.executable, "-m", "hrca.cli.app", contract.CREDENTIAL_SENTINEL],
         )
 
     def test_credential_host_frozen_resolution(self):
@@ -248,7 +241,7 @@ class DefaultFixtureRootTests(unittest.TestCase):
         self.assertGreater(len(os.listdir(root)), 0)
 
     def test_default_corpus_produces_nonempty_scanner_evidence(self):
-        from hrca.scanner import scan_directory
+        from hrca.source.scanner import scan_directory
 
         root = default_fixture_root(frozen=False)
         doc = scan_directory(root)
@@ -1021,7 +1014,7 @@ class DeltaInterpretClientVocabularyTests(unittest.TestCase):
     """P4.8 client vocabulary: request builders, state labels and formatters."""
 
     def test_state_labels_cover_all_states(self):
-        from hrca import rule_delta_interpret
+        from hrca.execution import rule_delta_interpret
 
         for state in rule_delta_interpret.STATES:
             label = delta_interpret_state_label(state)
@@ -1107,6 +1100,236 @@ class DeltaInterpretClientVocabularyTests(unittest.TestCase):
                   "usage": None, "candidate": None, "limitations": []}
         text = format_delta_interpret_result(result)
         self.assertIn("Usage: unknown", text)
+
+
+class MemoryTwinLinkViewTests(unittest.TestCase):
+    """The Code Twin link vocabulary the desktop renders (M4.5/v2c).
+
+    Every one of these is presentation over a value the boundary returned: the
+    view models decide no freshness, widen no actionability, and derive no
+    identity the record did not already state.
+    """
+
+    _LINK = {
+        "link_schema_version": "1.0.0",
+        "workspace_id": "ws:1",
+        "entity_id": "artifact:function:pkg.mod.f",
+        "entity_kind": "function",
+        "memory_run_id": "run:1",
+        "memory_record_id": "rec:1",
+        "recorded_revision": 3,
+    }
+
+    def _verdict(self, freshness="current", actionable=True, **overrides):
+        verdict = dict(self._LINK, freshness=freshness, actionable=actionable,
+                       current_revision=3, reason=None)
+        verdict.pop("link_schema_version", None)
+        verdict.update(overrides)
+        return verdict
+
+    def test_every_returned_verdict_has_a_word(self):
+        for state in ("current", "historical", "stale", "missing", "unsupported"):
+            with self.subTest(state=state):
+                self.assertNotEqual("Unknown", memory_twin_freshness_label(state))
+
+    def test_an_unrecognised_verdict_is_never_mapped_away(self):
+        self.assertEqual("Unknown", memory_twin_freshness_label("a_state_from_later"))
+
+    def test_actionability_is_reported_and_absence_is_not_consent(self):
+        self.assertEqual("Yes", memory_twin_actionable_label({"actionable": True}))
+        self.assertEqual("No", memory_twin_actionable_label({"actionable": False}))
+        self.assertEqual("Not reported", memory_twin_actionable_label({}))
+        self.assertEqual("Not reported", memory_twin_actionable_label(None))
+
+    def test_a_file_claim_admits_exactly_one_identity(self):
+        candidates = memory_twin_candidate_identities(
+            {"fields": {"path": "pkg/mod.py", "symbol": None, "entity_kind": "file"}}
+        )
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("artifact:file:pkg/mod.py", candidates[0]["entity_id"])
+        self.assertEqual("file", candidates[0]["entity_kind"])
+
+    def test_a_symbol_claim_admits_one_identity_per_symbol_kind(self):
+        candidates = memory_twin_candidate_identities(
+            {"fields": {"path": "pkg/mod.py", "symbol": "pkg.mod.f",
+                        "entity_kind": "symbol"}}
+        )
+        self.assertEqual(
+            ["artifact:class:pkg.mod.f", "artifact:function:pkg.mod.f",
+             "artifact:method:pkg.mod.f"],
+            [candidate["entity_id"] for candidate in candidates],
+        )
+
+    def test_a_record_without_a_body_admits_nothing(self):
+        for view in ({"fields": {}}, {"fields": None}, {}, None, "record"):
+            with self.subTest(view=view):
+                self.assertEqual([], memory_twin_candidate_identities(view))
+
+    def test_the_selector_is_the_identity_body_and_nothing_else(self):
+        self.assertEqual(
+            "pkg.mod.f", memory_twin_selector_for("artifact:function:pkg.mod.f")
+        )
+        self.assertEqual(
+            "pkg/mod.py", memory_twin_selector_for("artifact:file:pkg/mod.py")
+        )
+
+    def test_an_identity_of_another_shape_yields_no_selector(self):
+        for value in ("pkg.mod.f", "artifact:function:", "artifact:widget:x",
+                      "artifactfunction:x", "/abs/mod.py", "", None, 7):
+            with self.subTest(value=value):
+                self.assertIsNone(memory_twin_selector_for(value))
+
+    def test_only_returned_actionability_in_an_actionable_state_licenses_opening(self):
+        self.assertTrue(memory_twin_link_is_openable(self._LINK, self._verdict()))
+        self.assertTrue(
+            memory_twin_link_is_openable(self._LINK, self._verdict("stale", True))
+        )
+
+    def test_a_non_actionable_verdict_is_never_widened(self):
+        for state in ("historical", "missing", "unsupported"):
+            with self.subTest(state=state):
+                self.assertFalse(
+                    memory_twin_link_is_openable(self._LINK, self._verdict(state, False))
+                )
+
+    def test_an_actionable_claim_in_a_non_actionable_state_is_narrowed(self):
+        # The protocol never calls history actionable; if a verdict ever did,
+        # this surface still refuses rather than trusting the claim.
+        self.assertFalse(
+            memory_twin_link_is_openable(
+                self._LINK, self._verdict("historical", True)
+            )
+        )
+
+    def test_a_verdict_about_another_link_is_not_a_licence(self):
+        for field, value in (
+            ("entity_id", "artifact:function:pkg.other.f"),
+            ("entity_kind", "method"),
+            ("workspace_id", "ws:2"),
+            ("memory_run_id", "run:2"),
+            ("memory_record_id", "rec:2"),
+            ("recorded_revision", 4),
+        ):
+            with self.subTest(field=field):
+                verdict = self._verdict(**{field: value})
+                self.assertFalse(memory_twin_link_is_openable(self._LINK, verdict))
+
+    def test_an_absent_or_substituted_artifact_is_refused(self):
+        entity = "artifact:function:pkg.mod.f"
+        self.assertIsNone(
+            memory_twin_open_refusal({"artifact": {"id": entity}}, entity)
+        )
+        self.assertEqual(
+            MEMORY_TWIN_REFUSED_SUBSTITUTE,
+            memory_twin_open_refusal(
+                {"artifact": {"id": "artifact:function:pkg.other.f"}}, entity
+            ),
+        )
+        self.assertIsNotNone(memory_twin_open_refusal({"artifact": None}, entity))
+        self.assertIsNotNone(memory_twin_open_refusal({"artifact": {}}, entity))
+        self.assertIsNotNone(memory_twin_open_refusal(None, entity))
+
+    def test_the_link_rows_carry_only_returned_fields(self):
+        rows = dict(memory_link_rows(self._LINK))
+        self.assertEqual("artifact:function:pkg.mod.f", rows["Entity identity"])
+        self.assertEqual("Function", rows["Entity kind"])
+        self.assertEqual("3", rows["Recorded revision"])
+        self.assertEqual("run:1", rows["Memory run"])
+        self.assertEqual("rec:1", rows["Memory record"])
+
+    def test_an_absent_revision_is_not_invented(self):
+        rows = dict(memory_link_rows({"entity_id": "artifact:file:a.py"}))
+        self.assertEqual("not reported", rows["Recorded revision"])
+
+    def test_the_freshness_rows_carry_the_word_and_the_limitation(self):
+        rows = dict(
+            memory_freshness_rows(
+                self._verdict(
+                    "unsupported", False,
+                    reason="no comparable authoritative Twin state is available",
+                )
+            )
+        )
+        self.assertEqual("Unsupported", rows["State"])
+        self.assertEqual("No", rows["Actionable"])
+        self.assertEqual(
+            "no comparable authoritative Twin state is available", rows["Limitation"]
+        )
+
+    def test_a_verdict_without_a_reason_says_none_reported(self):
+        rows = dict(memory_freshness_rows(self._verdict()))
+        self.assertEqual("None reported", rows["Limitation"])
+
+    def test_the_openable_states_are_the_protocols_own_actionable_ones(self):
+        self.assertEqual(("current", "stale"), MEMORY_TWIN_OPENABLE_STATES)
+
+    def test_the_link_records_come_from_the_claims_not_from_row_order(self):
+        document_set = {
+            "documents": {
+                "session_summary": {
+                    "claims": [
+                        {"links": [{"kind": "code_entity_link", "id": "record:1"},
+                                   {"kind": "event", "id": "record:2"}],
+                         "unresolved": []},
+                        {"links": [{"kind": "code_entity_link", "id": "record:1"}],
+                         "unresolved": []},
+                    ]
+                },
+                "change_record": {
+                    "claims": [{"links": [{"kind": "code_entity_link", "id": "record:3"}],
+                                "unresolved": []}]
+                },
+            }
+        }
+        records = memory_twin_link_records(document_set)
+        # Documents are visited in a fixed order and a repeated reference is
+        # reported once, so the list is stable whatever order the map holds.
+        self.assertEqual(["record:3", "record:1"], [r["record_id"] for r in records])
+        self.assertEqual(records, memory_twin_link_records(document_set))
+
+    def test_a_document_set_without_claims_names_no_record(self):
+        for document_set in ({"documents": {}}, {"documents": None}, {}, None):
+            with self.subTest(document_set=document_set):
+                self.assertEqual([], memory_twin_link_records(document_set))
+
+
+class MemoryTwinRequestTests(unittest.TestCase):
+    """The desktop sends only the identities the protocol asks for."""
+
+    def test_a_bind_request_carries_no_revision(self):
+        request = build_memory_code_link_request(
+            "c1", "artifact:function:pkg.mod.f", "function", "run:1", "rec:1"
+        )
+        self.assertEqual(contract.ACTION_MEMORY_CODE_LINK, request["action"])
+        self.assertEqual(contract.CONTRACT_VERSION, request["contract_version"])
+        self.assertEqual("c1", request["correlation_id"])
+        self.assertNotIn("recorded_revision", request)
+        self.assertNotIn("workspace_id", request)
+
+    def test_a_bind_request_names_the_record_kind_it_binds(self):
+        request = build_memory_code_link_request(
+            "c1", "artifact:function:pkg.mod.f", "function", "run:1", "rec:1"
+        )
+        self.assertEqual("code_entity_link", request["kind"])
+
+    def test_a_freshness_request_echoes_only_the_links_own_returned_fields(self):
+        link = {
+            "link_schema_version": "1.0.0",
+            "workspace_id": "ws:1",
+            "entity_id": "artifact:function:pkg.mod.f",
+            "entity_kind": "function",
+            "memory_run_id": "run:1",
+            "memory_record_id": "rec:1",
+            "recorded_revision": 2,
+        }
+        request = build_memory_code_freshness_request("c2", link)
+        self.assertEqual(contract.ACTION_MEMORY_CODE_FRESHNESS, request["action"])
+        self.assertEqual("c2", request["correlation_id"])
+        for field, value in link.items():
+            self.assertEqual(value, request[field])
+        self.assertEqual(
+            set(link) | {"contract_version", "correlation_id", "action"}, set(request)
+        )
 
 
 if __name__ == "__main__":

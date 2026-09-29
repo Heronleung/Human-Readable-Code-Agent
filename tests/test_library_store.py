@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 
-from hrca import document, library, library_store, version_store
+from hrca.authoring import document, library, library_store, version_store
 
 _NOW = "2026-09-10T00:00:00+00:00"
 

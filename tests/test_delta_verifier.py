@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import delta_verifier, rule_delta
+from hrca.execution import delta_verifier, rule_delta
 
 
 class VerifyTests(unittest.TestCase):

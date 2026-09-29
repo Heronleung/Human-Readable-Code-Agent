@@ -4,32 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from hrca import contract
-from hrca.client_core import (
-    build_adopt_candidate_request,
-    build_create_candidate_request,
-    build_create_document_request,
-    build_list_documents_request,
-    build_list_versions_request,
-    build_open_document_request,
-    build_preview_request,
-    build_restore_version_request,
-    build_save_document_request,
-    build_get_library_request,
-    build_create_folder_request,
-    build_rename_item_request,
-    build_move_item_request,
-    build_trash_item_request,
-    build_restore_item_request,
-    document_failure_message,
-    document_kind_label,
-    format_document_state,
-    format_preview,
-    format_version_list,
-    preview_badge,
-    preview_kind_label,
-    preview_state_label,
-)
+from hrca.core import contract
+from hrca.boundary.client_core import build_adopt_candidate_request, build_create_candidate_request, build_create_document_request, build_list_documents_request, build_list_versions_request, build_open_document_request, build_preview_request, build_restore_version_request, build_save_document_request, build_get_library_request, build_create_folder_request, build_rename_item_request, build_move_item_request, build_trash_item_request, build_restore_item_request, document_failure_message, document_kind_label, format_document_state, format_preview, format_version_list, preview_badge, preview_kind_label, preview_state_label
 
 
 class RequestBuilderTests(unittest.TestCase):

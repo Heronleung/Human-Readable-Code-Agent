@@ -14,7 +14,8 @@ import os
 import tempfile
 import unittest
 
-from hrca import twin, codemap_draft, twin_store
+from hrca import twin
+from hrca.twin import codemap_draft, twin_store
 
 
 class _Base:

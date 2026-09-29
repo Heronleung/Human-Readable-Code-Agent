@@ -1,0 +1,6376 @@
+"""PySide6 desktop client for PrimaAgent — the document-first product surface.
+
+The client is a *client only*: it supervises a headless backend process through
+the versioned NDJSON boundary, submits bounded read-only workspace actions
+(``open_project``) plus the read-only scan pipeline, and renders the results in
+a document-first layout. It never
+imports the scanner, planner, report builder, provider protocol, Git tooling or
+any command-execution code, never enumerates or reads project files directly
+(all filesystem access is mediated by the boundary), and never decides that an
+action is permitted — that decision belongs to the boundary.
+
+Layout (presentation only, no semantics invented):
+
+* **Command bar** — ``Open Project`` and ``Run read-only scan`` as named
+  secondary actions (the scan stays disabled until a project is open),
+  ``Settings`` as a quiet ghost action, and the provider's readiness as a chip;
+* **Navigation rail** — a compact labelled column with **Document** and
+  **Preview** as the only always-visible primary destinations, then a divider,
+  **Versions** (the accepted-version drawer) and a collapsed **Advanced**
+  disclosure grouping the retained technical surfaces as
+  **Change Review** / **Validation Evidence**;
+* **Document workspace** — the primary full-height Working Document editor with
+  a document header carrying a dynamic title and the saved/unsaved state, and a
+  footer where Save and the single contextual preview action live. With no
+  document open the editor gives way to a bounded empty state offering
+  ``New document`` and ``Open project``, and a hint names the next action;
+* **Preview workspace** — a read-only, version-bound candidate review surface
+  (bound document revision, Candidate vs Accepted Version and its bounded state,
+  deterministic-fixture provenance, fixed quotation inputs/results, and a
+  validation-evidence summary); it never executes a package;
+* **Advanced** (collapsed by default) — **Change Review** keeps Agent Chat,
+  Plan, Diff and the raw Candidate metadata; **Validation Evidence** keeps
+  Problems, Tests and Evidence. Diff is explicitly unavailable in this slice;
+  nothing is ever written to disk;
+* **Status bar** — one row with a transient message and four right-aligned
+  persistent fields (root, repository, provider, validation state), plus a
+  ``Details`` toggle that reveals the diagnostic row (hidden by default).
+
+Every visual value is owned by :mod:`hrca.ui.style`; no widget hard-codes an
+ad-hoc colour, radius or padding. Supervision constraints honoured here:
+
+* the backend is supervised with :class:`QProcess` and ``readyReadStandardOutput``
+  plus an incremental :class:`~hrca.boundary.client_core.LineBuffer` and a request timeout;
+  there are no blocking reads, no ``subprocess.communicate``, and no manual
+  threads on the graphical thread;
+* cancellation version 1 is terminate-and-restart: the client terminates the
+  backend, discards any response whose correlation id no longer matches an
+  in-flight request, and marks the abandoned request ``blocked`` rather than
+  silently ``failed``;
+* code is viewed with :class:`QPlainTextEdit` and :class:`QSyntaxHighlighter`
+  (no QScintilla, QtWebEngine, Monaco, CodeMirror or any web-based editor).
+
+The wire protocol stays ASCII (``ensure_ascii=True``); only the *display* uses
+``ensure_ascii=False`` so non-ASCII text renders readably.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import weakref
+from functools import partial
+from typing import Any, Dict, List, Optional, Sequence
+
+from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QProcess, QTimer, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QPainter,
+    QPen,
+    QStandardItem,
+    QStandardItemModel,
+    QSyntaxHighlighter,
+    QTextBlockFormat,
+    QTextCharFormat,
+    QTextCursor,
+)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QSplitterHandle,
+    QStackedWidget,
+    QTabWidget,
+    QTextEdit,
+    QToolButton,
+    QTreeView,
+    QVBoxLayout,
+    QWidget,
+    QSizePolicy,
+)
+
+from ..core import contract
+from . import style
+from ..boundary.client_core import PROVIDER_STATUS_CONFIGURED, PROVIDER_STATUS_FAILED, PROVIDER_STATUS_MISSING_CREDENTIAL, PROVIDER_STATUS_PENDING, PROVIDER_STATUS_UNAVAILABLE, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, STATE_BLOCKED, STATE_FAILED, STATE_IDLE, STATE_RUNNING, STATE_SUCCESS, STATE_UNAVAILABLE, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, LineBuffer, ResponseRouter, credential_action_message, profile_failure_message, build_add_profile_request, build_delete_profile_request, build_get_profiles_request, build_manage_credential_request, build_open_project_request, build_remove_credential_request, build_rename_profile_request, build_request, build_scan_request, build_set_active_profile_request, default_fixture_root, operation_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, build_create_document_request, build_open_document_request, build_save_document_request, build_create_candidate_request, build_adopt_candidate_request, build_list_versions_request, build_restore_version_request, document_failure_message, document_kind_label, format_document_state, format_version_list, build_preview_request, format_preview, preview_badge, preview_state_label, preview_state_message, build_get_library_request, build_create_folder_request, build_rename_item_request, build_move_item_request, build_trash_item_request, build_restore_item_request, build_prepare_rule_delta_request, build_interpret_rule_delta_request, format_delta_disclosure, format_delta_interpret_result, delta_interpret_state_label, build_get_memory_documents_request, build_get_memory_record_request, memory_run_rows, claim_rows, record_detail_rows, memory_record_kind_label, memory_state_label, memory_origin_label, MEMORY_QUERY_FACETS, MEMORY_QUERY_ORDERS, MEMORY_ORDER_RELEVANCE, MEMORY_ORDER_RECORDED_TIME, MEMORY_MAX_FILTERS, MEMORY_UNSUPPORTED_FACETS, MEMORY_FACET_LABELS, MEMORY_ORDER_LABELS, memory_facet_label, build_search_memory_request, build_memory_resume_request, memory_hit_rows, memory_resume_view, MEMORY_REVIEW_OPERATIONS, MEMORY_OPERATION_LABELS, memory_operation_label, memory_correction_state_label, memory_correction_source_id, memory_review_view, build_memory_history_request, build_memory_effective_request, build_memory_correction_request
+
+# Client-side failure reasons for backend misbehaviour that is not a bounded
+# boundary error. These are display-only; they are distinct from the contract
+# error catalogue, which is reserved for the boundary's own rejections.
+REASON_NON_JSON = "non_json_output"
+REASON_BACKEND_EXITED = "backend_exited"
+REASON_LAUNCH_FAILED = "launch_failed"
+
+_DEFAULT_SCAN_PATH = default_fixture_root()
+_DEFAULT_TIMEOUT_MS = 15000
+
+
+# Fixed, honest unavailable text for the Diff surface. Until a code proposal
+# capability exists there is nothing to diff and no way to apply changes, so
+# Diff never implies editing is possible.
+_DIFF_UNAVAILABLE = (
+    "Diff is unavailable in this read-only slice.\n\n"
+    "No code proposal capability exists yet, so there is nothing to diff and "
+    "no way to apply changes."
+)
+
+
+# Preview state -> semantic colour token (P4.5). The badge always carries the
+# state word too, so colour is never the sole signal.
+_PREVIEW_STATE_TOKEN = {
+    "no_document": style.STATE_NEUTRAL,
+    "no_candidate": style.STATE_NEUTRAL,
+    "current": style.STATE_SUCCESS,
+    "stale": style.STATE_WARNING,
+    "invalid": style.STATE_ERROR,
+    "insufficient_evidence": style.STATE_WARNING,
+}
+
+# Provider-to-rule-delta interpretation state -> semantic colour token (P4.8).
+# The badge always carries the state word (via client_core's label table), so
+# colour is never the sole signal. Only the reviewable candidate is a success.
+_RULE_DELTA_STATE_TOKEN = {
+    "reviewable_candidate": style.STATE_SUCCESS,
+    "preflight": style.STATE_NEUTRAL,
+    "cancel_requested": style.STATE_NEUTRAL,
+    "stale": style.STATE_WARNING,
+    "clarification_required": style.STATE_WARNING,
+    "unsupported": style.STATE_WARNING,
+    "invalid_output": style.STATE_ERROR,
+    "usage_unknown": style.STATE_ERROR,
+    "pricing_unknown": style.STATE_ERROR,
+    "reservation_failed": style.STATE_ERROR,
+    "runner_unavailable": style.STATE_ERROR,
+    "verification_failed": style.STATE_ERROR,
+    "over_limit": style.STATE_ERROR,
+    "credential_missing": style.STATE_ERROR,
+    "credential_rejected": style.STATE_ERROR,
+    "network_denied": style.STATE_ERROR,
+    "timeout": style.STATE_ERROR,
+    "rate_limited": style.STATE_ERROR,
+    "quota_exceeded": style.STATE_ERROR,
+    "provider_unavailable": style.STATE_ERROR,
+    "context_rejected": style.STATE_ERROR,
+    "provider_failure": style.STATE_ERROR,
+}
+
+# The only interpretation state that produces a reviewable (never auto-adopted)
+# candidate. Held as a client-side literal so the shell never imports the
+# interpretation domain.
+_RULE_DELTA_REVIEWABLE = "reviewable_candidate"
+
+# The retained scope of the Memory destination, stated where the destination is
+# read rather than implied. Packaging and recovery are offline operator
+# workflows with no boundary route into this process, so the desktop says so
+# instead of leaving a reader to assume a capability that is not there.
+MEMORY_SCOPE_NOTE = (
+    "Read-only views over stored runs. Export, backup and recovery are offline "
+    "operator (CLI) workflows: this desktop never packages, restores or "
+    "replaces a Memory store."
+)
+
+
+# Fixed, honest unavailable messages for the document surface. Each ``reason``
+# is one of the workspace's bounded unavailable reasons; the banner never echoes
+# a requested path or file content.
+_UNAVAILABLE_TEXT = {
+    "binary": "Binary file — preview unavailable.",
+    "unsupported_type": "Unsupported file type — preview unavailable.",
+    "file_too_large": "File too large to preview.",
+    "path_not_found": "File not found.",
+    "path_not_readable": "File is not readable.",
+}
+_UNAVAILABLE_FALLBACK = "This file cannot be previewed."
+
+# Fixed, redacted credential-profile vocabulary for the Settings surface
+# (P4.2a). Only credential *presence* is reported, through a constant mask; the
+# key value is never held, logged, rendered or serialized by the desktop client.
+_SETTINGS_NO_PROFILES = "No API key profiles yet."
+_SETTINGS_ADD_PROFILE = "Add API key"
+_SETTINGS_ACTIVE_LABEL = "Active credential"
+_SETTINGS_RENAME = "Rename"
+_SETTINGS_REPLACE = "Replace key"
+# Maximum profile display-name length the desktop accepts before dispatching.
+# Mirrors the boundary's allowlist so a too-long name is caught client-side and
+# never orphans a freshly-stored credential.
+_MAX_PROFILE_NAME_CHARS = 64
+
+# Plain-language privacy note on the Settings surface. It states the local-only
+# nature of the screen in fixed prose; the explicit line break keeps the dialog
+# compact without any hard-coded geometry value.
+_SETTINGS_PRIVACY_NOTE = (
+    "Your DeepSeek API keys are stored in this computer's secure credential "
+    "store and are never displayed here.\n"
+    "This screen makes no connection to DeepSeek and never sends project data."
+)
+
+# The five Settings sections, in the fixed order the left navigation column
+# presents them. Each key maps to a fixed, honest page — never a decorative
+# control that silently does nothing.
+_SETTINGS_SECTIONS = ("provider", "appearance", "workspace", "privacy", "about")
+_SETTINGS_SECTION_LABELS = {
+    "provider": "Provider",
+    "appearance": "Appearance",
+    "workspace": "Workspace",
+    "privacy": "Privacy & Safety",
+    "about": "About",
+}
+
+# The five content destinations the labelled navigation rail pages. Document and
+# Preview are the only always-visible primary destinations; Versions opens the
+# accepted-version drawer; the Advanced group exposes the two secondary views
+# (Change Review / Validation Evidence) collapsed by default.
+_NAV_DESTINATIONS = (
+    "document",
+    "preview",
+    "versions",
+    "memory",
+    "change_review",
+    "validation_evidence",
+)
+
+# Content-stack page index for each destination; the pages are added in exactly
+# this order in ``_build_content_stack``.
+_NAV_DESTINATION_INDEX = {
+    key: index for index, key in enumerate(_NAV_DESTINATIONS)
+}
+
+# The two destinations grouped under the collapsed Advanced disclosure.
+_ADVANCED_DESTINATIONS = ("change_review", "validation_evidence")
+
+# Human-readable rail labels (one per destination, same order as _NAV_DESTINATIONS).
+_NAV_LABELS = {
+    "document": "Document",
+    "preview": "Preview",
+    "versions": "Versions",
+    "memory": "Memory",
+    "change_review": "Change Review",
+    "validation_evidence": "Validation Evidence",
+}
+
+# The Advanced disclosure label and its accessible expand/collapse names.
+_NAV_ADVANCED_LABEL = "Advanced"
+
+# The secondary sub-tabs inside the two Advanced groups. These are grouped views
+# under the Advanced disclosure, never permanent bottom tabs. The Candidate tab
+# holds the raw candidate/version metadata (never shown in the primary
+# Document/Preview workspaces).
+_CHANGE_REVIEW_TABS = (
+    ("chat", "Agent Chat"),
+    ("plan", "Plan"),
+    ("diff", "Diff"),
+    ("candidate", "Candidate"),
+)
+_VALIDATION_EVIDENCE_TABS = (
+    ("problems", "Problems"),
+    ("tests", "Tests"),
+    ("evidence", "Evidence"),
+)
+
+_PY_KEYWORDS = (
+    "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from",
+    "global", "if", "import", "in", "is", "lambda", "nonlocal", "not",
+    "or", "pass", "raise", "return", "try", "while", "with", "yield",
+    "None", "True", "False",
+)
+
+
+class _WeakCallback:
+    """A weak reference to a request callback's bound instance.
+
+    ``MainWindow._pending`` maps a correlation id to the success/error callback
+    for the in-flight request. Storing the bound methods directly forms a
+    reference cycle (window → ``_pending`` → bound method → window), which keeps
+    the window — and therefore its QProcess-backed supervisor — alive until
+    interpreter shutdown, where the QProcess child can be destroyed before any
+    Python finalizer reaps it. Wrapping each callback here keeps only a weak
+    reference to the instance, so the window is collected as soon as the caller
+    drops it and the supervisor's ``__del__`` reaps the backend promptly.
+    """
+
+    __slots__ = ("_obj_ref", "_func", "_args")
+
+    def __init__(self, callback) -> None:
+        if isinstance(callback, partial):
+            bound = callback.func
+            self._args = callback.args
+        else:
+            bound = callback
+            self._args = ()
+        self._obj_ref = weakref.ref(bound.__self__)
+        self._func = bound.__func__
+
+    def __call__(self, *call_args):
+        obj = self._obj_ref()
+        if obj is None:
+            return None
+        return self._func.__get__(obj, type(obj))(*self._args, *call_args)
+
+
+class PythonHighlighter(QSyntaxHighlighter):
+    """A minimal Python syntax highlighter whose colours come from the palette."""
+
+    def __init__(self, document, palette: style.Palette) -> None:
+        super().__init__(document)
+        self._rules: List[tuple] = []
+
+        keyword_fmt = QTextCharFormat()
+        keyword_fmt.setForeground(QColor(palette.syntax_keyword))
+        keyword_fmt.setFontWeight(QFont.Bold)
+
+        string_fmt = QTextCharFormat()
+        string_fmt.setForeground(QColor(palette.syntax_string))
+
+        comment_fmt = QTextCharFormat()
+        comment_fmt.setForeground(QColor(palette.syntax_comment))
+
+        number_fmt = QTextCharFormat()
+        number_fmt.setForeground(QColor(palette.syntax_number))
+
+        self._rules = [
+            (r"\b(?:" + "|".join(_PY_KEYWORDS) + r")\b", keyword_fmt),
+            (r"\".*?\"|'.*?'", string_fmt),
+            (r"#[^\n]*", comment_fmt),
+            (r"\b\d+(?:\.\d+)?\b", number_fmt),
+        ]
+
+    def highlightBlock(self, text: str) -> None:
+        for pattern, fmt in self._rules:
+            for match in re.finditer(pattern, text):
+                self.setFormat(match.start(), match.end() - match.start(), fmt)
+
+
+class CodeView(QPlainTextEdit):
+    """A read-only, monospaced, syntax-highlighted code/JSON view."""
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        palette: Optional[style.Palette] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._palette = palette or style.palette_for()
+        self.setReadOnly(True)
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.setFont(style.code_font())
+        self._highlighter = PythonHighlighter(self.document(), self._palette)
+        self._apply_line_height()
+
+    def setPlainText(self, text: str) -> None:
+        super().setPlainText(text)
+        self._apply_line_height()
+
+    def _apply_line_height(self) -> None:
+        """Set about 1.45 proportional line spacing across the document."""
+        fmt = QTextBlockFormat()
+        fmt.setLineHeight(
+            style.CODE_LINE_HEIGHT_PERCENT,
+            QTextBlockFormat.ProportionalHeight.value,
+        )
+        cursor = QTextCursor(self.document())
+        cursor.select(QTextCursor.Document)
+        cursor.mergeBlockFormat(fmt)
+
+    def reveal_line(self, lineno: int) -> None:
+        """Move the cursor to ``lineno`` (1-based), select the line, and scroll it into view.
+
+        Selecting the whole line gives a brief visible highlight of the anchored
+        source after a behavior-node navigation, without leaving an edit cursor
+        (the view stays read-only).
+        """
+        block = self.document().findBlockByNumber(max(0, int(lineno) - 1))
+        cursor = QTextCursor(block)
+        cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+        self.setTextCursor(cursor)
+        self.centerCursor()
+
+
+class ElidedLabel(QLabel):
+    """A :class:`QLabel` that elides its full text to fit its width.
+
+    ``text()`` returns the full text when the widget has no width yet (so
+    offscreen tests read the un-elided value); once laid out, the text is
+    elided in the middle (or the given mode) rather than wrapping or growing.
+    The complete text is always preserved un-elided in ``fullText()`` and, for
+    long paths, in the widget tooltip so it is never lost when it elides.
+    """
+
+    def __init__(
+        self,
+        text: str = "",
+        elide_mode: Qt.TextElideMode = Qt.ElideMiddle,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(text, parent)
+        self._full_text = text
+        self._elide_mode = elide_mode
+        self.setToolTip(text)
+        self._refresh()
+
+    def setText(self, text: str) -> None:
+        self._full_text = text
+        self.setToolTip(text)
+        self._refresh()
+
+    def fullText(self) -> str:
+        return self._full_text
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        if self.width() <= 0:
+            super().setText(self._full_text)
+        else:
+            super().setText(
+                self.fontMetrics().elidedText(
+                    self._full_text, self._elide_mode, self.width()
+                )
+            )
+
+
+class _HairlineHandle(QSplitterHandle):
+    """A 1 px hairline splitter handle inside a 6 px interactive hit area."""
+
+    def __init__(
+        self,
+        orientation: Qt.Orientation,
+        parent: QSplitter,
+        palette: style.Palette,
+    ) -> None:
+        super().__init__(orientation, parent)
+        self._palette = palette
+        self._hovered = False
+        self.setAttribute(Qt.WA_Hover, True)
+
+    def enterEvent(self, event) -> None:
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), Qt.transparent)
+        color = QColor(self._palette.accent if self._hovered else self._palette.border)
+        painter.setPen(QPen(color, style.SPLITTER_HAIRLINE_WIDTH))
+        if self.orientation() == Qt.Horizontal:
+            x = self.width() // 2
+            painter.drawLine(x, 0, x, self.height())
+        else:
+            y = self.height() // 2
+            painter.drawLine(0, y, self.width(), y)
+        painter.end()
+
+
+class HairlineSplitter(QSplitter):
+    """A :class:`QSplitter` whose handles are 1 px hairlines with a 6 px hit area."""
+
+    def __init__(
+        self,
+        orientation: Qt.Orientation,
+        palette: style.Palette,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(orientation, parent)
+        self._palette = palette
+        self.setHandleWidth(style.SPLITTER_HANDLE_WIDTH)
+
+    def createHandle(self) -> QSplitterHandle:
+        return _HairlineHandle(self.orientation(), self, self._palette)
+
+
+def _json_text(value: Any) -> str:
+    """Pretty-print ``value`` for display (non-ASCII rendered readably)."""
+    return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
+
+
+class _ProjectTreeView(QTreeView):
+    """A :class:`QTreeView` that toggles a folder on the *first* click.
+
+    Qt delivers a rapid second click as a ``MouseButtonDblClick`` and routes it
+    to :meth:`mouseDoubleClickEvent`, which neither emits ``clicked`` /
+    ``doubleClicked`` for the branch indicator nor toggles it. The visible
+    result is a folder that will not close until the double-click interval has
+    elapsed. Toggling on both the press and the double-click makes every click a
+    single, immediate toggle, and routing the branch press through
+    :class:`QAbstractItemView` (instead of QTreeView's native branch handler)
+    prevents a double toggle.
+    """
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._toggle_dir_at(event):
+            QAbstractItemView.mousePressEvent(self, event)
+            return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._toggle_dir_at(event):
+            QAbstractItemView.mouseDoubleClickEvent(self, event)
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def _toggle_dir_at(self, event) -> bool:
+        index = self.indexAt(event.position().toPoint())
+        if not index.isValid():
+            return False
+        item = self.model().itemFromIndex(index)
+        if item is None or item.data(Qt.UserRole + 1) != "dir":
+            return False
+        if self.isExpanded(index):
+            self.collapse(index)
+        else:
+            self.expand(index)
+        return True
+
+
+class _DocumentTreeView(_ProjectTreeView):
+    """A document-library tree that toggles a folder on the *first* click.
+
+    Mirrors :class:`_ProjectTreeView` but recognises the library's ``folder``
+    node kind (the project tree uses ``dir``). Clicking a folder toggles its
+    expansion; clicking a document emits ``clicked`` so the explorer can open it
+    with a single click.
+    """
+
+    def _toggle_dir_at(self, event) -> bool:
+        index = self.indexAt(event.position().toPoint())
+        if not index.isValid():
+            return False
+        item = self.model().itemFromIndex(index)
+        if item is None or item.data(Qt.UserRole + 1) != "folder":
+            return False
+        if self.isExpanded(index):
+            self.collapse(index)
+        else:
+            self.expand(index)
+        return True
+
+
+class MainWindow(QMainWindow):
+    """Render the desktop client (presentation-only product surface)."""
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        palette: Optional[style.Palette] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._palette = palette or style.palette_for(QApplication.instance())
+        if QApplication.instance() is not None:
+            style.apply(QApplication.instance(), self._palette)
+
+        self._root: Optional[str] = None
+        self._repository_state: str = REPOSITORY_UNVERIFIED
+        self._provider_state: str = PROVIDER_UNAVAILABLE
+        # P4.2a provider presentation state: the allowlisted model and redacted
+        # credential presence reported by the boundary, plus the fixed-height
+        # provider status region and the lazily-built Settings dialog.
+        self._provider_model: Optional[str] = None
+        self._provider_credential_present: bool = False
+        self._provider_status_label: Optional[QLabel] = None
+        self._settings_dialog: Optional[QDialog] = None
+        # P4.2a modern Settings surface: left navigation, stacked content pages,
+        # the in-surface action status line, the workspace/About value labels,
+        # and a pending flag that disables profile actions while one is in
+        # flight so a click is never an unobserved no-op.
+        self._settings_nav: Optional[QListWidget] = None
+        self._settings_stack: Optional[QStackedWidget] = None
+        self._settings_action_status: Optional[QLabel] = None
+        self._settings_workspace_value: Optional[QLabel] = None
+        self._settings_about_provider_value: Optional[QLabel] = None
+        self._profile_action_pending: bool = False
+        # Credential-profile manager state (P4.2a): the saved profiles (metadata
+        # only), the active profile id, and the per-profile card widgets kept
+        # for incremental (non-rebuilding) list updates.
+        self._profiles: List[Dict[str, Any]] = []
+        self._active_profile_id: Optional[str] = None
+        self._settings_active_combo: Optional[QComboBox] = None
+        self._add_profile_button: Optional[QPushButton] = None
+        self._settings_profiles_list: Optional[QWidget] = None
+        self._settings_profiles_layout: Optional[QVBoxLayout] = None
+        self._profile_cards: Dict[str, Dict[str, Any]] = {}
+        self._empty_state_label: Optional[QLabel] = None
+        self._validation_state: str = VALIDATION_IDLE
+        self._pending: Dict[str, tuple] = {}
+        # Pending provider-to-rule-delta interpretation state (P4.8): the
+        # content-addressed token and itemized disclosure shown before the single
+        # confirmed request, the document the token is bound to, the in-flight
+        # flag (duplicate-click suppression) and a monotonic generation that tags
+        # each prepare/interpret chain so a late or stale response for a previous
+        # document is discarded. None of these holds a credential or raw text.
+        self._pending_rule_delta_token: Optional[str] = None
+        self._pending_rule_delta_document_id: Optional[str] = None
+        self._pending_rule_delta_disclosure: str = ""
+        self._rule_delta_pending: bool = False
+        self._rule_delta_generation: int = 0
+        # The document id that currently holds a reviewable candidate, so the
+        # single contextual action reads "Update preview" rather than "Build
+        # preview" when re-interpreting the same saved requirement.
+        self._rule_delta_reviewable_for: Optional[str] = None
+        # True while Preview shows the current saved revision's latest rule-
+        # delta attempt. Completed results are retained below; navigation and a
+        # local provider-readiness refresh must never erase or relabel them.
+        self._rule_delta_result_shown: bool = False
+        # P4.8b/v9: the latest completed Build-preview attempt — the typed
+        # interpret result envelope — bound to the document and saved revision it
+        # was produced from. This is a same-session review result, separate from
+        # whether an app Candidate exists, so it survives Document/Preview/
+        # Versions navigation and provider/profile refresh. It is cleared only by
+        # a newer attempt or by opening a different document/revision (which
+        # makes it non-current, never silently relabelled as success).
+        self._rule_delta_attempt: Optional[Dict[str, Any]] = None
+        self._rule_delta_attempt_document_id: Optional[str] = None
+        self._rule_delta_attempt_revision_id: Optional[str] = None
+        # Document/version-authority surface state (P4.4): the list of documents,
+        # the currently open document's identity and base revision, the dirty
+        # flag, the accepted-version list, and the mounted widgets.
+        self._documents: List[Dict[str, Any]] = []
+
+        # Memory documents surface state (M4.3/v2b): the bounded document sets
+        # and their run rows, the generation that invalidates outstanding
+        # support actions, the resolved record currently shown, and the target
+        # buttons the claim list built.
+        self._memory_document_sets: List[Dict[str, Any]] = []
+        self._memory_runs: List[Dict[str, Any]] = []
+        self._memory_generation: int = 0
+        self._memory_detail: Optional[Dict[str, Any]] = None
+        self._memory_result_truncated: bool = False
+        self._memory_declared_origin: Optional[str] = None
+        self._memory_target_buttons: List[QPushButton] = []
+
+        # Memory query state (M4.4/v2): the active filters, the generation that
+        # invalidates outstanding search and Resume actions, the last adopted
+        # result and resume, and the target buttons each built.
+        self._memory_query_filters: List[tuple] = []
+        self._memory_query_generation: int = 0
+        self._memory_query_hit_buttons: List[QPushButton] = []
+        self._memory_search_result: Optional[Dict[str, Any]] = None
+        self._memory_resume: Optional[Dict[str, Any]] = None
+
+        # Memory review state (M4.5/v1b): the loaded effective document and
+        # history, the generation that invalidates outstanding review actions,
+        # the armed claim, the draft awaiting confirmation, and the per-attempt
+        # token that gives every append a stable source identity.
+        self._memory_review_generation: int = 0
+        self._memory_review_effective: Optional[Dict[str, Any]] = None
+        self._memory_review_history: Optional[Dict[str, Any]] = None
+        self._memory_review_view: Optional[Dict[str, Any]] = None
+        self._memory_review_document_sets: List[Dict[str, Any]] = []
+        self._memory_review_claims: Dict[Any, Any] = {}
+        self._memory_review_buttons: List[QPushButton] = []
+        self._memory_review_selected: Optional[str] = None
+        self._memory_review_draft: Optional[Dict[str, Any]] = None
+        self._memory_review_version_id: Optional[str] = None
+        self._memory_review_attempt_token: str = contract.new_correlation_id()
+
+
+        self._document_id: Optional[str] = None
+        self._document_name: Optional[str] = None
+        self._document_base_revision_id: Optional[str] = None
+        self._document_head: Dict[str, Any] = {}
+        self._document_candidate: Optional[Dict[str, Any]] = None
+        self._document_dirty: bool = False
+        self._document_loading: bool = False
+        self._document_versions: List[Dict[str, Any]] = []
+        self._current_accepted_version_id: Optional[str] = None
+        self._document_candidate_id: Optional[str] = None
+        # P4.5a: candidate request in flight (blocks a duplicate Create preview)
+        # and the last requested name (used for the name-conflict message).
+        self._document_candidate_pending: bool = False
+        self._pending_document_name: Optional[str] = None
+        self._document_title_label: Optional[QLabel] = None
+        self._document_status_label: Optional[QLabel] = None
+        self._document_empty_state: Optional[QWidget] = None
+        self._document_action_hint: Optional[QLabel] = None
+        self._document_editor: Optional[QPlainTextEdit] = None
+        self._document_result: Optional[QPlainTextEdit] = None
+        self._document_save_button: Optional[QPushButton] = None
+        self._document_candidate_button: Optional[QPushButton] = None
+        self._document_review_button: Optional[QPushButton] = None
+        self._document_adopt_button: Optional[QPushButton] = None
+        self._versions_list: Optional[QWidget] = None
+        self._versions_layout: Optional[QVBoxLayout] = None
+        self._versions_empty_label: Optional[QLabel] = None
+        # P4.5 version-bound Preview surface: the state badge, the document
+        # binding line, the read-only body, and a monotonic generation that tags
+        # each preview request so a late response for a previous document is
+        # discarded rather than overwriting the current document's preview.
+        self._preview_state_label: Optional[QLabel] = None
+        self._preview_document_label: Optional[QLabel] = None
+        self._preview_body: Optional[QPlainTextEdit] = None
+        self._preview_build_button: Optional[QPushButton] = None
+        self._preview_generation: int = 0
+        # Deferred exit intents resolved after a save completes: "edit" returns
+        # to the read-only projection; "close" closes the window.
+        self._leave_after_save: bool = False
+        # Primary navigation state (replaces the old bottom-panel tab model): the
+        # labelled rail's destination buttons keyed by destination, the current
+        # destination, the Advanced disclosure and its collapsed group, and the
+        # single content stack the destinations page.
+        self._nav_buttons: Dict[str, QPushButton] = {}
+        self._nav_destination: str = "document"
+        self._advanced_button: Optional[QPushButton] = None
+        self._nav_group_container: Optional[QWidget] = None
+        self._content_stack: Optional[QStackedWidget] = None
+        # P4.6 app-owned document library (explorer) state: the joined tree, the
+        # currently selected item (a folder or document id), a monotonic open
+        # generation that discards late open responses, a deferred target for the
+        # dirty-switch Save path, and the mounted explorer widgets.
+        self._library_folders: List[Dict[str, Any]] = []
+        self._library_documents: List[Dict[str, Any]] = []
+        self._library_selected_id: Optional[str] = None
+        self._document_open_generation: int = 0
+        self._pending_document_switch_id: Optional[str] = None
+        self._library_model: Optional[QStandardItemModel] = None
+        self._library_view: Optional[_DocumentTreeView] = None
+        self._library_trash_layout: Optional[QVBoxLayout] = None
+        self._library_trash_header: Optional[QWidget] = None
+        self._library_trash_scroll: Optional[QScrollArea] = None
+        self._library_organise_row: Optional[QWidget] = None
+        self._library_new_doc_button: Optional[QPushButton] = None
+        self._library_new_folder_button: Optional[QPushButton] = None
+        self._library_rename_button: Optional[QPushButton] = None
+        self._library_move_button: Optional[QPushButton] = None
+        self._library_trash_button: Optional[QPushButton] = None
+        self._library_item_by_id: Dict[str, QStandardItem] = {}
+
+        self._supervisor = BackendSupervisor()
+        self._supervisor.completed.connect(self._on_completed)
+        self._supervisor.failed.connect(self._on_failed)
+        self._supervisor.blocked.connect(self._on_blocked)
+        self._supervisor.unavailable.connect(self._on_unavailable)
+        # A second, short-lived supervisor owns the dedicated native credential
+        # host: the single-purpose process that presents the secure prompt in the
+        # interactive session and writes/removes the key in Credential Manager.
+        # Its success/failure responses route through the same _pending map by
+        # correlation id; only its coarse blocked/unavailable signals need their
+        # own handlers so a stuck host never leaves the action pending forever.
+        self._credential_supervisor = BackendSupervisor(
+            command=resolve_credential_host_command()
+        )
+        self._credential_supervisor.completed.connect(self._on_completed)
+        self._credential_supervisor.failed.connect(self._on_failed)
+        self._credential_supervisor.blocked.connect(self._on_credential_host_blocked)
+        self._credential_supervisor.unavailable.connect(
+            self._on_credential_host_unavailable
+        )
+        self._build_ui()
+        self._set_neutral_status()
+        # Populate the status strip once at startup so it shows the bounded
+        # baseline values (root/repo/provider/validation) rather than empty
+        # fields until the first operation writes them.
+        self._update_status()
+
+    # -- UI construction -------------------------------------------------
+
+    def _build_ui(self) -> None:
+        self.setWindowTitle("PrimaAgent")
+        self.resize(style.WINDOW_DEFAULT_WIDTH, style.WINDOW_DEFAULT_HEIGHT)
+        self.setMinimumSize(style.WINDOW_MIN_WIDTH, style.WINDOW_MIN_HEIGHT)
+
+        central = QWidget(self)
+        central.setObjectName("root")
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        root.setSpacing(style.SPACE_0)
+
+        root.addWidget(self._build_command_bar())
+
+        # Main row: the compact labelled navigation rail, then the narrow
+        # resizable/collapsible document library explorer, then the one content
+        # stack that pages Document, Preview, Versions and the Advanced group.
+        main_row = QWidget()
+        main_row.setObjectName("mainRow")
+        main_layout = QHBoxLayout(main_row)
+        main_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        main_layout.setSpacing(style.SPACE_0)
+        main_layout.addWidget(self._build_nav_rail())
+        self._library_splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        self._library_splitter.setObjectName("libraryWorkspace")
+        self._library_explorer_panel = self._build_library_explorer()
+        self._library_splitter.addWidget(self._library_explorer_panel)
+        self._library_splitter.addWidget(self._build_content_stack())
+        self._library_splitter.setCollapsible(0, True)
+        self._library_splitter.setCollapsible(1, False)
+        self._library_splitter.setStretchFactor(0, style.LIBRARY_EXPLORER_STRETCH)
+        self._library_splitter.setStretchFactor(1, style.LIBRARY_CONTENT_STRETCH)
+        self._library_splitter.setSizes(
+            [
+                style.LIBRARY_EXPLORER_DEFAULT_WIDTH,
+                style.PRIMARY_SOURCE_INITIAL_WIDTH,
+            ]
+        )
+        main_layout.addWidget(self._library_splitter, stretch=1)
+        root.addWidget(main_row, stretch=1)
+
+        root.addWidget(self._build_status_bar())
+
+
+    def _build_command_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("commandBar")
+        bar.setFixedHeight(style.COMMAND_BAR_HEIGHT)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self.settings_button = QPushButton("Settings")
+        self.settings_button.setObjectName("ghostButton")
+        self.settings_button.setAccessibleName("Settings")
+        self.settings_button.setToolTip("Settings")
+        self.settings_button.clicked.connect(self._open_settings)
+
+        self.open_project_button = QPushButton("Open Project")
+        self.open_project_button.setObjectName("secondaryButton")
+        self.open_project_button.setAccessibleName("Open Project")
+        self.open_project_button.clicked.connect(self._on_open_project)
+
+        self.scan_button = QPushButton("Run read-only scan")
+        self.scan_button.setObjectName("secondaryButton")
+        self.scan_button.setAccessibleName("Run read-only scan")
+        self.scan_button.setEnabled(False)
+        self.scan_button.setToolTip("Open a project to run a local read-only scan.")
+        self.scan_button.clicked.connect(self._on_run_scan)
+
+        # Settings / Open Project / Run read-only scan are compact peer
+        # controls: one shared height token, no per-widget sizing. There is no
+        # separate Provider status command — local readiness is refreshed
+        # automatically (startup, Settings open, credential/profile changes).
+        for button in (
+            self.settings_button,
+            self.open_project_button,
+            self.scan_button,
+        ):
+            button.setFixedHeight(style.COMMAND_BAR_BUTTON_HEIGHT)
+
+        layout.addWidget(self.open_project_button)
+        layout.addWidget(self.scan_button)
+        layout.addStretch(1)
+
+        self._provider_status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
+        self._provider_status_label.setObjectName("providerStatusChip")
+        self._provider_status_label.setAccessibleName("Provider status")
+        self._provider_status_label.setStyleSheet(
+            style.state_chip_style(self._palette, style.STATE_NEUTRAL)
+        )
+        self._provider_status_label.setMaximumWidth(style.STATUS_ROOT_MAX_WIDTH)
+        layout.addWidget(self._provider_status_label)
+        layout.addWidget(self.settings_button)
+        return bar
+
+    def _build_provider_status_region(self) -> QWidget:
+        """Build the permanently-reserved provider status strip (P4.2a).
+
+        The region is a fixed-height, single-line label mounted below the top
+        toolbar. It is always present so that writing the local provider state
+        ("Checking…" / "configured" / "not configured" / …) never reflows the
+        splitter, panels or scroll position, and never depends on the truncated
+        footer field.
+        """
+        region = QWidget()
+        region.setObjectName("providerStatus")
+        region.setFixedHeight(style.PROVIDER_STATUS_HEIGHT)
+        layout = QHBoxLayout(region)
+        layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
+        layout.setSpacing(style.SPACE_0)
+        self._provider_status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
+        self._provider_status_label.setStyleSheet(style.status_label_style(self._palette))
+        self._provider_status_label.setAccessibleName("Provider status")
+        layout.addWidget(self._provider_status_label, stretch=1)
+        return region
+
+
+    def _build_nav_rail(self) -> QWidget:
+        """Build the compact labelled navigation rail.
+
+        Document and Preview are the only always-visible primary destinations;
+        a divider separates Versions (which opens the accepted-version drawer)
+        and the collapsed Advanced disclosure, whose three grouped destinations
+        (Source & Code Map / Change Review / Validation Evidence) stay hidden
+        until it is opened. Every destination is a keyboard-focusable labelled
+        button; no emoji or icon-pack glyphs are used.
+        """
+        rail = QWidget()
+        rail.setObjectName("navRail")
+        rail.setFixedWidth(style.NAV_RAIL_WIDTH)
+        layout = QVBoxLayout(rail)
+        layout.setContentsMargins(
+            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.GAP_TIGHT
+        )
+        layout.setSpacing(style.SPACE_4)
+
+        for key in ("document", "preview"):
+            layout.addWidget(self._nav_button(_NAV_LABELS[key], key))
+
+        divider = QFrame()
+        divider.setObjectName("navRailDivider")
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFixedHeight(style.BORDER_WIDTH)
+        layout.addWidget(divider)
+
+        layout.addWidget(self._nav_button(_NAV_LABELS["versions"], "versions"))
+        layout.addWidget(self._nav_button(_NAV_LABELS["memory"], "memory"))
+
+        self._advanced_button = QPushButton(_NAV_ADVANCED_LABEL + " ▸")
+        self._advanced_button.setObjectName("navRailAdvancedButton")
+        self._advanced_button.setCheckable(True)
+        self._advanced_button.setAccessibleName("Show Advanced")
+        self._advanced_button.toggled.connect(self._on_advanced_toggled)
+        layout.addWidget(self._advanced_button)
+
+        self._nav_group_container = QWidget()
+        self._nav_group_container.setObjectName("navRailGroup")
+        group_layout = QVBoxLayout(self._nav_group_container)
+        group_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        group_layout.setSpacing(style.SPACE_4)
+        for key in _ADVANCED_DESTINATIONS:
+            group_layout.addWidget(self._nav_button(_NAV_LABELS[key], key, group=True))
+        self._nav_group_container.setVisible(False)
+        layout.addWidget(self._nav_group_container)
+
+        layout.addStretch(1)
+
+        # Initial state: Document is the selected primary destination.
+        self._nav_buttons["document"].setChecked(True)
+        return rail
+
+    def _nav_button(self, label: str, key: str, group: bool = False) -> QPushButton:
+        """Return one checkable rail button and register it by destination."""
+        button = QPushButton(label)
+        button.setObjectName("navRailGroupButton" if group else "navRailButton")
+        button.setCheckable(True)
+        button.setAccessibleName(label)
+        button.setToolTip(label)
+        button.clicked.connect(partial(self._select_destination, key))
+        self._nav_buttons[key] = button
+        return button
+
+    def _build_content_stack(self) -> QWidget:
+        """Build the single content stack that pages every destination.
+
+        Document and Preview are primary full-height workspaces; Versions is the
+        accepted-version drawer; the two Advanced pages group the retained
+        technical surfaces. Every page is built once and kept alive for the
+        window's lifetime, so no surface output is silently discarded.
+        """
+        stack = QStackedWidget()
+        stack.setObjectName("contentStack")
+
+        self._views: Dict[str, CodeView] = {}
+        self._document_page = self._build_document_workspace()
+        stack.addWidget(self._document_page)
+        stack.addWidget(self._build_preview_workspace())
+        stack.addWidget(self._build_versions_page())
+        stack.addWidget(self._build_memory_page())
+        stack.addWidget(self._build_change_review_page())
+        stack.addWidget(self._build_validation_evidence_page())
+
+        self._content_stack = stack
+        stack.setCurrentIndex(_NAV_DESTINATION_INDEX["document"])
+        return stack
+
+    def _build_library_explorer(self) -> QWidget:
+        """Build the app-owned document library explorer (P4.6).
+
+        A narrow, resizable, collapsible pane immediately right of the nav rail.
+        It shows an expandable folder/document tree, compact New document / New
+        folder / Rename / Move / Trash controls, and a recoverable Trash section
+        with per-item Restore. It is an organiser only — never a filesystem
+        browser, a source tree, a sync surface or app/prompt context.
+        """
+        panel = QWidget()
+        panel.setObjectName("libraryExplorerPanel")
+        panel.setMinimumWidth(style.LIBRARY_EXPLORER_MIN_WIDTH)
+        panel.setMaximumWidth(style.LIBRARY_EXPLORER_MAX_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_0)
+
+        header, _header_layout = self._header_row("Documents")
+        layout.addWidget(header)
+
+        # Compact create controls (always available).
+        create_row = QWidget()
+        create_layout = QHBoxLayout(create_row)
+        create_layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.SPACE_0
+        )
+        create_layout.setSpacing(style.GAP_TIGHT)
+        self._library_new_doc_button = QPushButton("New document")
+        self._library_new_doc_button.setObjectName("primaryButton")
+        self._library_new_doc_button.setAccessibleName("New document")
+        self._library_new_doc_button.clicked.connect(self._new_document)
+        self._library_new_folder_button = QPushButton("New folder")
+        self._library_new_folder_button.setObjectName("ghostButton")
+        self._library_new_folder_button.setAccessibleName("New folder")
+        self._library_new_folder_button.clicked.connect(self._new_folder)
+        create_layout.addWidget(self._library_new_doc_button)
+        create_layout.addWidget(self._library_new_folder_button)
+        create_layout.addStretch(1)
+        layout.addWidget(create_row)
+
+        # Compact organise controls (enabled only when an item is selected).
+        organise_row = QWidget()
+        organise_row.setObjectName("libraryContextActions")
+        self._library_organise_row = organise_row
+        organise_layout = QHBoxLayout(organise_row)
+        organise_layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.GAP_TIGHT
+        )
+        organise_layout.setSpacing(style.GAP_TIGHT)
+        self._library_rename_button = QPushButton("Rename")
+        self._library_rename_button.setObjectName("ghostButton")
+        self._library_move_button = QPushButton("Move")
+        self._library_move_button.setObjectName("ghostButton")
+        self._library_trash_button = QPushButton("Trash")
+        self._library_trash_button.setObjectName("dangerButton")
+        self._library_rename_button.setAccessibleName("Rename item")
+        self._library_move_button.setAccessibleName("Move item")
+        self._library_trash_button.setAccessibleName("Move item to Trash")
+        self._library_rename_button.clicked.connect(self._rename_item)
+        self._library_move_button.clicked.connect(self._move_item)
+        self._library_trash_button.clicked.connect(self._trash_item)
+        organise_layout.addWidget(self._library_rename_button)
+        organise_layout.addWidget(self._library_move_button)
+        organise_layout.addWidget(self._library_trash_button)
+        organise_layout.addStretch(1)
+        layout.addWidget(organise_row)
+
+        # The expandable folder/document tree.
+        self._library_model = QStandardItemModel()
+        self._library_model.setHorizontalHeaderLabels(["Name"])
+        self._library_view = _DocumentTreeView()
+        self._library_view.setObjectName("libraryTree")
+        self._library_view.setModel(self._library_model)
+        self._library_view.setHeaderHidden(True)
+        self._library_view.setRootIsDecorated(True)
+        self._library_view.setIndentation(style.TREE_INDENT)
+        self._library_view.setUniformRowHeights(True)
+        self._library_view.setAnimated(False)
+        self._library_view.setSortingEnabled(False)
+        self._library_view.setAlternatingRowColors(False)
+        self._library_view.setFrameShape(QFrame.NoFrame)
+        self._library_view.setAccessibleName("Document library")
+        self._library_view.clicked.connect(self._on_library_clicked)
+        layout.addWidget(self._library_view, stretch=1)
+
+        # Recoverable Trash section (no permanent deletion).
+        trash_header = QWidget()
+        self._library_trash_header = trash_header
+        trash_header_layout = QHBoxLayout(trash_header)
+        trash_header_layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.SPACE_0
+        )
+        trash_header_layout.setSpacing(style.GAP_TIGHT)
+        trash_label = QLabel("Trash")
+        trash_label.setFont(style.panel_header_font())
+        trash_label.setStyleSheet(style.secondary_text_style(self._palette))
+        trash_header_layout.addWidget(trash_label)
+        trash_header_layout.addStretch(1)
+        layout.addWidget(trash_header)
+
+        trash_list = QWidget()
+        self._library_trash_layout = QVBoxLayout(trash_list)
+        self._library_trash_layout.setContentsMargins(
+            style.INSET, style.SPACE_0, style.INSET, style.INSET
+        )
+        self._library_trash_layout.setSpacing(style.GAP_TIGHT)
+        trash_scroll = QScrollArea()
+        self._library_trash_scroll = trash_scroll
+        trash_scroll.setObjectName("libraryTrashScroll")
+        trash_scroll.setWidgetResizable(True)
+        trash_scroll.setFrameShape(QFrame.NoFrame)
+        trash_scroll.setWidget(trash_list)
+        trash_scroll.setFixedHeight(style.LIBRARY_TRASH_MAX_HEIGHT)
+        layout.addWidget(trash_scroll)
+
+        self._populate_library_tree()
+        self._update_library_actions()
+        return panel
+
+    def _build_change_review_page(self) -> QWidget:
+        """Build the Change Review group: Agent Chat, Plan and Diff.
+
+        These are grouped secondary views under the Advanced disclosure, never
+        permanent bottom tabs. The shared read-only CodeViews keep the P3.1
+        plan/diff output; Agent Chat keeps its disabled provider-unavailable
+        composer (no provider, credential, network or inference call).
+        """
+        page = QWidget()
+        page.setObjectName("changeReviewPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        layout.setSpacing(style.SPACE_0)
+
+        tabs = QTabWidget()
+        tabs.setObjectName("secondaryTabs")
+        tabs.setDocumentMode(True)
+        tabs.addTab(self._build_chat_page(), _CHANGE_REVIEW_TABS[0][1])
+        self._views["plan"] = CodeView(tabs, palette=self._palette)
+        self._views["diff"] = CodeView(tabs, palette=self._palette)
+        self._views["diff"].setPlainText(_DIFF_UNAVAILABLE)
+        self._views["diff"].setStyleSheet(style.secondary_text_style(self._palette))
+        tabs.addTab(self._views["plan"], _CHANGE_REVIEW_TABS[1][1])
+        tabs.addTab(self._views["diff"], _CHANGE_REVIEW_TABS[2][1])
+
+        # Raw candidate/version metadata lives here, behind Advanced, never in
+        # the primary Document/Preview workspaces.
+        self._document_result = QPlainTextEdit()
+        self._document_result.setObjectName("documentResult")
+        self._document_result.setReadOnly(True)
+        self._document_result.setAccessibleName("Document state")
+        tabs.addTab(self._document_result, _CHANGE_REVIEW_TABS[3][1])
+        layout.addWidget(tabs)
+        return page
+
+    def _build_validation_evidence_page(self) -> QWidget:
+        """Build the Validation Evidence group: Problems, Tests and Evidence."""
+        page = QWidget()
+        page.setObjectName("validationEvidencePage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        layout.setSpacing(style.SPACE_0)
+
+        tabs = QTabWidget()
+        tabs.setObjectName("secondaryTabs")
+        tabs.setDocumentMode(True)
+        self._views["problems"] = CodeView(tabs, palette=self._palette)
+        self._views["tests"] = CodeView(tabs, palette=self._palette)
+        self._views["evidence"] = CodeView(tabs, palette=self._palette)
+        tabs.addTab(self._views["problems"], _VALIDATION_EVIDENCE_TABS[0][1])
+        tabs.addTab(self._views["tests"], _VALIDATION_EVIDENCE_TABS[1][1])
+        tabs.addTab(self._views["evidence"], _VALIDATION_EVIDENCE_TABS[2][1])
+        layout.addWidget(tabs)
+        return page
+
+    def _build_chat_page(self) -> QWidget:
+        body = QWidget()
+        body.setObjectName("chatPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        # Message area (empty state until a provider-backed chat exists).
+        self._chat_messages = QWidget()
+        messages_layout = QVBoxLayout(self._chat_messages)
+        messages_layout.addStretch(1)
+        messages_layout.addWidget(
+            self._empty_label("No messages — provider-backed chat is unavailable.")
+        )
+        messages_layout.addStretch(1)
+        layout.addWidget(self._chat_messages, stretch=1)
+
+        # Composer + send (both disabled; no provider/credential/network call).
+        composer_row = QHBoxLayout()
+        composer_row.setSpacing(style.GAP_TIGHT)
+        self._chat_composer = QTextEdit()
+        self._chat_composer.setObjectName("chatComposer")
+        self._chat_composer.setPlaceholderText("Chat input is disabled.")
+        self._chat_composer.setEnabled(False)
+        self._chat_composer.setAccessibleName("Chat input")
+        self._chat_composer.setFixedHeight(style.CHAT_COMPOSER_HEIGHT)
+        composer_row.addWidget(self._chat_composer, stretch=1)
+
+        self._chat_send = QPushButton("Send")
+        self._chat_send.setAccessibleName("Send message")
+        self._chat_send.setEnabled(False)
+        composer_row.addWidget(self._chat_send)
+        layout.addLayout(composer_row)
+
+        notice = QLabel("Provider-backed chat is unavailable in this read-only slice.")
+        notice.setObjectName("secondary")
+        notice.setStyleSheet(style.secondary_text_style(self._palette))
+        notice.setWordWrap(True)
+        notice.setAccessibleName("Chat availability")
+        layout.addWidget(notice)
+
+        return body
+
+    def _build_preview_workspace(self) -> QWidget:
+        """Build the read-only Preview workspace (P4.5).
+
+        Presents the version-bound candidate/version preview derived by the
+        boundary: a state badge, the bound document revision, and a read-only
+        body listing the Candidate/Accepted binding, provenance, the fixed
+        quotation form/result fields, the business rules and the validation-
+        evidence summary. It has no Run action and never executes a package.
+        """
+        body = QWidget()
+        body.setObjectName("previewPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        header_layout.setSpacing(style.GAP_TIGHT)
+        title = QLabel("Preview")
+        title_font = style.ui_font()
+        title_font.setBold(True)
+        title.setFont(title_font)
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        header_layout.addWidget(title)
+
+        self._preview_state_label = QLabel("")
+        self._preview_state_label.setObjectName("previewState")
+        self._preview_state_label.setAccessibleName("Preview state")
+        header_layout.addWidget(self._preview_state_label)
+        header_layout.addStretch(1)
+        layout.addWidget(header)
+
+        self._preview_document_label = QLabel("")
+        self._preview_document_label.setObjectName("previewDocument")
+        self._preview_document_label.setAccessibleName("Preview document")
+        self._preview_document_label.setStyleSheet(
+            style.status_label_style(self._palette)
+        )
+        layout.addWidget(self._preview_document_label)
+
+        self._preview_body = QPlainTextEdit()
+        self._preview_body.setObjectName("previewBody")
+        self._preview_body.setReadOnly(True)
+        self._preview_body.setAccessibleName("Preview content")
+        layout.addWidget(self._preview_body, stretch=1)
+
+        preview_actions = QHBoxLayout()
+        preview_actions.addStretch(1)
+        self._preview_build_button = QPushButton("Build preview")
+        self._preview_build_button.setObjectName("primaryButton")
+        self._preview_build_button.setAccessibleName("Build preview")
+        self._preview_build_button.clicked.connect(self._build_preview)
+        preview_actions.addWidget(self._preview_build_button)
+        # Adoption remains a separate explicit action and now appears only in
+        # the review context rather than beside Save in the Document editor.
+        preview_actions.addWidget(self._document_adopt_button)
+        layout.addLayout(preview_actions)
+
+        self._clear_preview()
+        return body
+
+    def _build_versions_page(self) -> QWidget:
+        """Build the Versions drawer: the accepted-version history with Restore.
+
+        Each accepted version is one row with a human label and a Restore action
+        beside it; the current version is marked. Restore re-points the Accepted
+        Version without discarding the Working Document or its history.
+        """
+        body = QWidget()
+        body.setObjectName("versionsPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        title = QLabel("Accepted Versions")
+        title_font = style.ui_font()
+        title_font.setBold(True)
+        title.setFont(title_font)
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(title)
+
+        self._versions_list = QWidget()
+        self._versions_list.setObjectName("versionsList")
+        self._versions_layout = QVBoxLayout(self._versions_list)
+        self._versions_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._versions_layout.setSpacing(style.GAP_TIGHT)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("versionsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._versions_list)
+        layout.addWidget(scroll, stretch=1)
+
+        self._populate_versions_list()
+        return body
+
+    # -- Memory documents destination (M4.3/v2b) --------------------------
+
+    def _build_memory_page(self) -> QWidget:
+        """Build the read-only Memory destination.
+
+        Four read-only pages over the same bounded protocol: Documents (the
+        projected claims of one run and their exact supporting records), Search
+        (a faceted cross-run query with relevance or recorded-time ordering),
+        Resume (the evidence-linked resume) and Corrections (human revisions,
+        with the generated statement always alongside the effective one).
+
+        Every state is carried by words, so colour assists but never decides: a
+        claim's provenance, a hit's match and time status, and a resume's
+        unsupported or not-verified facts are all textual labels, and nothing
+        here claims freshness or verification the schema cannot support.
+
+        Export, backup and recovery are deliberately absent: they are offline
+        operator workflows with no route to this process, so the note below
+        states that scope rather than implying a packaging surface that does not
+        exist.
+        """
+        body = QWidget()
+        body.setObjectName("memoryPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        title = QLabel("Memory")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(title)
+
+        scope_note = QLabel(MEMORY_SCOPE_NOTE)
+        scope_note.setObjectName("memoryScopeNote")
+        scope_note.setWordWrap(True)
+        scope_note.setStyleSheet(style.memory_placeholder_style(self._palette))
+        layout.addWidget(scope_note)
+
+        self._memory_tabs = QTabWidget()
+        self._memory_tabs.setObjectName("memoryTabs")
+        self._memory_tabs.setAccessibleName("Memory pages")
+        self._memory_tabs.addTab(self._build_memory_documents_page(), "Documents")
+        self._memory_tabs.addTab(self._build_memory_search_page(), "Search")
+        self._memory_tabs.addTab(self._build_memory_resume_page(), "Resume")
+        self._memory_tabs.addTab(self._build_memory_review_page(), "Corrections")
+        layout.addWidget(self._memory_tabs, stretch=1)
+        return body
+
+    def _build_memory_documents_page(self) -> QWidget:
+        """Build the Documents page: one run's claims and their exact records.
+
+        A run selector, a document selector, the bounded claim list of the
+        selected projected document, and a read-only Evidence detail pane.
+        """
+        body = QWidget()
+        body.setObjectName("memoryDocumentsPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        header_layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_run_selector = QComboBox()
+        self._memory_run_selector.setObjectName("memoryRunSelector")
+        self._memory_run_selector.setAccessibleName("Memory run")
+        self._memory_run_selector.setToolTip(
+            "Select the recorded run whose documents are shown"
+        )
+        self._memory_run_selector.currentIndexChanged.connect(
+            self._on_memory_run_changed
+        )
+        header_layout.addWidget(self._memory_run_selector)
+
+        self._memory_document_selector = QComboBox()
+        self._memory_document_selector.setObjectName("memoryDocumentSelector")
+        self._memory_document_selector.setAccessibleName("Memory document")
+        self._memory_document_selector.setToolTip("Select the document to read")
+        self._memory_document_selector.currentIndexChanged.connect(
+            self._on_memory_document_changed
+        )
+        header_layout.addWidget(self._memory_document_selector)
+
+        self._memory_refresh_button = QPushButton("Load documents")
+        self._memory_refresh_button.setObjectName("memoryRefreshButton")
+        self._memory_refresh_button.setAccessibleName("Load Memory documents")
+        self._memory_refresh_button.setToolTip(
+            "Read the projected documents of the stored runs"
+        )
+        self._memory_refresh_button.clicked.connect(self._refresh_memory)
+        header_layout.addWidget(self._memory_refresh_button)
+
+        header_layout.addStretch(1)
+        layout.addWidget(header)
+
+        self._memory_status = QLabel("")
+        self._memory_status.setObjectName("memoryStatus")
+        self._memory_status.setWordWrap(True)
+        self._memory_status.setStyleSheet(style.memory_placeholder_style(self._palette))
+        layout.addWidget(self._memory_status)
+
+        # The selected run's snapshot and baseline state, kept visible whatever
+        # document is selected, so staleness and a baseline gap are never
+        # discoverable only by happening to open one particular document.
+        self._memory_run_status = QLabel("")
+        self._memory_run_status.setObjectName("memoryRunStatus")
+        self._memory_run_status.setWordWrap(True)
+        self._memory_run_status.setStyleSheet(
+            style.memory_claim_meta_style(self._palette)
+        )
+        layout.addWidget(self._memory_run_status)
+
+        splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        splitter.setObjectName("memorySplitter")
+        self._memory_claim_panel = self._build_memory_claim_panel()
+        self._memory_detail_panel = self._build_memory_detail_panel()
+        splitter.addWidget(self._memory_claim_panel)
+        splitter.addWidget(self._memory_detail_panel)
+        splitter.setStretchFactor(0, style.MEMORY_PANE_STRETCH)
+        splitter.setStretchFactor(1, style.MEMORY_PANE_STRETCH)
+        layout.addWidget(splitter, stretch=1)
+
+        self._clear_memory_detail(
+            "Select a claim's support reference to read its exact typed record."
+        )
+        return body
+
+    def _build_memory_claim_panel(self) -> QWidget:
+        """Build the bounded claim list pane."""
+        panel = QWidget()
+        panel.setObjectName("memoryClaimPanel")
+        panel.setMinimumWidth(style.MEMORY_CLAIM_LIST_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.GAP_TIGHT, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_claim_title = QLabel("Claims")
+        self._memory_claim_title.setFont(style.panel_header_font())
+        self._memory_claim_title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(self._memory_claim_title)
+
+        self._memory_claim_list = QWidget()
+        self._memory_claim_list.setObjectName("memoryClaimList")
+        self._memory_claim_layout = QVBoxLayout(self._memory_claim_list)
+        self._memory_claim_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_claim_layout.setSpacing(style.GAP_GROUP)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryClaimScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_claim_list)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    def _build_memory_detail_panel(self) -> QWidget:
+        """Build the read-only Evidence detail pane."""
+        panel = QWidget()
+        panel.setObjectName("memoryDetailPanel")
+        panel.setMinimumWidth(style.MEMORY_DETAIL_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.GAP_TIGHT, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_detail_title = QLabel("Evidence")
+        self._memory_detail_title.setFont(style.panel_header_font())
+        self._memory_detail_title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(self._memory_detail_title)
+
+        self._memory_detail_body = QWidget()
+        self._memory_detail_body.setObjectName("memoryDetailBody")
+        self._memory_detail_layout = QVBoxLayout(self._memory_detail_body)
+        self._memory_detail_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_detail_layout.setSpacing(style.GAP_TIGHT)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryDetailScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_detail_body)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    # -- Memory: reading documents -----------------------------------------
+
+    def _refresh_memory(self) -> None:
+        """Request the bounded projected documents of the stored runs."""
+        cid = contract.new_correlation_id()
+        request = build_get_memory_documents_request(cid)
+        self._set_status(STATE_RUNNING, "reading Memory documents")
+        if not self._send(request, self._on_memory_documents_loaded, self._on_memory_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_documents_loaded(self, result: Dict[str, Any]) -> None:
+        self._apply_memory_documents(result)
+        self._restore_operation_status()
+
+    def _on_memory_failed(self, code: str) -> None:
+        # A read that cannot be served leaves the surface honestly empty rather
+        # than showing a previous result under a new heading.
+        self._memory_document_sets = []
+        self._memory_runs = []
+        self._memory_generation += 1
+        self._memory_run_selector.clear()
+        self._memory_document_selector.clear()
+        self._clear_memory_claims()
+        self._clear_memory_detail("Memory documents are unavailable: %s" % code)
+        self._set_status(STATE_FAILED, "Memory documents are unavailable: %s" % code)
+
+    def _apply_memory_documents(
+        self, result: Dict[str, Any], origin: Optional[str] = None
+    ) -> None:
+        """Adopt a bounded document response and rebuild the selectors.
+
+        Adopting a new result set invalidates every outstanding support action:
+        the generation is bumped first, so a callback captured against the
+        previous result set can no longer open anything. ``origin`` records the
+        capture origin this result was requested with, so the run status can
+        state truthfully whether an origin was ever declared.
+        """
+        self._memory_declared_origin = origin
+        document_sets = result.get("document_sets")
+        self._memory_document_sets = (
+            [s for s in document_sets if isinstance(s, dict)]
+            if isinstance(document_sets, list)
+            else []
+        )
+        self._memory_runs = memory_run_rows(result)
+        self._memory_generation += 1
+        self._memory_result_truncated = bool(result.get("truncated"))
+
+        previous = self._memory_run_selector.currentIndex()
+        self._memory_run_selector.blockSignals(True)
+        self._memory_run_selector.clear()
+        for row in self._memory_runs:
+            self._memory_run_selector.addItem(
+                "%s — %s" % (row["state_label"], row["run_id"]), row["run_id"]
+            )
+        self._memory_run_selector.blockSignals(False)
+
+        if not self._memory_runs:
+            self._memory_document_selector.blockSignals(True)
+            self._memory_document_selector.clear()
+            self._memory_document_selector.blockSignals(False)
+            self._clear_memory_claims()
+            self._clear_memory_detail("No stored Memory run was found.")
+            return
+
+        self._memory_run_selector.setCurrentIndex(
+            previous if 0 <= previous < len(self._memory_runs) else 0
+        )
+        self._populate_memory_documents()
+
+    def _on_memory_run_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        # A run switch invalidates outstanding actions before anything else.
+        self._memory_generation += 1
+        self._populate_memory_documents()
+
+    def _on_memory_document_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        self._memory_generation += 1
+        self._populate_memory_claims()
+
+    def _current_memory_document_set(self) -> Optional[Dict[str, Any]]:
+        index = self._memory_run_selector.currentIndex()
+        if not (0 <= index < len(self._memory_document_sets)):
+            return None
+        return self._memory_document_sets[index]
+
+    def _populate_memory_documents(self) -> None:
+        """Repopulate the document selector from the selected run."""
+        document_set = self._current_memory_document_set()
+        selector = self._memory_document_selector
+        selector.blockSignals(True)
+        selector.clear()
+        if isinstance(document_set, dict):
+            documents = document_set.get("documents")
+            if isinstance(documents, dict):
+                for document_type in sorted(documents):
+                    document = documents[document_type]
+                    title = (
+                        document.get("title")
+                        if isinstance(document, dict) and document.get("title")
+                        else document_type
+                    )
+                    selector.addItem(str(title), document_type)
+        selector.blockSignals(False)
+        self._update_memory_run_status()
+        self._populate_memory_claims()
+
+    def _update_memory_run_status(self) -> None:
+        """State the selected run's snapshot and baseline facts in words.
+
+        Staleness and a missing baseline are different things and are reported
+        separately; neither is ever softened into a freshness or verification
+        claim the schema cannot support.
+        """
+        document_set = self._current_memory_document_set()
+        if not isinstance(document_set, dict):
+            self._memory_run_status.setText("")
+            return
+        run = document_set.get("run")
+        if not isinstance(run, dict):
+            self._memory_run_status.setText("")
+            return
+        stale = bool(run.get("stale"))
+        baseline = run.get("baseline")
+        baseline_status = (
+            baseline.get("status") if isinstance(baseline, dict) else "unsupported"
+        )
+        parts = [
+            "Run state: %s" % memory_state_label(run.get("state")),
+            "snapshot: %s" % ("stale" if stale else "finalized"),
+            "baseline: %s" % baseline_status,
+            # An origin is only ever a caller declaration, so an undeclared one
+            # is stated as such rather than left to be assumed.
+            "origin: %s" % memory_origin_label(self._memory_declared_origin),
+        ]
+        for reason in run.get("stale_reasons") or []:
+            parts.append(str(reason))
+        self._memory_run_status.setText(" | ".join(parts))
+
+    def _clear_memory_claims(self) -> None:
+        while self._memory_claim_layout.count():
+            item = self._memory_claim_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._memory_target_buttons = []
+
+    def _populate_memory_claims(self) -> None:
+        """Render the selected document's claims, each with its support targets."""
+        self._clear_memory_claims()
+        document_set = self._current_memory_document_set()
+        document_type = self._memory_document_selector.currentData()
+        if not isinstance(document_set, dict) or not isinstance(document_type, str):
+            self._clear_memory_detail("No document is selected.")
+            return
+
+        rows = claim_rows(document_set, document_type)
+        run = document_set.get("run") if isinstance(document_set.get("run"), dict) else {}
+        if not rows:
+            self._clear_memory_detail("This document records no claim.")
+            return
+
+        state_label = memory_state_label(run.get("state"))
+        generation = self._memory_generation
+        for row in rows:
+            self._memory_claim_layout.addWidget(
+                self._build_memory_claim_row(row, state_label, generation)
+            )
+        self._memory_claim_layout.addStretch(1)
+        self._clear_memory_detail(
+            "Select a claim's support reference to read its exact typed record."
+        )
+
+    def _build_memory_claim_row(
+        self, row: Dict[str, Any], state_label: str, generation: int
+    ) -> QWidget:
+        """Build one claim row: text, textual provenance, state and targets."""
+        container = QWidget()
+        container.setObjectName("memoryClaim")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_4)
+
+        heading = QWidget()
+        heading_layout = QHBoxLayout(heading)
+        heading_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        heading_layout.setSpacing(style.GAP_TIGHT)
+        provenance = str(row.get("provenance"))
+        chip = QLabel(row.get("provenance_label") or provenance)
+        chip.setObjectName("memoryProvenanceChip")
+        chip.setStyleSheet(style.memory_provenance_chip_style(self._palette, provenance))
+        chip.setAccessibleName("Provenance: %s" % (row.get("provenance_label") or provenance))
+        chip.setToolTip("Provenance: %s" % (row.get("provenance_label") or provenance))
+        heading_layout.addWidget(chip)
+
+        claim_id = QLabel(str(row.get("claim_id")))
+        claim_id.setObjectName("memoryClaimId")
+        claim_id.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        claim_id.setAccessibleName("Claim %s" % row.get("claim_id"))
+        heading_layout.addWidget(claim_id)
+        heading_layout.addStretch(1)
+        layout.addWidget(heading)
+
+        statement = QLabel(str(row.get("text")))
+        statement.setObjectName("memoryClaimText")
+        statement.setWordWrap(True)
+        statement.setStyleSheet(style.memory_claim_style(self._palette))
+        layout.addWidget(statement)
+
+        state = QLabel("Run state: %s" % state_label)
+        state.setObjectName("memoryClaimState")
+        state.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        state.setAccessibleName("Run state: %s" % state_label)
+        layout.addWidget(state)
+
+        for limitation in row.get("limitations") or []:
+            limit = QLabel("Limit: %s" % limitation)
+            limit.setObjectName("memoryClaimLimitation")
+            limit.setWordWrap(True)
+            limit.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(limit)
+
+        for target in row.get("targets") or []:
+            layout.addWidget(
+                self._build_memory_target_button(target, generation, str(row.get("run_id") or ""))
+            )
+        return container
+
+    def _build_memory_target_button(
+        self, target: Dict[str, Any], generation: int, run_id: str
+    ) -> QPushButton:
+        """Build one support target as an explicit, labelled action.
+
+        A resolved target is operable and names the exact typed identity it will
+        open. An unresolved target keeps its requested identity, status and
+        limitation, is disabled, and can never navigate.
+        """
+        kind_label = str(target.get("kind_label"))
+        record_id = str(target.get("record_id"))
+        resolved = bool(target.get("resolved"))
+        button = QPushButton()
+        button.setObjectName("memoryTargetButton")
+        button.setFocusPolicy(Qt.StrongFocus)
+        if resolved:
+            button.setText("Open %s" % kind_label)
+            button.setAccessibleName("Open %s %s" % (kind_label, record_id))
+            button.setToolTip("%s %s" % (kind_label, record_id))
+            button.clicked.connect(
+                partial(
+                    self._open_memory_target,
+                    generation,
+                    run_id,
+                    str(target.get("kind")),
+                    record_id,
+                )
+            )
+        else:
+            reason = str(target.get("reason") or "support is unavailable")
+            button.setText("Unavailable: %s" % kind_label)
+            button.setAccessibleName(
+                "Unavailable %s %s: %s" % (kind_label, record_id, reason)
+            )
+            button.setToolTip(
+                "Requested %s %s — %s" % (kind_label, record_id, reason)
+            )
+            button.setEnabled(False)
+        self._memory_target_buttons.append(button)
+        return button
+
+    # -- Memory: reading one exact typed record ----------------------------
+
+    def _open_memory_target(
+        self, generation: int, run_id: str, kind: str, record_id: str
+    ) -> None:
+        """Open the exact typed record a claim named, if it is still current.
+
+        The generation captured when the action was built must still match: if
+        the document, the run or the result set changed in between, the action is
+        obsolete and opens nothing rather than stale or unrelated evidence.
+        """
+        if generation != self._memory_generation:
+            return
+        if not run_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_get_memory_record_request(cid, run_id, kind, record_id)
+        if not self._send(request, partial(self._on_memory_record_loaded, generation),
+                          self._on_memory_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_record_loaded(
+        self, generation: int, result: Dict[str, Any]
+    ) -> None:
+        # A response for a superseded selection is discarded rather than shown
+        # against the current one.
+        if generation != self._memory_generation:
+            return
+        self._show_memory_detail(result)
+
+    def _clear_memory_detail(self, message: str) -> None:
+        self._memory_detail = None
+        self._memory_detail_title.setText("Evidence")
+        self._set_memory_detail_body([("", message, False)])
+
+    def _show_memory_detail(self, view: Dict[str, Any]) -> None:
+        """Render one resolved typed record through the boundary's allowlist."""
+        self._memory_detail = view
+        kind_label = memory_record_kind_label(view.get("kind"))
+        self._memory_detail_title.setText("%s detail" % kind_label)
+        rows: List[tuple] = [
+            ("Record", str(view.get("record_id")), False),
+            ("Owning run", str(view.get("run_id")), False),
+            ("Kind", kind_label, False),
+        ]
+        for row in record_detail_rows(view):
+            rows.append(
+                (
+                    str(row.get("field")),
+                    str(row.get("value")),
+                    bool(row.get("reported")),
+                )
+            )
+        self._set_memory_detail_body(rows)
+
+    def _set_memory_detail_body(self, rows: List[tuple]) -> None:
+        """Replace the Evidence detail body with labelled field rows."""
+        self._render_detail_rows(self._memory_detail_layout, rows)
+
+    def _clear_layout(self, layout) -> None:
+        """Remove and delete every widget in ``layout``."""
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _render_detail_rows(self, layout, rows: List[tuple]) -> None:
+        """Replace ``layout`` with the labelled field rows of one record.
+
+        The allowlist is applied upstream, so a row can only ever carry a field
+        and value the read boundary already returned.
+        """
+        self._clear_layout(layout)
+
+        grid_host = QWidget()
+        grid_host.setObjectName("memoryDetailGrid")
+        grid = QGridLayout(grid_host)
+        grid.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        grid.setSpacing(style.SPACE_4)
+        for index, (name, value, reported) in enumerate(rows):
+            field = QLabel(name)
+            field.setObjectName("memoryDetailField")
+            field.setStyleSheet(style.memory_detail_field_style(self._palette))
+            value_label = QLabel(value)
+            value_label.setObjectName("memoryDetailValue")
+            value_label.setWordWrap(True)
+            value_label.setStyleSheet(style.memory_detail_value_style(self._palette))
+            value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            accessible = "%s: %s" % (name, value) if name else value
+            if reported:
+                accessible = "%s (reported by the source)" % accessible
+            value_label.setAccessibleName(accessible)
+            value_label.setToolTip(accessible)
+            grid.addWidget(field, index, 0)
+            grid.addWidget(value_label, index, 1)
+        grid.setColumnStretch(1, style.MEMORY_PANE_STRETCH)
+        layout.addWidget(grid_host)
+        layout.addStretch(1)
+
+    # -- Memory: Search, Timeline and Resume (M4.4/v2) --------------------
+
+    def _build_memory_search_page(self) -> QWidget:
+        """Build the Search page: bounded filters, an order choice, results.
+
+        A facet that schema 1.0.0 cannot satisfy is offered but disabled and
+        labelled, so the gap is visible instead of hidden, and the surface never
+        builds a query it knows the model must refuse.
+        """
+        body = QWidget()
+        body.setObjectName("memorySearchPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        controls = QWidget()
+        controls.setObjectName("memorySearchControls")
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        controls_layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_facet_selector = QComboBox()
+        self._memory_facet_selector.setObjectName("memoryFacetSelector")
+        self._memory_facet_selector.setAccessibleName("Search facet")
+        self._memory_facet_selector.setToolTip("The field to filter on")
+        for facet in MEMORY_QUERY_FACETS:
+            label = memory_facet_label(facet)
+            if facet in MEMORY_UNSUPPORTED_FACETS:
+                self._memory_facet_selector.addItem("%s (unsupported)" % label, None)
+                item = self._memory_facet_selector.model().item(
+                    self._memory_facet_selector.count() - 1
+                )
+                if item is not None:
+                    item.setEnabled(False)
+                continue
+            self._memory_facet_selector.addItem(label, facet)
+        controls_layout.addWidget(self._memory_facet_selector)
+
+        self._memory_term_field = QLineEdit()
+        self._memory_term_field.setObjectName("memoryTermField")
+        self._memory_term_field.setAccessibleName("Filter term")
+        self._memory_term_field.setToolTip("Term to match in the chosen field")
+        self._memory_term_field.setPlaceholderText("Term")
+        self._memory_term_field.returnPressed.connect(self._add_memory_filter)
+        controls_layout.addWidget(self._memory_term_field)
+
+        self._memory_add_filter_button = QPushButton("Add filter")
+        self._memory_add_filter_button.setObjectName("memoryAddFilterButton")
+        self._memory_add_filter_button.setAccessibleName("Add search filter")
+        self._memory_add_filter_button.setToolTip("Add the facet and term to the query")
+        self._memory_add_filter_button.clicked.connect(self._add_memory_filter)
+        controls_layout.addWidget(self._memory_add_filter_button)
+
+        self._memory_order_selector = QComboBox()
+        self._memory_order_selector.setObjectName("memoryOrderSelector")
+        self._memory_order_selector.setAccessibleName("Result order")
+        self._memory_order_selector.setToolTip("How results are ordered")
+        for order in MEMORY_QUERY_ORDERS:
+            self._memory_order_selector.addItem(MEMORY_ORDER_LABELS[order], order)
+        self._memory_order_selector.currentIndexChanged.connect(
+            self._on_memory_order_changed
+        )
+        controls_layout.addWidget(self._memory_order_selector)
+
+        self._memory_search_button = QPushButton("Search")
+        self._memory_search_button.setObjectName("memorySearchButton")
+        self._memory_search_button.setAccessibleName("Run the Memory search")
+        self._memory_search_button.setToolTip("Run the bounded cross-run query")
+        self._memory_search_button.clicked.connect(self._run_memory_search)
+        controls_layout.addWidget(self._memory_search_button)
+
+        self._memory_clear_filters_button = QPushButton("Clear filters")
+        self._memory_clear_filters_button.setObjectName("memoryClearFiltersButton")
+        self._memory_clear_filters_button.setAccessibleName("Clear search filters")
+        self._memory_clear_filters_button.setToolTip("Remove every active filter")
+        self._memory_clear_filters_button.clicked.connect(self._clear_memory_filters)
+        controls_layout.addWidget(self._memory_clear_filters_button)
+
+        controls_layout.addStretch(1)
+        layout.addWidget(controls)
+
+        self._memory_filters_heading = QLabel("Filters: none")
+        self._memory_filters_heading.setObjectName("memoryFiltersHeading")
+        self._memory_filters_heading.setWordWrap(True)
+        self._memory_filters_heading.setStyleSheet(
+            style.memory_claim_meta_style(self._palette)
+        )
+        layout.addWidget(self._memory_filters_heading)
+
+        self._memory_filter_list = QWidget()
+        self._memory_filter_list.setObjectName("memoryFilterList")
+        self._memory_filter_layout = QVBoxLayout(self._memory_filter_list)
+        self._memory_filter_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_filter_layout.setSpacing(style.SPACE_4)
+        layout.addWidget(self._memory_filter_list)
+
+        self._memory_search_status = QLabel("")
+        self._memory_search_status.setObjectName("memorySearchStatus")
+        self._memory_search_status.setWordWrap(True)
+        self._memory_search_status.setStyleSheet(
+            style.memory_placeholder_style(self._palette)
+        )
+        layout.addWidget(self._memory_search_status)
+
+        splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        splitter.setObjectName("memorySearchSplitter")
+        splitter.addWidget(self._build_memory_results_panel())
+        splitter.addWidget(self._build_memory_detail_pane("_memory_query_detail"))
+        splitter.setStretchFactor(0, style.MEMORY_PANE_STRETCH)
+        splitter.setStretchFactor(1, style.MEMORY_PANE_STRETCH)
+        layout.addWidget(splitter, stretch=1)
+
+        self._clear_memory_detail_pane(
+            "_memory_query_detail",
+            "Open a result's evidence to read its exact typed record.",
+        )
+        return body
+
+    def _build_memory_results_panel(self) -> QWidget:
+        """Build the bounded results panel used by Search and Timeline."""
+        panel = QWidget()
+        panel.setObjectName("memoryResultsPanel")
+        panel.setMinimumWidth(style.MEMORY_CLAIM_LIST_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.GAP_TIGHT, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_results_container = QWidget()
+        self._memory_results_container.setObjectName("memoryResults")
+        self._memory_results_layout = QVBoxLayout(self._memory_results_container)
+        self._memory_results_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_results_layout.setSpacing(style.GAP_GROUP)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryResultsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_results_container)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    def _build_memory_detail_pane(self, prefix: str) -> QWidget:
+        """Build a read-only Evidence detail pane registered under ``prefix``.
+
+        Search and Resume each get their own pane, so a record opened from one
+        page never renders into the other page's surface.
+        """
+        panel = QWidget()
+        panel.setObjectName("memoryDetailPane")
+        panel.setMinimumWidth(style.MEMORY_DETAIL_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.GAP_TIGHT, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        title = QLabel("Evidence")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(title)
+
+        body = QWidget()
+        body.setObjectName("memoryDetailBody")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        body_layout.setSpacing(style.GAP_TIGHT)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryDetailScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(body)
+        layout.addWidget(scroll, stretch=1)
+
+        setattr(self, prefix + "_title", title)
+        setattr(self, prefix + "_body", body)
+        setattr(self, prefix + "_layout", body_layout)
+        # The resolved view currently shown in this pane, or ``None``.
+        setattr(self, prefix, None)
+        return panel
+
+    def _build_memory_resume_page(self) -> QWidget:
+        """Build the Resume page: the evidence-linked resume, composed."""
+        body = QWidget()
+        body.setObjectName("memoryResumePanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        controls = QWidget()
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        controls_layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_resume_button = QPushButton("Load resume")
+        self._memory_resume_button.setObjectName("memoryResumeButton")
+        self._memory_resume_button.setAccessibleName("Load the Memory resume")
+        self._memory_resume_button.setToolTip(
+            "Compose the resume from the recorded runs"
+        )
+        self._memory_resume_button.clicked.connect(self._refresh_memory_resume)
+        controls_layout.addWidget(self._memory_resume_button)
+        controls_layout.addStretch(1)
+        layout.addWidget(controls)
+
+        self._memory_resume_status = QLabel("")
+        self._memory_resume_status.setObjectName("memoryResumeStatus")
+        self._memory_resume_status.setWordWrap(True)
+        self._memory_resume_status.setStyleSheet(
+            style.memory_placeholder_style(self._palette)
+        )
+        layout.addWidget(self._memory_resume_status)
+
+        splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        splitter.setObjectName("memoryResumeSplitter")
+        splitter.addWidget(self._build_memory_resume_body_panel())
+        splitter.addWidget(self._build_memory_detail_pane("_memory_resume_detail"))
+        splitter.setStretchFactor(0, style.MEMORY_PANE_STRETCH)
+        splitter.setStretchFactor(1, style.MEMORY_PANE_STRETCH)
+        layout.addWidget(splitter, stretch=1)
+
+        self._clear_memory_resume(
+            "Load the resume to see completed work, blockers and next actions."
+        )
+        self._clear_memory_detail_pane(
+            "_memory_resume_detail",
+            "Open a resume entry to read its exact typed record.",
+        )
+        return body
+
+    def _build_memory_resume_body_panel(self) -> QWidget:
+        """Build the scrolling Resume body."""
+        panel = QWidget()
+        panel.setObjectName("memoryResumeBodyPanel")
+        panel.setMinimumWidth(style.MEMORY_CLAIM_LIST_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.GAP_TIGHT, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_resume_body = QWidget()
+        self._memory_resume_body.setObjectName("memoryResumeBody")
+        self._memory_resume_layout = QVBoxLayout(self._memory_resume_body)
+        self._memory_resume_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_resume_layout.setSpacing(style.GAP_GROUP)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryResumeScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_resume_body)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    # -- Memory review: corrections, confirmation and history (M4.5/v1b) ---
+
+    def _build_memory_review_page(self) -> QWidget:
+        """Build the Corrections page: comparison, editor, conflicts and history.
+
+        Generated and effective statements are shown together, with the generated
+        one always present, so a human correction never hides what the projection
+        said. The editor is what arms a choice: a conflict's choices populate the
+        editor rather than appending immediately, and every append is an explicit
+        Draft or Confirm.
+        """
+        body = QWidget()
+        body.setObjectName("memoryReviewPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        controls = QWidget()
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        controls_layout.setSpacing(style.GAP_TIGHT)
+
+        self._memory_review_run_selector = QComboBox()
+        self._memory_review_run_selector.setObjectName("memoryReviewRunSelector")
+        self._memory_review_run_selector.setAccessibleName("Correction run")
+        self._memory_review_run_selector.setToolTip(
+            "The recorded run whose corrections are reviewed"
+        )
+        self._memory_review_run_selector.currentIndexChanged.connect(
+            self._on_memory_review_context_changed
+        )
+        controls_layout.addWidget(self._memory_review_run_selector)
+
+        self._memory_review_document_selector = QComboBox()
+        self._memory_review_document_selector.setObjectName("memoryReviewDocumentSelector")
+        self._memory_review_document_selector.setAccessibleName("Correction document")
+        self._memory_review_document_selector.setToolTip(
+            "The document whose claims are corrected"
+        )
+        self._memory_review_document_selector.currentIndexChanged.connect(
+            self._on_memory_review_context_changed
+        )
+        controls_layout.addWidget(self._memory_review_document_selector)
+
+        self._memory_review_load_button = QPushButton("Load review")
+        self._memory_review_load_button.setObjectName("memoryReviewLoadButton")
+        self._memory_review_load_button.setAccessibleName(
+            "Load the correction review"
+        )
+        self._memory_review_load_button.setToolTip(
+            "Read the effective document and its history"
+        )
+        self._memory_review_load_button.clicked.connect(self._refresh_memory_review)
+        controls_layout.addWidget(self._memory_review_load_button)
+
+        self._memory_review_reload_button = QPushButton("Reload")
+        self._memory_review_reload_button.setObjectName("memoryReviewReloadButton")
+        self._memory_review_reload_button.setAccessibleName("Reload the review")
+        self._memory_review_reload_button.setToolTip(
+            "Re-read the effective document and its history"
+        )
+        self._memory_review_reload_button.clicked.connect(self._refresh_memory_review)
+        controls_layout.addWidget(self._memory_review_reload_button)
+
+        controls_layout.addStretch(1)
+        layout.addWidget(controls)
+
+        self._memory_review_status = QLabel("")
+        self._memory_review_status.setObjectName("memoryReviewStatus")
+        self._memory_review_status.setWordWrap(True)
+        self._memory_review_status.setStyleSheet(
+            style.memory_placeholder_style(self._palette)
+        )
+        layout.addWidget(self._memory_review_status)
+
+        splitter = HairlineSplitter(Qt.Horizontal, self._palette)
+        splitter.setObjectName("memoryReviewSplitter")
+        splitter.addWidget(self._build_memory_review_list_panel())
+        splitter.addWidget(self._build_memory_review_side_panel())
+        splitter.setStretchFactor(0, style.MEMORY_PANE_STRETCH)
+        splitter.setStretchFactor(1, style.MEMORY_PANE_STRETCH)
+        layout.addWidget(splitter, stretch=1)
+
+        self._clear_memory_review("Load a review to compare generated and effective claims.")
+        return body
+
+    def _build_memory_review_list_panel(self) -> QWidget:
+        """Build the comparison panel, conflicts included."""
+        panel = QWidget()
+        panel.setObjectName("memoryReviewListPanel")
+        panel.setMinimumWidth(style.MEMORY_CLAIM_LIST_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.GAP_TIGHT, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        heading = QLabel("Generated and effective")
+        heading.setObjectName("memoryReviewHeading")
+        heading.setFont(style.panel_header_font())
+        heading.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(heading)
+
+        self._memory_review_list = QWidget()
+        self._memory_review_list.setObjectName("memoryReviewList")
+        self._memory_review_layout = QVBoxLayout(self._memory_review_list)
+        self._memory_review_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_review_layout.setSpacing(style.GAP_GROUP)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryReviewScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_review_list)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    def _build_memory_review_side_panel(self) -> QWidget:
+        """Build the editor and history panel."""
+        panel = QWidget()
+        panel.setObjectName("memoryReviewSidePanel")
+        panel.setMinimumWidth(style.MEMORY_DETAIL_MIN_WIDTH)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(
+            style.GAP_TIGHT, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        editor_heading = QLabel("Correction")
+        editor_heading.setObjectName("memoryReviewHeading")
+        editor_heading.setFont(style.panel_header_font())
+        editor_heading.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(editor_heading)
+
+        self._memory_review_selection = QLabel("No claim selected.")
+        self._memory_review_selection.setObjectName("memoryReviewSelection")
+        self._memory_review_selection.setWordWrap(True)
+        self._memory_review_selection.setStyleSheet(
+            style.memory_claim_meta_style(self._palette)
+        )
+        layout.addWidget(self._memory_review_selection)
+
+        self._memory_review_operation = QComboBox()
+        self._memory_review_operation.setObjectName("memoryReviewOperation")
+        self._memory_review_operation.setAccessibleName("Correction operation")
+        self._memory_review_operation.setToolTip("What this correction does")
+        for operation in MEMORY_REVIEW_OPERATIONS:
+            self._memory_review_operation.addItem(
+                MEMORY_OPERATION_LABELS[operation], operation
+            )
+        self._memory_review_operation.currentIndexChanged.connect(
+            self._on_memory_review_operation_changed
+        )
+        layout.addWidget(self._memory_review_operation)
+
+        self._memory_review_text = QPlainTextEdit()
+        self._memory_review_text.setObjectName("memoryReviewText")
+        self._memory_review_text.setAccessibleName("Correction text")
+        self._memory_review_text.setToolTip(
+            "The human text a merge or supersede revision carries"
+        )
+        self._memory_review_text.setPlaceholderText("Correction text")
+        layout.addWidget(self._memory_review_text)
+
+        self._memory_review_actor = QLineEdit()
+        self._memory_review_actor.setObjectName("memoryReviewActor")
+        self._memory_review_actor.setAccessibleName("Correction author")
+        self._memory_review_actor.setToolTip("Who is making this correction")
+        self._memory_review_actor.setPlaceholderText("Author")
+        layout.addWidget(self._memory_review_actor)
+
+        buttons = QWidget()
+        buttons_layout = QHBoxLayout(buttons)
+        buttons_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        buttons_layout.setSpacing(style.GAP_TIGHT)
+        self._memory_review_draft_button = QPushButton("Save draft")
+        self._memory_review_draft_button.setObjectName("memoryReviewDraftButton")
+        self._memory_review_draft_button.setAccessibleName("Save the correction as a draft")
+        self._memory_review_draft_button.setToolTip(
+            "Append a draft revision; a draft is retained and changes nothing"
+        )
+        self._memory_review_draft_button.clicked.connect(self._save_memory_draft)
+        buttons_layout.addWidget(self._memory_review_draft_button)
+
+        self._memory_review_confirm_button = QPushButton("Confirm")
+        self._memory_review_confirm_button.setObjectName("memoryReviewConfirmButton")
+        self._memory_review_confirm_button.setAccessibleName("Confirm the correction")
+        self._memory_review_confirm_button.setToolTip(
+            "Append a confirmed revision; confirming a draft appends a linked successor"
+        )
+        self._memory_review_confirm_button.clicked.connect(
+            self._confirm_memory_correction
+        )
+        buttons_layout.addWidget(self._memory_review_confirm_button)
+
+        self._memory_review_clear_button = QPushButton("Clear")
+        self._memory_review_clear_button.setObjectName("memoryReviewClearButton")
+        self._memory_review_clear_button.setAccessibleName("Clear the correction editor")
+        self._memory_review_clear_button.setToolTip("Discard the composition, not history")
+        self._memory_review_clear_button.clicked.connect(self._clear_memory_editor)
+        buttons_layout.addWidget(self._memory_review_clear_button)
+        layout.addWidget(buttons)
+
+        self._memory_review_editor_status = QLabel("")
+        self._memory_review_editor_status.setObjectName("memoryReviewEditorStatus")
+        self._memory_review_editor_status.setWordWrap(True)
+        self._memory_review_editor_status.setStyleSheet(
+            style.memory_claim_meta_style(self._palette)
+        )
+        layout.addWidget(self._memory_review_editor_status)
+
+        history_heading = QLabel("History")
+        history_heading.setObjectName("memoryReviewHeading")
+        history_heading.setFont(style.panel_header_font())
+        history_heading.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(history_heading)
+
+        self._memory_review_history_body = QWidget()
+        self._memory_review_history_body.setObjectName("memoryReviewHistoryBody")
+        self._memory_review_history_layout = QVBoxLayout(
+            self._memory_review_history_body
+        )
+        self._memory_review_history_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._memory_review_history_layout.setSpacing(style.SPACE_4)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("memoryReviewHistoryScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._memory_review_history_body)
+        layout.addWidget(scroll, stretch=1)
+        return panel
+
+    # -- Memory review: loading --------------------------------------------
+
+    def _refresh_memory_review(self) -> None:
+        """Load the review: documents if needed, then effective, then history."""
+        self._memory_review_generation += 1
+        generation = self._memory_review_generation
+        run_id = self._memory_review_run_selector.currentData()
+        document_type = self._memory_review_document_selector.currentData()
+        if isinstance(run_id, str) and isinstance(document_type, str):
+            self._request_memory_effective(generation, run_id, document_type)
+            return
+        cid = contract.new_correlation_id()
+        request = build_get_memory_documents_request(cid)
+        self._set_status(STATE_RUNNING, "reading Memory documents")
+        if not self._send(
+            request,
+            partial(self._on_memory_review_documents, generation),
+            partial(self._on_memory_review_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_review_documents(
+        self, generation: int, result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_review_generation:
+            return
+        document_sets = [
+            s for s in (result.get("document_sets") or []) if isinstance(s, dict)
+        ]
+        self._memory_review_document_sets = document_sets
+        selector = self._memory_review_run_selector
+        previous = selector.currentIndex()
+        selector.blockSignals(True)
+        selector.clear()
+        for document_set in document_sets:
+            run = document_set.get("run") if isinstance(document_set.get("run"), dict) else {}
+            selector.addItem(
+                "%s — %s" % (memory_state_label(run.get("state")), run.get("run_id")),
+                run.get("run_id"),
+            )
+        selector.blockSignals(False)
+        if not document_sets:
+            self._clear_memory_review("No stored Memory run was found.")
+            return
+        selector.setCurrentIndex(previous if 0 <= previous < len(document_sets) else 0)
+        self._populate_memory_review_documents(generation)
+
+    def _populate_memory_review_documents(self, generation: int) -> None:
+        index = self._memory_review_run_selector.currentIndex()
+        document_set = (
+            self._memory_review_document_sets[index]
+            if 0 <= index < len(self._memory_review_document_sets)
+            else None
+        )
+        selector = self._memory_review_document_selector
+        selector.blockSignals(True)
+        selector.clear()
+        if isinstance(document_set, dict):
+            documents = document_set.get("documents")
+            if isinstance(documents, dict):
+                for document_type in sorted(documents):
+                    document = documents[document_type]
+                    title = (
+                        document.get("title")
+                        if isinstance(document, dict) and document.get("title")
+                        else document_type
+                    )
+                    selector.addItem(str(title), document_type)
+        selector.blockSignals(False)
+
+        run_id = self._memory_review_run_selector.currentData()
+        document_type = selector.currentData()
+        if isinstance(run_id, str) and isinstance(document_type, str):
+            self._request_memory_effective(generation, run_id, document_type)
+        else:
+            self._clear_memory_review("No document is available in this run.")
+
+    def _request_memory_effective(
+        self, generation: int, run_id: str, document_type: str
+    ) -> None:
+        cid = contract.new_correlation_id()
+        request = build_memory_effective_request(cid, run_id, document_type)
+        self._set_status(STATE_RUNNING, "resolving the effective document")
+        if not self._send(
+            request,
+            partial(self._on_memory_review_effective, generation, run_id, document_type),
+            partial(self._on_memory_review_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_review_effective(
+        self,
+        generation: int,
+        run_id: str,
+        document_type: str,
+        result: Dict[str, Any],
+    ) -> None:
+        if generation != self._memory_review_generation:
+            return
+        self._memory_review_effective = result
+        cid = contract.new_correlation_id()
+        request = build_memory_history_request(cid, run_id, document_type)
+        if not self._send(
+            request,
+            partial(self._on_memory_review_history, generation, result),
+            partial(self._on_memory_review_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_review_history(
+        self, generation: int, effective: Dict[str, Any], result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_review_generation:
+            return
+        self._memory_review_history = result
+        self._populate_memory_review()
+        self._restore_operation_status()
+
+    def _on_memory_review_failed(self, generation: int, code: str) -> None:
+        if generation != self._memory_review_generation:
+            return
+        message = "The correction review is unavailable: %s" % code
+        self._memory_review_status.setText(message)
+        self._set_status(STATE_FAILED, message)
+
+    def _on_memory_review_context_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        # The run or document changed: every outstanding action is obsolete.
+        self._memory_review_generation += 1
+        self._clear_memory_editor()
+        self._clear_layout(self._memory_review_layout)
+        self._clear_layout(self._memory_review_history_layout)
+        self._clear_memory_review("The context changed: load the review again.")
+
+    def _clear_memory_review(self, message: str) -> None:
+        self._memory_review_view = None
+        self._memory_review_effective = None
+        self._memory_review_history = None
+        self._memory_review_version_id = None
+        self._memory_review_claims = {}
+        self._memory_review_buttons = []
+        self._clear_layout(self._memory_review_layout)
+        self._clear_layout(self._memory_review_history_layout)
+        placeholder = QLabel(message)
+        placeholder.setObjectName("memoryReviewPlaceholder")
+        placeholder.setWordWrap(True)
+        placeholder.setStyleSheet(style.memory_placeholder_style(self._palette))
+        self._memory_review_layout.addWidget(placeholder)
+        self._memory_review_status.setText(message)
+
+    # -- Memory review: rendering ------------------------------------------
+
+    def _populate_memory_review(self) -> None:
+        """Render the comparison, conflicts and history of one loaded review."""
+        view = memory_review_view(
+            self._memory_review_effective, self._memory_review_history
+        )
+        self._memory_review_view = view
+        generation = self._memory_review_generation
+        claims = [c for c in view.get("claims") or [] if isinstance(c, dict)]
+        conflicts = [c for c in view.get("conflicts") or [] if isinstance(c, dict)]
+        versions = view.get("generated_versions") or []
+        self._memory_review_claims = {
+            claim.get("claim_id"): claim for claim in claims if claim.get("claim_id")
+        }
+        self._memory_review_version_id = (view.get("generated") or {}).get("version_id")
+
+        self._clear_layout(self._memory_review_layout)
+        self._memory_review_buttons = []
+        for conflict in conflicts:
+            self._memory_review_layout.addWidget(
+                self._build_memory_review_conflict_row(conflict, generation)
+            )
+        for claim in claims:
+            self._memory_review_layout.addWidget(
+                self._build_memory_review_claim_row(claim, generation)
+            )
+        if not claims and not conflicts:
+            self._clear_memory_review("This document records no claim to review.")
+            return
+        self._memory_review_status.setText(
+            "%d claim(s), %d unresolved conflict(s), %d generated version(s)."
+            % (len(claims), len(conflicts), len(versions))
+        )
+        self._populate_memory_review_history(view, generation)
+        self._update_memory_review_selection()
+
+    def _build_memory_review_claim_row(
+        self, claim: Dict[str, Any], generation: int
+    ) -> QWidget:
+        """Build one claim's comparison row, generated statement always shown."""
+        container = QWidget()
+        container.setObjectName("memoryReviewClaim")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_4)
+
+        identity = QLabel(str(claim.get("claim_id")))
+        identity.setObjectName("memoryReviewClaimId")
+        identity.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        identity.setAccessibleName("Claim %s" % claim.get("claim_id"))
+        layout.addWidget(identity)
+
+        generated = QLabel("Generated: %s" % claim.get("generated_statement"))
+        generated.setObjectName("memoryReviewGenerated")
+        generated.setWordWrap(True)
+        generated.setStyleSheet(style.memory_claim_style(self._palette))
+        layout.addWidget(generated)
+
+        if claim.get("changed"):
+            effective = QLabel("Effective: %s" % claim.get("effective_statement"))
+            effective.setObjectName("memoryReviewEffective")
+            effective.setWordWrap(True)
+            effective.setStyleSheet(style.memory_claim_style(self._palette))
+            layout.addWidget(effective)
+            state = QLabel(
+                "Human correction applied — provenance %s, generated provenance %s"
+                % (claim.get("effective_provenance_label"),
+                   claim.get("generated_provenance_label"))
+            )
+            state.setObjectName("memoryReviewOverlay")
+            state.setWordWrap(True)
+            state.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(state)
+
+        if claim.get("rejected"):
+            rejected = QLabel("Rejected by a human revision — the generated claim above is retained.")
+            rejected.setObjectName("memoryReviewRejected")
+            rejected.setWordWrap(True)
+            rejected.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(rejected)
+
+        overlay = claim.get("overlay")
+        if isinstance(overlay, dict):
+            meta = QLabel(
+                "Last revision: %s (%s)%s"
+                % (
+                    memory_operation_label(overlay.get("operation")),
+                    memory_correction_state_label(overlay.get("state")),
+                    " by %s" % overlay.get("actor") if overlay.get("actor") else "",
+                )
+            )
+            meta.setObjectName("memoryReviewOverlayMeta")
+            meta.setWordWrap(True)
+            meta.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(meta)
+
+        layout.addWidget(
+            self._build_memory_review_button(
+                "Correct this claim",
+                "correct:%s" % claim.get("claim_id"),
+                partial(self._select_memory_review_claim, claim.get("claim_id"), None),
+                "Arm the editor for claim %s" % claim.get("claim_id"),
+                generation,
+            )
+        )
+        return container
+
+    def _build_memory_review_conflict_row(
+        self, conflict: Dict[str, Any], generation: int
+    ) -> QWidget:
+        """Build one conflict row with only protocol-representable choices."""
+        container = QWidget()
+        container.setObjectName("memoryReviewConflict")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_4)
+
+        heading = QLabel(conflict.get("label") or "Unresolved conflict")
+        heading.setObjectName("memoryReviewConflictHeading")
+        heading.setStyleSheet(style.memory_claim_style(self._palette))
+        heading.setAccessibleName("Unresolved conflict")
+        layout.addWidget(heading)
+
+        target = conflict.get("target") if isinstance(conflict.get("target"), dict) else {}
+        detail = QLabel(
+            "Target %s — %s" % (target.get("claim_id"), conflict.get("reason"))
+        )
+        detail.setObjectName("memoryReviewConflictDetail")
+        detail.setWordWrap(True)
+        detail.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        layout.addWidget(detail)
+
+        prior = QLabel(
+            "Revision %s (%s) could not bind."
+            % (
+                conflict.get("correction_id"),
+                memory_correction_state_label(conflict.get("state")),
+            )
+        )
+        prior.setObjectName("memoryReviewConflictPrior")
+        prior.setWordWrap(True)
+        prior.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        layout.addWidget(prior)
+
+        for choice in conflict.get("choices") or []:
+            operation = choice.get("operation")
+            button = self._build_memory_review_button(
+                choice.get("label"),
+                "choice:%s:%s" % (target.get("claim_id"), operation),
+                partial(
+                    self._select_memory_review_claim, target.get("claim_id"), operation
+                ),
+                "Resolve with %s for claim %s" % (operation, target.get("claim_id")),
+                generation,
+            )
+            if not choice.get("enabled", True):
+                button.setEnabled(False)
+                button.setToolTip(
+                    "Requested %s %s — %s"
+                    % (operation, target.get("claim_id"), choice.get("reason"))
+                )
+                button.setAccessibleName(
+                    "Unavailable %s for %s: %s"
+                    % (operation, target.get("claim_id"), choice.get("reason"))
+                )
+            layout.addWidget(button)
+        return container
+
+    def _build_memory_review_button(
+        self,
+        label: Any,
+        key: str,
+        callback,
+        accessible: str,
+        generation: int,
+    ) -> QPushButton:
+        """Build one review action bound to the generation it was built under."""
+        button = QPushButton(str(label))
+        button.setObjectName("memoryReviewButton")
+        button.setFocusPolicy(Qt.StrongFocus)
+        button.setAccessibleName(accessible)
+        button.setToolTip(accessible)
+        button.clicked.connect(partial(self._guard_memory_review_action, generation, callback))
+        self._memory_review_buttons.append(button)
+        return button
+
+    def _guard_memory_review_action(self, generation: int, callback) -> None:
+        """Run a review action only while the screen it belongs to is current."""
+        if generation != self._memory_review_generation:
+            return
+        callback()
+
+    def _populate_memory_review_history(
+        self, view: Dict[str, Any], generation: int
+    ) -> None:
+        """Render the immutable generated versions and every correction state."""
+        self._clear_layout(self._memory_review_history_layout)
+        versions = view.get("generated_versions") or []
+        corrections = view.get("corrections") or []
+        if not versions and not corrections:
+            placeholder = QLabel("No history is recorded for this document yet.")
+            placeholder.setObjectName("memoryReviewHistoryEmpty")
+            placeholder.setWordWrap(True)
+            placeholder.setStyleSheet(style.memory_placeholder_style(self._palette))
+            self._memory_review_history_layout.addWidget(placeholder)
+            return
+        for version in versions:
+            row = QLabel(
+                "Generated revision %s (immutable) — %s"
+                % (version.get("revision"), version.get("version_id"))
+            )
+            row.setObjectName("memoryReviewVersion")
+            row.setWordWrap(True)
+            row.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            row.setAccessibleName(
+                "Generated revision %s, immutable" % version.get("revision")
+            )
+            self._memory_review_history_layout.addWidget(row)
+        for correction in corrections:
+            authority = correction.get("authority_label")
+            text = "%s — %s (%s)" % (
+                memory_operation_label(correction.get("operation")),
+                correction.get("state_label"),
+                authority,
+            )
+            row = QLabel(text)
+            row.setObjectName("memoryReviewCorrection")
+            row.setWordWrap(True)
+            row.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            row.setAccessibleName(text)
+            self._memory_review_history_layout.addWidget(row)
+            if correction.get("text"):
+                body = QLabel("Text: %s" % correction.get("text"))
+                body.setObjectName("memoryReviewCorrectionText")
+                body.setWordWrap(True)
+                body.setStyleSheet(style.memory_claim_style(self._palette))
+                self._memory_review_history_layout.addWidget(body)
+            if correction.get("supersedes"):
+                links = QLabel(
+                    "Supersedes: %s" % ", ".join(correction.get("supersedes") or [])
+                )
+                links.setObjectName("memoryReviewSupersedes")
+                links.setWordWrap(True)
+                links.setStyleSheet(style.memory_claim_meta_style(self._palette))
+                self._memory_review_history_layout.addWidget(links)
+        for limitation in view.get("limitations") or []:
+            limit = QLabel("Limit: %s" % limitation)
+            limit.setObjectName("memoryReviewLimitation")
+            limit.setWordWrap(True)
+            limit.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            self._memory_review_history_layout.addWidget(limit)
+
+    # -- Memory review: composing and appending ----------------------------
+
+    def _select_memory_review_claim(
+        self, claim_id: Any, operation: Optional[str] = None
+    ) -> None:
+        """Arm the editor for one exact claim, optionally with an operation."""
+        if not isinstance(claim_id, str) or not claim_id:
+            return
+        self._memory_review_selected = claim_id
+        if operation is not None:
+            for index in range(self._memory_review_operation.count()):
+                if self._memory_review_operation.itemData(index) == operation:
+                    self._memory_review_operation.blockSignals(True)
+                    self._memory_review_operation.setCurrentIndex(index)
+                    self._memory_review_operation.blockSignals(False)
+                    break
+        self._memory_review_text.setFocus()
+        self._on_memory_review_operation_changed(
+            self._memory_review_operation.currentIndex()
+        )
+        self._update_memory_review_selection()
+
+    def _on_memory_review_operation_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        operation = self._memory_review_operation.currentData()
+        # Only a merge or a supersede carries replacement text, so the editor
+        # says so rather than accepting words it would refuse to send.
+        self._memory_review_text.setEnabled(operation in ("merge", "supersede"))
+        self._update_memory_review_selection()
+
+    def _update_memory_review_selection(self) -> None:
+        claim_id = getattr(self, "_memory_review_selected", None)
+        if not claim_id:
+            self._memory_review_selection.setText(
+                "No claim selected. Choose a claim to correct."
+            )
+            return
+        self._memory_review_selection.setText(
+            "Correcting %s against generated version %s"
+            % (claim_id, self._memory_review_version_id)
+        )
+        self._memory_review_selection.setAccessibleName(
+            "Correcting claim %s against generated version %s"
+            % (claim_id, self._memory_review_version_id)
+        )
+
+    def _clear_memory_editor(self) -> None:
+        self._memory_review_selected = None
+        self._memory_review_draft = None
+        self._memory_review_text.clear()
+        self._memory_review_editor_status.setText("")
+        self._update_memory_review_selection()
+
+    def _memory_review_payload(self, fallback_text: Any = None) -> Optional[Dict[str, Any]]:
+        """Return the bounded append payload, or explain why it cannot be built."""
+        claim_id = getattr(self, "_memory_review_selected", None)
+        run_id = self._memory_review_run_selector.currentData()
+        document_type = self._memory_review_document_selector.currentData()
+        if not isinstance(claim_id, str) or claim_id not in self._memory_review_claims:
+            self._memory_review_editor_status.setText(
+                "Choose a claim that is present in the current document."
+            )
+            return None
+        if not isinstance(run_id, str) or not isinstance(document_type, str):
+            self._memory_review_editor_status.setText(
+                "Load a review before composing a correction."
+            )
+            return None
+        operation = self._memory_review_operation.currentData()
+        text = self._memory_review_text.toPlainText().strip()
+        if not text and isinstance(fallback_text, str):
+            # Confirming a draft reuses the text the draft already carries: the
+            # editor was emptied when that draft was accepted, and a successor
+            # must say the same thing.
+            text = fallback_text
+        if operation in ("merge", "supersede") and not text:
+            self._memory_review_editor_status.setText(
+                "A %s revision needs replacement text." % operation
+            )
+            return None
+        return {
+            "run_id": run_id,
+            "document_type": document_type,
+            "operation": operation,
+            "claim_id": claim_id,
+            "text": text or None,
+            "actor": self._memory_review_actor.text().strip() or None,
+        }
+
+    def _save_memory_draft(self) -> None:
+        self._append_memory_correction("draft")
+
+    def _confirm_memory_correction(self) -> None:
+        self._append_memory_correction("confirmed")
+
+    def _append_memory_correction(self, state: str) -> None:
+        """Append one bounded revision: a draft, or an explicit confirmation.
+
+        Confirming a draft appends a *new* confirmed revision that names the
+        draft as its parent, so the draft is superseded rather than mutated and
+        history keeps both.
+        """
+        generation = self._memory_review_generation
+        draft = getattr(self, "_memory_review_draft", None)
+        confirming = (
+            state == "confirmed"
+            and isinstance(draft, dict)
+            and draft.get("id")
+            and draft.get("claim_id") == getattr(self, "_memory_review_selected", None)
+            and draft.get("operation") == self._memory_review_operation.currentData()
+        )
+        payload = self._memory_review_payload(
+            fallback_text=draft.get("text") if confirming else None
+        )
+        if payload is None:
+            return
+        supersedes = [draft["id"]] if confirming else None
+
+        token = self._memory_review_attempt_token
+        cid = contract.new_correlation_id()
+        request = build_memory_correction_request(
+            cid,
+            payload["run_id"],
+            payload["document_type"],
+            payload["operation"],
+            payload["claim_id"],
+            text=payload["text"],
+            actor=payload["actor"],
+            supersedes=supersedes,
+            source_id=memory_correction_source_id(
+                payload["document_type"], payload["claim_id"], payload["operation"],
+                "%s:%s" % (token, state),
+            ),
+            expected_version_id=self._memory_review_version_id,
+            state=state,
+        )
+        self._set_status(STATE_RUNNING, "appending a Memory revision")
+        if not self._send(
+            request,
+            partial(self._on_memory_append_loaded, generation, state),
+            partial(self._on_memory_append_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_append_loaded(
+        self, generation: int, state: str, result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_review_generation:
+            return
+        correction = result.get("correction") or {}
+        self._memory_review_editor_status.setText(
+            "%s revision %s (%s)%s"
+            % (
+                "Draft" if state == "draft" else "Confirmed",
+                correction.get("id"),
+                memory_correction_state_label(correction.get("state")),
+                "" if result.get("created") else " — already recorded, no new revision",
+            )
+        )
+        # The composed text has been accepted, so the editor no longer holds it:
+        # what a reader sees from here on is the redacted durable revision, not
+        # the raw words that were typed.
+        self._memory_review_text.clear()
+        # A draft is remembered so an explicit confirmation can link to it.
+        self._memory_review_draft = (
+            {
+                "id": correction.get("id"),
+                "claim_id": (correction.get("target") or {}).get("claim_id"),
+                "operation": correction.get("operation"),
+                "text": correction.get("text"),
+            }
+            if state == "draft"
+            else None
+        )
+        # The effective document is only shown after a successful fresh read.
+        self._refresh_memory_review()
+
+    def _on_memory_append_failed(self, generation: int, code: str) -> None:
+        if generation != self._memory_review_generation:
+            return
+        # Nothing was optimistically applied: the prior screen is still readable
+        # and a bounded reload re-reads the durable truth.
+        self._memory_review_editor_status.setText(
+            "The correction was refused: %s" % code
+        )
+        self._set_status(STATE_FAILED, "the correction was refused: %s" % code)
+        self._refresh_memory_review()
+
+    # -- Memory query: filters ---------------------------------------------
+
+    def _memory_filters_as_request(self) -> Optional[Dict[str, List[str]]]:
+        filters: Dict[str, List[str]] = {}
+        for facet, term in self._memory_query_filters:
+            filters.setdefault(facet, []).append(term)
+        return filters or None
+
+    def _add_memory_filter(self) -> None:
+        """Add the chosen facet and term to the query, or say why it cannot."""
+        facet = self._memory_facet_selector.currentData()
+        term = self._memory_term_field.text().strip()
+        if not isinstance(facet, str):
+            self._memory_search_status.setText(
+                "That facet has no typed data in this schema, so it cannot be searched."
+            )
+            return
+        if not term:
+            self._memory_search_status.setText("Enter a term to filter on.")
+            return
+        if len(self._memory_query_filters) >= MEMORY_MAX_FILTERS:
+            self._memory_search_status.setText(
+                "This query already holds the maximum %d filters."
+                % MEMORY_MAX_FILTERS
+            )
+            return
+        self._memory_query_filters.append((facet, term))
+        self._memory_term_field.clear()
+        # A changed query invalidates every outstanding action.
+        self._memory_query_generation += 1
+        self._populate_memory_filters()
+        self._memory_search_status.setText("")
+
+    def _remove_memory_filter(self, index: int) -> None:
+        if 0 <= index < len(self._memory_query_filters):
+            self._memory_query_filters.pop(index)
+            self._memory_query_generation += 1
+            self._populate_memory_filters()
+
+    def _clear_memory_filters(self) -> None:
+        self._memory_query_filters = []
+        self._memory_query_generation += 1
+        self._populate_memory_filters()
+        self._memory_search_status.setText("")
+
+    def _populate_memory_filters(self) -> None:
+        """Render the active filters, each removable, and state the count."""
+        self._clear_layout(self._memory_filter_layout)
+        if not self._memory_query_filters:
+            self._memory_filters_heading.setText("Filters: none")
+            return
+        self._memory_filters_heading.setText(
+            "Filters: %d of %d"
+            % (len(self._memory_query_filters), MEMORY_MAX_FILTERS)
+        )
+        for index, (facet, term) in enumerate(self._memory_query_filters):
+            row = QWidget()
+            row.setObjectName("memoryFilterRow")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(
+                style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+            )
+            row_layout.setSpacing(style.GAP_TIGHT)
+            label = QLabel("%s: %s" % (memory_facet_label(facet), term))
+            label.setObjectName("memoryFilterLabel")
+            label.setWordWrap(True)
+            label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            label.setAccessibleName(
+                "Filter %s in %s" % (term, memory_facet_label(facet))
+            )
+            row_layout.addWidget(label)
+            remove = QPushButton("Remove")
+            remove.setObjectName("memoryRemoveFilterButton")
+            remove.setAccessibleName(
+                "Remove filter %s in %s" % (term, memory_facet_label(facet))
+            )
+            remove.setToolTip("Remove this filter from the query")
+            remove.clicked.connect(partial(self._remove_memory_filter, index))
+            row_layout.addWidget(remove)
+            row_layout.addStretch(1)
+            self._memory_filter_layout.addWidget(row)
+
+    def _on_memory_order_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        # Changing the order changes what an ordered action means.
+        self._memory_query_generation += 1
+        self._clear_memory_detail_pane(
+            "_memory_query_detail",
+            "The order changed: run the search again to read its evidence.",
+        )
+
+    # -- Memory query: search ----------------------------------------------
+
+    def _memory_selected_order(self) -> str:
+        order = self._memory_order_selector.currentData()
+        return order if isinstance(order, str) else MEMORY_ORDER_RELEVANCE
+
+    def _run_memory_search(self) -> None:
+        """Run the bounded query and adopt whatever it returns."""
+        cid = contract.new_correlation_id()
+        request = build_search_memory_request(
+            cid, filters=self._memory_filters_as_request(),
+            order=self._memory_selected_order(),
+        )
+        # The generation advances before the request, so anything that changes
+        # while it is in flight makes the response obsolete.
+        self._memory_query_generation += 1
+        generation = self._memory_query_generation
+        self._set_status(STATE_RUNNING, "searching Memory")
+        if not self._send(
+            request,
+            partial(self._on_memory_search_loaded, generation),
+            partial(self._on_memory_query_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_search_loaded(self, generation: int, result: Dict[str, Any]) -> None:
+        if generation != self._memory_query_generation:
+            return
+        self._apply_search_result(result)
+        self._restore_operation_status()
+
+    def _apply_search_result(self, result: Dict[str, Any]) -> None:
+        """Adopt one bounded search result and render it."""
+        self._memory_search_result = result
+        self._populate_memory_results(result)
+
+    def _on_memory_query_failed(self, generation: int, code: str) -> None:
+        if generation != self._memory_query_generation:
+            return
+        self._memory_search_result = None
+        self._clear_layout(self._memory_results_layout)
+        self._clear_memory_detail_pane(
+            "_memory_query_detail", "The query returned no readable evidence."
+        )
+        message = "The Memory query was refused: %s" % code
+        self._memory_search_status.setText(message)
+        self._set_status(STATE_FAILED, message)
+
+    def _clear_memory_results(self) -> None:
+        self._clear_layout(self._memory_results_layout)
+        self._memory_query_hit_buttons = []
+
+    def _memory_result_section(
+        self, heading: str, note: str, rows: List[Dict[str, Any]], generation: int
+    ) -> None:
+        """Append one result section: a heading, a note, then the rows."""
+        title = QLabel(heading)
+        title.setObjectName("memoryResultHeading")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        title.setAccessibleName(heading)
+        self._memory_results_layout.addWidget(title)
+
+        note_label = QLabel(note)
+        note_label.setObjectName("memoryResultNote")
+        note_label.setWordWrap(True)
+        note_label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        self._memory_results_layout.addWidget(note_label)
+
+        if not rows:
+            empty = QLabel("None.")
+            empty.setObjectName("memoryResultEmpty")
+            empty.setStyleSheet(style.memory_placeholder_style(self._palette))
+            self._memory_results_layout.addWidget(empty)
+            return
+        for row in rows:
+            self._memory_results_layout.addWidget(
+                self._build_memory_hit_row(row, generation)
+            )
+
+    def _populate_memory_results(self, result: Dict[str, Any]) -> None:
+        """Render a search result, keeping the two timeline buckets apart."""
+        self._clear_memory_results()
+        rows = memory_hit_rows(result)
+        ordered = rows.get("ordered") or []
+        unordered = rows.get("unordered") or []
+        generation = self._memory_query_generation
+
+        unsupported = rows.get("unsupported_facets") or []
+        truncated = bool(result.get("truncated"))
+        limit = result.get("limit")
+        summary = "%d result(s) for %d run(s); limit %s%s" % (
+            result.get("hit_count", 0),
+            result.get("run_count", 0),
+            limit,
+            "; results were truncated to the limit" if truncated else "",
+        )
+        if unsupported:
+            summary += "; unsupported facet(s): " + ", ".join(unsupported)
+        if result.get("runs_truncated"):
+            summary += "; only the first runs in the corpus were searched"
+        self._memory_search_status.setText(summary)
+
+        if result.get("order") == MEMORY_ORDER_RECORDED_TIME:
+            self._memory_result_section(
+                "In recorded-time order",
+                "Ordered only by a comparable recorded instant; this order says "
+                "nothing about causality.",
+                ordered,
+                generation,
+            )
+            self._memory_result_section(
+                "Not in time order",
+                "These results carry no comparable recorded time, so they are "
+                "listed here unordered rather than placed in the sequence above.",
+                unordered,
+                generation,
+            )
+        else:
+            self._memory_result_section(
+                "Ranked by matched facets",
+                "Most matched facets first, then facet priority, then identity.",
+                ordered,
+                generation,
+            )
+        self._memory_result_limitations(result)
+
+    def _memory_result_limitations(self, result: Dict[str, Any]) -> None:
+        for limitation in result.get("limitations") or []:
+            label = QLabel("Limit: %s" % limitation)
+            label.setObjectName("memoryResultLimitation")
+            label.setWordWrap(True)
+            label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            self._memory_results_layout.addWidget(label)
+
+    def _build_memory_hit_row(
+        self, row: Dict[str, Any], generation: int
+    ) -> QWidget:
+        """Build one result row: identity, match reason, provenance, target."""
+        container = QWidget()
+        container.setObjectName("memoryHit")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        layout.setSpacing(style.SPACE_4)
+
+        heading = QLabel(
+            "%s %s" % (row.get("kind_label"), row.get("record_id"))
+        )
+        heading.setObjectName("memoryHitHeading")
+        heading.setWordWrap(True)
+        heading.setStyleSheet(style.memory_claim_style(self._palette))
+        heading.setAccessibleName(
+            "Result %s %s" % (row.get("kind_label"), row.get("record_id"))
+        )
+        layout.addWidget(heading)
+
+        matched = ", ".join(row.get("matched_facets") or []) or "none"
+        meta = "Matched: %s | Run state: %s | Provenance: %s | %s" % (
+            matched,
+            row.get("run_state_label"),
+            row.get("provenance_label"),
+            row.get("time_status_label"),
+        )
+        if row.get("recorded_time"):
+            meta += ": %s" % row["recorded_time"]
+        meta_label = QLabel(meta)
+        meta_label.setObjectName("memoryHitMeta")
+        meta_label.setWordWrap(True)
+        meta_label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+        meta_label.setAccessibleName(meta)
+        layout.addWidget(meta_label)
+
+        fields = ", ".join(row.get("matched_fields") or [])
+        if fields:
+            field_label = QLabel("Matched fields: %s" % fields)
+            field_label.setObjectName("memoryHitFields")
+            field_label.setWordWrap(True)
+            field_label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(field_label)
+
+        for limitation in row.get("limitations") or []:
+            limit = QLabel("Limit: %s" % limitation)
+            limit.setObjectName("memoryHitLimitation")
+            limit.setWordWrap(True)
+            limit.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            layout.addWidget(limit)
+
+        layout.addWidget(self._build_memory_query_target_button(
+            row.get("target") or {}, row.get("kind_label"), generation
+        ))
+        return container
+
+    def _build_memory_query_target_button(
+        self,
+        target: Dict[str, Any],
+        kind_label: Any,
+        generation: int,
+        pane: str = "_memory_query_detail",
+    ) -> QPushButton:
+        """Build one explicit target action, or a disabled honest alternative."""
+        record_id = target.get("record_id")
+        run_id = target.get("run_id")
+        kind = target.get("kind")
+        button = QPushButton()
+        button.setObjectName("memoryQueryTargetButton")
+        button.setFocusPolicy(Qt.StrongFocus)
+        if isinstance(record_id, str) and record_id and isinstance(kind, str):
+            button.setText("Open %s" % kind_label)
+            button.setAccessibleName("Open %s %s" % (kind_label, record_id))
+            button.setToolTip("%s %s" % (kind_label, record_id))
+            button.clicked.connect(
+                partial(
+                    self._open_memory_query_target,
+                    generation,
+                    pane,
+                    str(run_id or ""),
+                    kind,
+                    record_id,
+                )
+            )
+        else:
+            button.setText("Unavailable: %s" % kind_label)
+            button.setAccessibleName(
+                "Unavailable %s: this result carries no typed target" % kind_label
+            )
+            button.setToolTip("This result carries no typed target to open")
+            button.setEnabled(False)
+        self._memory_query_hit_buttons.append(button)
+        return button
+
+    # -- Memory query: exact record navigation -----------------------------
+
+    def _open_memory_query_target(
+        self, generation: int, pane: str, run_id: str, kind: str, record_id: str
+    ) -> None:
+        """Open the exact typed record a result named, if it is still current."""
+        if generation != self._memory_query_generation:
+            return
+        if not run_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_get_memory_record_request(cid, run_id, kind, record_id)
+        if not self._send(
+            request,
+            partial(self._on_memory_query_record_loaded, generation, pane),
+            partial(self._on_memory_query_record_failed, generation, pane),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_query_record_loaded(
+        self, generation: int, pane: str, result: Dict[str, Any]
+    ) -> None:
+        if generation != self._memory_query_generation:
+            return
+        self._show_memory_detail_pane(pane, result)
+
+    def _on_memory_query_record_failed(
+        self, generation: int, pane: str, code: str
+    ) -> None:
+        if generation != self._memory_query_generation:
+            return
+        self._clear_memory_detail_pane(
+            pane, "That evidence could not be read from the store."
+        )
+
+    def _clear_memory_detail_pane(self, pane: str, message: str) -> None:
+        setattr(self, pane, None)
+        getattr(self, pane + "_title").setText("Evidence")
+        self._render_detail_rows(
+            getattr(self, pane + "_layout"), [("", message, False)]
+        )
+
+    def _show_memory_detail_pane(self, pane: str, view: Dict[str, Any]) -> None:
+        setattr(self, pane, view)
+        kind_label = memory_record_kind_label(view.get("kind"))
+        getattr(self, pane + "_title").setText("%s detail" % kind_label)
+        rows: List[tuple] = [
+            ("Record", str(view.get("record_id")), False),
+            ("Owning run", str(view.get("run_id")), False),
+            ("Kind", kind_label, False),
+        ]
+        for row in record_detail_rows(view):
+            rows.append(
+                (str(row.get("field")), str(row.get("value")), bool(row.get("reported")))
+            )
+        self._render_detail_rows(getattr(self, pane + "_layout"), rows)
+
+    # -- Memory query: resume ----------------------------------------------
+
+    def _refresh_memory_resume(self) -> None:
+        """Compose the resume from the recorded runs."""
+        cid = contract.new_correlation_id()
+        request = build_memory_resume_request(cid)
+        self._memory_query_generation += 1
+        generation = self._memory_query_generation
+        self._set_status(STATE_RUNNING, "composing Memory resume")
+        if not self._send(
+            request,
+            partial(self._on_memory_resume_loaded, generation),
+            partial(self._on_memory_query_failed, generation),
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_memory_resume_loaded(self, generation: int, result: Dict[str, Any]) -> None:
+        if generation != self._memory_query_generation:
+            return
+        self._memory_resume = result
+        self._populate_memory_resume(result)
+        self._restore_operation_status()
+
+    def _clear_memory_resume(self, message: str) -> None:
+        self._memory_resume = None
+        self._clear_layout(self._memory_resume_layout)
+        placeholder = QLabel(message)
+        placeholder.setObjectName("memoryResumePlaceholder")
+        placeholder.setWordWrap(True)
+        placeholder.setStyleSheet(style.memory_placeholder_style(self._palette))
+        self._memory_resume_layout.addWidget(placeholder)
+
+    def _populate_memory_resume(self, result: Dict[str, Any]) -> None:
+        """Render every Resume section from the returned labels and limitations."""
+        view = memory_resume_view(result)
+        self._clear_layout(self._memory_resume_layout)
+        generation = self._memory_query_generation
+        limits = view.get("limitations") or []
+        self._memory_resume_status.setText(
+            "%d run(s); %d limitation(s) apply." % (view.get("run_count") or 0, len(limits))
+        )
+
+        admission = view.get("last_accepted_change") or {}
+        self._memory_resume_section(
+            "Last accepted change",
+            "%s — %s" % (admission.get("label"), admission.get("reason")),
+            [],
+            generation,
+        )
+
+        self._memory_resume_section(
+            "Completed runs",
+            "Completion is a separate fact and is not acceptance.",
+            [
+                (
+                    "%s %s" % (row.get("state_label"), row.get("run_id")),
+                    row.get("target"),
+                )
+                for row in view.get("completed_runs") or []
+            ],
+            generation,
+        )
+
+        goal = view.get("current_goal") or {}
+        goal_note = goal.get("status") or "unsupported"
+        if goal.get("title"):
+            goal_note = "%s — %s (%s)" % (
+                goal.get("status"), goal.get("title"), goal.get("provenance_label")
+            )
+        for limitation in goal.get("limitations") or []:
+            goal_note += " | %s" % limitation
+        self._memory_resume_section(
+            "Current goal",
+            goal_note,
+            [("Open the goal", goal.get("target"))] if goal.get("target") else [],
+            generation,
+        )
+
+        baseline = view.get("current_baseline") or {}
+        self._memory_resume_section(
+            "Current baseline",
+            "%s — %s" % (baseline.get("label"), baseline.get("reason")),
+            [],
+            generation,
+        )
+
+        self._memory_resume_section(
+            "Blockers",
+            "Recorded reasons the work did not conclude.",
+            [
+                (
+                    "%s%s"
+                    % (
+                        blocker.get("kind_label"),
+                        " — %s" % blocker.get("state_label")
+                        if blocker.get("state_label")
+                        else "",
+                    ),
+                    blocker.get("target"),
+                )
+                for blocker in view.get("blockers") or []
+            ],
+            generation,
+            detail=lambda blocker: (
+                (["Reason: %s" % blocker["reason"]] if blocker.get("reason") else [])
+                + ["Limit: %s" % text for text in blocker.get("limitations") or []]
+            ),
+            source=view.get("blockers") or [],
+        )
+
+        self._memory_resume_section(
+            "Unverified claims",
+            "Reported, never repaired: each claim is listed with why it is unverified.",
+            [
+                (claim.get("statement") or claim.get("claim_id"), claim.get("target"))
+                for claim in view.get("unverified_claims") or []
+            ],
+            generation,
+            detail=lambda claim: (
+                ["Reason: %s" % claim["reason"]] if claim.get("reason") else []
+            ),
+            source=view.get("unverified_claims") or [],
+        )
+
+        self._memory_resume_section(
+            "Next actions",
+            "Derived from each run's recorded state.",
+            [
+                (action.get("text"), action.get("target"))
+                for action in view.get("next_actions") or []
+            ],
+            generation,
+        )
+
+        self._memory_resume_section("Limitations", "", [], generation, lines=limits)
+
+    def _memory_resume_section(
+        self,
+        heading: str,
+        note: str,
+        entries: List[Any],
+        generation: int,
+        detail=None,
+        source: Optional[List[Any]] = None,
+        lines: Optional[List[str]] = None,
+    ) -> None:
+        """Append one Resume section: a heading, a note, then its entries."""
+        title = QLabel(heading)
+        title.setObjectName("memoryResumeHeading")
+        title.setFont(style.panel_header_font())
+        title.setStyleSheet(style.secondary_text_style(self._palette))
+        title.setAccessibleName(heading)
+        self._memory_resume_layout.addWidget(title)
+
+        if note:
+            note_label = QLabel(note)
+            note_label.setObjectName("memoryResumeNote")
+            note_label.setWordWrap(True)
+            note_label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            self._memory_resume_layout.addWidget(note_label)
+
+        for index, text in enumerate(lines or []):
+            label = QLabel("Limit: %s" % text)
+            label.setObjectName("memoryResumeLimitation")
+            label.setWordWrap(True)
+            label.setStyleSheet(style.memory_claim_meta_style(self._palette))
+            self._memory_resume_layout.addWidget(label)
+
+        if not entries and not lines:
+            empty = QLabel("None.")
+            empty.setObjectName("memoryResumeEmpty")
+            empty.setStyleSheet(style.memory_placeholder_style(self._palette))
+            self._memory_resume_layout.addWidget(empty)
+            return
+
+        for index, entry in enumerate(entries):
+            text, target = entry
+            row = QWidget()
+            row.setObjectName("memoryResumeRow")
+            row_layout = QVBoxLayout(row)
+            row_layout.setContentsMargins(
+                style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+            )
+            row_layout.setSpacing(style.SPACE_4)
+            if text:
+                label = QLabel(str(text))
+                label.setObjectName("memoryResumeEntry")
+                label.setWordWrap(True)
+                label.setStyleSheet(style.memory_claim_style(self._palette))
+                row_layout.addWidget(label)
+            if detail is not None and source is not None and index < len(source):
+                for line in detail(source[index]) or []:
+                    if not line:
+                        continue
+                    detail_label = QLabel(str(line))
+                    detail_label.setObjectName("memoryResumeDetail")
+                    detail_label.setWordWrap(True)
+                    detail_label.setStyleSheet(
+                        style.memory_claim_meta_style(self._palette)
+                    )
+                    row_layout.addWidget(detail_label)
+            if isinstance(target, dict) and target.get("record_id"):
+                row_layout.addWidget(
+                    self._build_memory_query_target_button(
+                        target,
+                        memory_record_kind_label(target.get("kind")),
+                        generation,
+                        pane="_memory_resume_detail",
+                    )
+                )
+            self._memory_resume_layout.addWidget(row)
+
+    def _build_document_workspace(self) -> QWidget:
+        """Build the document-first Working Document workspace (P4.4a).
+
+        Promoted to the primary full-height workspace: a compact document header
+        (file selector, New, Open and saved/unsaved state), a large readable
+        editor, and an unobtrusive footer where Save is the primary action and
+        the candidate actions (Create candidate / Review candidate / Adopt) are
+        contextual rather than four equal buttons. Accepted versions and raw
+        candidate metadata live in the Versions drawer and the Advanced Change
+        Review group respectively, not here.
+        """
+        body = QWidget()
+        body.setObjectName("documentPanel")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+
+        # Document header: selector plus New / Open and the saved/unsaved state.
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        header_layout.setSpacing(style.GAP_TIGHT)
+        self._document_title_label = QLabel("Document")
+        title_font = style.ui_font()
+        title_font.setBold(True)
+        self._document_title_label.setFont(title_font)
+        self._document_title_label.setAccessibleName("Current document")
+        header_layout.addWidget(self._document_title_label)
+        header_layout.addStretch(1)
+        layout.addWidget(header)
+
+        self._document_status_label = QLabel("")
+        self._document_status_label.setObjectName("documentStatus")
+        self._document_status_label.setAccessibleName("Document status")
+        self._document_status_label.setStyleSheet(
+            style.status_label_style(self._palette)
+        )
+        header_layout.addWidget(self._document_status_label)
+
+        self._document_empty_state = QFrame()
+        self._document_empty_state.setObjectName("documentEmptyState")
+        empty_layout = QVBoxLayout(self._document_empty_state)
+        empty_layout.setContentsMargins(
+            style.SPACE_24, style.SPACE_24, style.SPACE_24, style.SPACE_24
+        )
+        empty_layout.setSpacing(style.GAP_TIGHT)
+        empty_layout.addStretch(1)
+        empty_title = QLabel("Create your first document")
+        empty_title_font = style.ui_font()
+        empty_title_font.setBold(True)
+        empty_title.setFont(empty_title_font)
+        empty_title.setAlignment(Qt.AlignCenter)
+        empty_layout.addWidget(empty_title)
+        empty_copy = QLabel(
+            "Write requirements in plain language, save them, then build and "
+            "review a preview before explicitly using a version."
+        )
+        empty_copy.setObjectName("secondary")
+        empty_copy.setWordWrap(True)
+        empty_copy.setAlignment(Qt.AlignCenter)
+        empty_copy.setAccessibleName("Document workflow")
+        empty_layout.addWidget(empty_copy)
+        empty_actions = QHBoxLayout()
+        empty_actions.addStretch(1)
+        empty_new = QPushButton("New document")
+        empty_new.setObjectName("primaryButton")
+        empty_new.setAccessibleName("Create your first document")
+        empty_new.clicked.connect(self._new_document)
+        empty_open = QPushButton("Open project")
+        empty_open.setObjectName("secondaryButton")
+        empty_open.setAccessibleName("Open project")
+        empty_open.clicked.connect(self._on_open_project)
+        empty_actions.addWidget(empty_new)
+        empty_actions.addWidget(empty_open)
+        empty_actions.addStretch(1)
+        empty_layout.addLayout(empty_actions)
+        empty_layout.addStretch(1)
+        layout.addWidget(self._document_empty_state, stretch=1)
+
+        self._document_editor = QPlainTextEdit()
+        self._document_editor.setObjectName("documentEditor")
+        self._document_editor.setAccessibleName("Working Document editor")
+        self._document_editor.setPlaceholderText(
+            "Describe the rule, expected inputs and outputs, and one concrete example."
+        )
+        self._document_editor.textChanged.connect(self._mark_document_dirty)
+        layout.addWidget(self._document_editor, stretch=1)
+
+        # Footer: Save is primary; the candidate actions are contextual.
+        actions = QWidget()
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        actions_layout.setSpacing(style.GAP_TIGHT)
+        self._document_save_button = QPushButton("Save")
+        self._document_save_button.setObjectName("primaryButton")
+        self._document_candidate_button = QPushButton("Build preview")
+        self._document_candidate_button.setObjectName("primaryButton")
+        self._document_review_button = QPushButton("Review candidate")
+        self._document_adopt_button = QPushButton("Use this version")
+        self._document_save_button.setAccessibleName("Save document")
+        self._document_candidate_button.setAccessibleName("Build preview")
+        self._document_candidate_button.setToolTip(
+            "Interpret this saved requirement as a rule change. It first shows "
+            "an offline disclosure (default Cancel), then makes one confirmed "
+            "provider request that becomes a reviewable — never auto-adopted — "
+            "candidate."
+        )
+        self._document_review_button.setAccessibleName("Review candidate")
+        self._document_adopt_button.setAccessibleName("Use this version")
+        self._document_adopt_button.setToolTip(
+            "Make this candidate the Accepted Version. This is a separate, "
+            "explicit step that revalidates the candidate — never automatic."
+        )
+        self._document_save_button.clicked.connect(self._save_document)
+        self._document_candidate_button.clicked.connect(self._build_preview)
+        self._document_review_button.clicked.connect(self._review_candidate)
+        self._document_adopt_button.clicked.connect(self._adopt_candidate)
+        self._document_action_hint = QLabel("")
+        self._document_action_hint.setObjectName("secondary")
+        self._document_action_hint.setAccessibleName("Next document action")
+        actions_layout.addWidget(self._document_action_hint, stretch=1)
+        actions_layout.addWidget(self._document_save_button)
+        actions_layout.addWidget(self._document_candidate_button)
+        layout.addWidget(actions)
+
+        self._update_document_actions()
+        return body
+
+    def _build_status_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("statusBar")
+        bar.setFixedHeight(style.STATUS_BAR_HEIGHT)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
+        layout.setSpacing(style.GAP_GROUP)
+
+        self.status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
+        self.status_label.setStyleSheet(style.status_label_style(self._palette))
+        self.status_label.setAccessibleName("Status")
+        layout.addWidget(self.status_label, stretch=1)
+
+        self._root_label = self._status_field(max_width=style.STATUS_ROOT_MAX_WIDTH)
+        self._repo_label = self._status_field()
+        self._provider_label = self._status_field()
+        self._validation_label = self._status_field()
+        self._diagnostic_labels = (
+            self._root_label,
+            self._repo_label,
+            self._provider_label,
+            self._validation_label,
+        )
+        for lbl in self._diagnostic_labels:
+            lbl.setVisible(False)
+            layout.addWidget(lbl)
+        self._status_details_button = QToolButton()
+        self._status_details_button.setText("Details")
+        self._status_details_button.setAccessibleName("Show diagnostics")
+        self._status_details_button.setCheckable(True)
+        self._status_details_button.toggled.connect(self._toggle_status_details)
+        layout.addWidget(self._status_details_button)
+        return bar
+
+    # -- small widget helpers -------------------------------------------
+
+    def _header_row(self, text: str):
+        """Return a panel header container and its layout (label pre-added)."""
+        container = QWidget()
+        container.setFixedHeight(style.PANEL_HEADER_HEIGHT)
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
+        layout.setSpacing(style.GAP_TIGHT)
+        label = QLabel(text)
+        heading_font = style.ui_font()
+        heading_font.setBold(True)
+        label.setFont(heading_font)
+        label.setStyleSheet(style.secondary_text_style(self._palette))
+        layout.addWidget(label)
+        return container, layout
+
+    def _empty_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("emptyState")
+        label.setStyleSheet(style.secondary_text_style(self._palette))
+        label.setAlignment(Qt.AlignCenter)
+        label.setWordWrap(True)
+        return label
+
+    def _status_field(self, max_width: Optional[int] = None) -> ElidedLabel:
+        label = ElidedLabel("")
+        label.setStyleSheet(style.status_field_style(self._palette))
+        if max_width is not None:
+            label.setMaximumWidth(max_width)
+        return label
+
+    def _toggle_status_details(self, checked: bool) -> None:
+        """Show technical fields on demand without competing with task status."""
+        for label in self._diagnostic_labels:
+            label.setVisible(checked)
+        self._status_details_button.setText("Hide details" if checked else "Details")
+        self._status_details_button.setAccessibleName(
+            "Hide diagnostics" if checked else "Show diagnostics"
+        )
+
+    # -- navigation rail destination selection --------------------------
+
+    def _select_destination(self, key: str) -> None:
+        """Switch the content stack to ``key`` and sync the rail's checked state.
+
+        Document and Preview are the two always-visible primary destinations;
+        Versions and the three Advanced destinations are secondary. Entering
+        Document refreshes the document list (cheap and selection-preserving);
+        entering Preview loads the reference package on first visit.
+
+        Entering a destination is navigation, not an operation, so the global
+        strip is re-derived from the current truth afterwards: the exact typed
+        outcome of a completed Build-preview attempt bound to the open
+        document/revision, or the neutral baseline. Navigation therefore can
+        neither fabricate a completed provider operation nor erase evidence.
+        """
+        if key not in _NAV_DESTINATIONS:
+            return
+        self._nav_destination = key
+        for k, button in self._nav_buttons.items():
+            button.setChecked(k == key)
+        if key in _ADVANCED_DESTINATIONS and not self._advanced_button.isChecked():
+            self._advanced_button.setChecked(True)
+        self._content_stack.setCurrentIndex(_NAV_DESTINATION_INDEX[key])
+        if key == "document":
+            self._refresh_library()
+        elif key == "preview":
+            self._refresh_preview()
+        self._restore_operation_status()
+
+    def _on_advanced_toggled(self, checked: bool) -> None:
+        """Show or hide the collapsed Advanced group."""
+        self._nav_group_container.setVisible(checked)
+        self._advanced_button.setText(
+            _NAV_ADVANCED_LABEL + (" ▾" if checked else " ▸")
+        )
+        self._advanced_button.setAccessibleName(
+            "Hide Advanced" if checked else "Show Advanced"
+        )
+
+    # -- status helpers --------------------------------------------------
+
+    def _set_status(self, state: str, detail: str = "") -> None:
+        self._status = state
+        text = f"Status: {state}"
+        if detail:
+            text += f" — {detail}"
+        self.status_label.setText(text)
+
+    def _set_neutral_status(self) -> None:
+        """Restore the global strip to its neutral, non-operation baseline.
+
+        The strip reports *operations* — work the user explicitly started. A
+        passive read (entering a destination, loading a document preview,
+        listing the library) is navigation, not an operation, so it must never
+        leave an operation outcome in the strip: least of all a success token,
+        which would make opening a view look like completed provider work. This
+        is the baseline the window starts on.
+        """
+        self._set_status(STATE_IDLE, "ready")
+
+
+    def _set_validation_state(self, state: str) -> None:
+        self._validation_state = state
+        self._update_status()
+
+    def _update_status(self) -> None:
+        self._root_label.setText(f"Root: {self._root or 'none'}")
+        self._repo_label.setText(f"Repo: {self._repository_state}")
+        self._provider_label.setText(f"Provider: {self._provider_state}")
+        self._validation_label.setText(f"Validation: {self._validation_state}")
+
+    def _update_scan_enabled(self) -> None:
+        enabled = self._root is not None
+        self.scan_button.setEnabled(enabled)
+        self.scan_button.setToolTip(
+            "" if enabled else "Open a project before running a read-only scan."
+        )
+
+    # -- request plumbing ------------------------------------------------
+
+    def _send(self, request: Dict[str, Any], on_success, on_error) -> bool:
+        """Submit ``request`` and remember its success/error callbacks.
+
+        The callbacks are wrapped in :class:`_WeakCallback` so ``_pending`` never
+        holds a strong reference back to this window.
+        """
+        cid = request.get("correlation_id")
+        if self._supervisor.submit(cid, request):
+            self._pending[cid] = (_WeakCallback(on_success), _WeakCallback(on_error))
+            return True
+        return False
+
+    def _send_credential(self, request: Dict[str, Any], on_success, on_error) -> bool:
+        """Submit a credential request to the dedicated native host supervisor.
+
+        Credential operations never go through the headless boundary: they are
+        sent to the short-lived host process so the native prompt is presented
+        in the interactive session. Success/error route through the same
+        ``_pending`` map as every other request; only the coarse blocked/
+        unavailable signals are handled separately.
+        """
+        cid = request.get("correlation_id")
+        if self._credential_supervisor.submit(cid, request):
+            self._pending[cid] = (_WeakCallback(on_success), _WeakCallback(on_error))
+            return True
+        return False
+
+    # -- actions ---------------------------------------------------------
+
+    def _on_open_project(self) -> None:
+        start = self._root or os.path.expanduser("~")
+        path = QFileDialog.getExistingDirectory(self, "Open Project", start)
+        if not path:
+            return
+        cid = contract.new_correlation_id()
+        request = build_open_project_request(cid, path)
+        self._set_status(STATE_RUNNING, "opening project")
+        if not self._send(request, self._on_project_opened, self._on_open_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_run_scan(self) -> None:
+        if not self._root:
+            self._set_status(STATE_FAILED, "no project open")
+            return
+        cid = contract.new_correlation_id()
+        request = build_scan_request(cid, self._root)
+        self._set_status(STATE_RUNNING, "scanning")
+        self._set_validation_state(VALIDATION_RUNNING)
+        if not self._send(request, self._on_scan_completed, self._on_scan_failed):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+            self._set_validation_state(VALIDATION_IDLE)
+
+    def _invalidate_rule_delta_result(self) -> None:
+        """Advance the interpretation generation and refresh the surface safely.
+
+        Called at startup and whenever the provider/config state changes (a
+        credential/profile change). First the interpretation generation is
+        advanced so a late ``interpret_rule_delta`` response — whose stale
+        generation no longer matches — can never render an old, now-stale
+        result (neither the Preview body nor the global status strip). Then a
+        completed attempt bound to the current document/revision is re-rendered
+        and its exact typed outcome re-asserted on the strip (never erased or
+        relabelled as success); a transient rendered failure that was never a
+        recorded attempt is cleared back to the neutral "no preview yet" state.
+        This never re-dispatches a prepare/interpret request and never contacts
+        the provider.
+        """
+        self._next_rule_delta_generation()
+        attempt = self._current_rule_delta_attempt()
+        if attempt is not None:
+            self._render_rule_delta_result(attempt)
+            self._set_rule_delta_status(attempt)
+            return
+        if not self._rule_delta_result_shown:
+            return
+        if self._rule_delta_reviewable_for is not None:
+            return
+        self._rule_delta_result_shown = False
+        if self._preview_state_label is not None:
+            self._preview_state_label.setText(preview_state_label("no_candidate"))
+            self._preview_state_label.setStyleSheet(
+                style.state_chip_style(self._palette, style.STATE_NEUTRAL)
+            )
+            self._preview_state_label.setToolTip(
+                preview_state_message("no_candidate")
+            )
+        if self._preview_body is not None:
+            self._preview_body.setPlainText("")
+
+    def _apply_provider_state(self, result: Dict[str, Any]) -> None:
+        state = str(result.get("state", PROVIDER_UNAVAILABLE))
+        self._provider_state = state
+        self._provider_model = result.get("model")
+        self._provider_credential_present = bool(result.get("credential_present", False))
+        self._update_status()
+        self._set_status(STATE_SUCCESS, provider_readiness_state_label(state))
+        self._set_provider_status(state)
+        self._invalidate_rule_delta_result()
+        self._refresh_settings_dialog()
+
+    def _refresh_profiles(self) -> None:
+        """Load the saved credential profiles from the local boundary (P4.2a).
+
+        This is the single automatic local-readiness refresh: it reads saved
+        profiles (running any pending legacy migration) plus the redacted
+        credential presence, and updates the provider status strip. It never
+        contacts DeepSeek.
+        """
+        cid = contract.new_correlation_id()
+        request = build_get_profiles_request(cid)
+        self._set_status(STATE_RUNNING, "loading credential profiles")
+        if not self._send(request, self._on_profiles_ready, self._on_profiles_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_profiles_ready(self, result: Dict[str, Any]) -> None:
+        self._profiles = list(result.get("profiles") or [])
+        self._active_profile_id = result.get("active_profile_id")
+        self._apply_provider_state(result)
+
+    def _on_profiles_error(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+        self._set_provider_status(PROVIDER_STATUS_FAILED)
+
+    def _set_provider_status(self, status: str) -> None:
+        """Write the fixed-height provider status region from a bounded state.
+
+        Only the preallocated region's text changes; it never toggles
+        visibility, moves the splitter or reflows the body, and it never
+        depends on the truncated footer field.
+        """
+        if self._provider_status_label is not None:
+            self._provider_status_label.setText(provider_status_message(status))
+
+    # -- Settings surface (P4.2a) ----------------------------------------
+
+    def _open_settings(self) -> None:
+        self._build_settings_dialog()
+        self._refresh_settings_dialog()
+        self._settings_dialog.show()
+        # Refresh the saved profiles (and run any pending legacy migration),
+        # the allowlisted model and the redacted credential presence through the
+        # local boundary so the Provider page is never stale. This is a local
+        # metadata read only — it never contacts DeepSeek.
+        self._refresh_profiles()
+
+    def _build_settings_dialog(self) -> None:
+        if self._settings_dialog is not None:
+            return
+        dialog = QDialog(self)
+        dialog.setObjectName("settingsDialog")
+        dialog.setWindowTitle("Settings")
+        dialog.setMinimumSize(
+            style.SETTINGS_DIALOG_MIN_WIDTH, style.SETTINGS_DIALOG_MIN_HEIGHT
+        )
+        dialog.resize(
+            style.SETTINGS_DIALOG_DEFAULT_WIDTH, style.SETTINGS_DIALOG_DEFAULT_HEIGHT
+        )
+
+        root = QHBoxLayout(dialog)
+        root.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        root.setSpacing(style.SPACE_0)
+
+        self._settings_nav = QListWidget()
+        self._settings_nav.setObjectName("settingsNav")
+        self._settings_nav.setFixedWidth(style.SETTINGS_NAV_WIDTH)
+        self._settings_nav.setAccessibleName("Settings sections")
+        for key in _SETTINGS_SECTIONS:
+            item = QListWidgetItem(_SETTINGS_SECTION_LABELS[key])
+            item.setData(Qt.UserRole, key)
+            self._settings_nav.addItem(item)
+        self._settings_nav.currentRowChanged.connect(self._on_settings_nav_changed)
+        root.addWidget(self._settings_nav)
+
+        self._settings_stack = QStackedWidget()
+        self._settings_stack.setObjectName("settingsStack")
+        self._settings_stack.addWidget(self._build_settings_provider_page())
+        self._settings_stack.addWidget(self._build_settings_appearance_page())
+        self._settings_stack.addWidget(self._build_settings_workspace_page())
+        self._settings_stack.addWidget(self._build_settings_privacy_page())
+        self._settings_stack.addWidget(self._build_settings_about_page())
+        root.addWidget(self._settings_stack, stretch=1)
+
+        self._settings_nav.setCurrentRow(0)
+        self._settings_dialog = dialog
+
+    def _on_settings_nav_changed(self, row: int) -> None:
+        if 0 <= row < self._settings_stack.count():
+            self._settings_stack.setCurrentIndex(row)
+
+    def _settings_section_title(self, text: str) -> QLabel:
+        label = QLabel(text.upper())
+        label.setObjectName("settingsSectionTitle")
+        label.setFont(style.panel_header_font())
+        label.setStyleSheet(style.secondary_text_style(self._palette))
+        return label
+
+    def _settings_field_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setStyleSheet(style.secondary_text_style(self._palette))
+        return label
+
+    def _settings_page(self, title: str):
+        page = QWidget()
+        page.setObjectName("settingsPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(
+            style.INSET, style.GAP_GROUP, style.INSET, style.INSET
+        )
+        layout.setSpacing(style.GAP_TIGHT)
+        layout.addWidget(self._settings_section_title(title))
+        return page, layout
+
+    def _settings_body_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("secondary")
+        label.setStyleSheet(style.secondary_text_style(self._palette))
+        label.setWordWrap(True)
+        return label
+
+    def _build_settings_provider_page(self) -> QWidget:
+        page, layout = self._settings_page("Provider")
+
+        layout.addWidget(self._settings_body_label(_SETTINGS_PRIVACY_NOTE))
+
+        grid = QGridLayout()
+        grid.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        grid.setSpacing(style.GAP_TIGHT)
+
+        self._settings_provider_value = QLabel("DeepSeek")
+        self._settings_provider_value.setStyleSheet(style.status_label_style(self._palette))
+        self._settings_model_value = QLabel("—")
+        self._settings_model_value.setStyleSheet(style.status_label_style(self._palette))
+
+        grid.addWidget(self._settings_field_label("Provider"), 0, 0)
+        grid.addWidget(self._settings_provider_value, 0, 1)
+        grid.addWidget(self._settings_field_label("Model"), 1, 0)
+        grid.addWidget(self._settings_model_value, 1, 1)
+        layout.addLayout(grid)
+
+        # Active-credential selector: lists exactly the saved profiles. Changing
+        # it persists the chosen non-secret profile id and makes no network call.
+        active_row = QHBoxLayout()
+        active_row.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        active_row.setSpacing(style.GAP_TIGHT)
+        active_row.addWidget(self._settings_field_label(_SETTINGS_ACTIVE_LABEL))
+        self._settings_active_combo = QComboBox()
+        self._settings_active_combo.setAccessibleName(_SETTINGS_ACTIVE_LABEL)
+        self._settings_active_combo.currentIndexChanged.connect(
+            self._on_active_profile_changed
+        )
+        active_row.addWidget(self._settings_active_combo, stretch=1)
+        layout.addLayout(active_row)
+
+        self._add_profile_button = QPushButton(_SETTINGS_ADD_PROFILE)
+        self._add_profile_button.setObjectName("primaryButton")
+        self._add_profile_button.setAccessibleName(_SETTINGS_ADD_PROFILE)
+        self._add_profile_button.clicked.connect(self._on_add_profile)
+        add_row = QHBoxLayout()
+        add_row.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        add_row.addWidget(self._add_profile_button)
+        add_row.addStretch(1)
+        layout.addLayout(add_row)
+
+        # Scrollable card list: one card per saved profile (name, provider,
+        # fixed mask, Rename / Replace key / Delete). The list is bounded in
+        # height; more profiles scroll rather than grow the dialog without limit.
+        self._settings_profiles_list = QWidget()
+        self._settings_profiles_list.setObjectName("settingsProfilesList")
+        self._settings_profiles_layout = QVBoxLayout(self._settings_profiles_list)
+        self._settings_profiles_layout.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        self._settings_profiles_layout.setSpacing(style.GAP_TIGHT)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("settingsProfilesScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._settings_profiles_list)
+        # A fixed viewport (not merely a maximum) so the controls above it stay
+        # stationary and the card list never reflows as profiles change.
+        scroll.setFixedHeight(style.PROFILE_LIST_HEIGHT)
+        self._settings_profiles_scroll = scroll
+        layout.addWidget(scroll, stretch=1)
+
+        # The in-surface action-status line: shows the pending message the
+        # instant a profile action is submitted and the exact bounded outcome
+        # when it completes, so a click is never an unobserved no-op.
+        self._settings_action_status = QLabel("")
+        self._settings_action_status.setObjectName("settingsActionStatus")
+        self._settings_action_status.setAccessibleName("Profile action status")
+        self._settings_action_status.setWordWrap(True)
+        self._settings_action_status.setStyleSheet(style.status_label_style(self._palette))
+        layout.addWidget(self._settings_action_status)
+
+        return page
+
+    def _build_settings_appearance_page(self) -> QWidget:
+        page, layout = self._settings_page("Appearance")
+        layout.addWidget(
+            self._settings_body_label(
+                "Monochrome interface policy\n\n"
+                "The application uses a single monochrome interface that follows "
+                "your operating system's light or dark appearance. There is no "
+                "separate theme setting to change."
+            )
+        )
+        layout.addStretch(1)
+        return page
+
+    def _build_settings_workspace_page(self) -> QWidget:
+        page, layout = self._settings_page("Workspace")
+        layout.addWidget(
+            self._settings_body_label(
+                "The workspace is the project currently opened in the main "
+                "window. Project selection and filesystem permissions are "
+                "managed by the boundary, not here."
+            )
+        )
+        self._settings_workspace_value = QLabel("No project open")
+        self._settings_workspace_value.setAccessibleName("Workspace project")
+        self._settings_workspace_value.setStyleSheet(style.status_label_style(self._palette))
+        layout.addWidget(self._settings_workspace_value)
+        layout.addStretch(1)
+        return page
+
+    def _build_settings_privacy_page(self) -> QWidget:
+        page, layout = self._settings_page("Privacy & Safety")
+        layout.addWidget(
+            self._settings_body_label(
+                "Provider calls are disabled in this offline slice: the "
+                "application never sends a prompt to DeepSeek and never makes "
+                "a network connection.\n\n"
+                "Your API key, when stored, lives in this computer's Windows "
+                "Credential Manager and is never displayed, logged or sent.\n\n"
+                "No project data leaves this computer."
+            )
+        )
+        layout.addStretch(1)
+        return page
+
+    def _build_settings_about_page(self) -> QWidget:
+        page, layout = self._settings_page("About")
+        grid = QGridLayout()
+        grid.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
+        grid.setSpacing(style.GAP_TIGHT)
+        self._settings_about_version_value = QLabel(contract.CONTRACT_VERSION)
+        self._settings_about_version_value.setStyleSheet(style.status_label_style(self._palette))
+        self._settings_about_provider_value = QLabel("Offline — provider calls disabled.")
+        self._settings_about_provider_value.setStyleSheet(
+            style.status_label_style(self._palette)
+        )
+        grid.addWidget(self._settings_field_label("Contract version"), 0, 0)
+        grid.addWidget(self._settings_about_version_value, 0, 1)
+        grid.addWidget(self._settings_field_label("Provider capability"), 1, 0)
+        grid.addWidget(self._settings_about_provider_value, 1, 1)
+        layout.addLayout(grid)
+        layout.addStretch(1)
+        return page
+
+    def _refresh_settings_dialog(self) -> None:
+        if self._settings_dialog is None:
+            return
+        self._settings_model_value.setText(self._provider_model or "—")
+        self._settings_workspace_value.setText(self._root or "No project open")
+        self._rebuild_active_selector()
+        self._sync_profile_cards()
+        self._set_settings_actions_enabled(not self._profile_action_pending)
+
+    def _set_settings_actions_enabled(self, enabled: bool) -> None:
+        if self._settings_dialog is None:
+            return
+        if self._add_profile_button is not None:
+            self._add_profile_button.setEnabled(enabled)
+        if self._settings_active_combo is not None:
+            self._settings_active_combo.setEnabled(enabled and bool(self._profiles))
+
+    def _set_settings_action_status(self, text: str) -> None:
+        if self._settings_action_status is not None:
+            self._settings_action_status.setText(text)
+
+    def _rebuild_active_selector(self) -> None:
+        combo = self._settings_active_combo
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        combo.clear()
+        for profile in self._profiles:
+            combo.addItem(profile.get("display_name"), profile.get("profile_id"))
+        if self._active_profile_id is not None:
+            index = combo.findData(self._active_profile_id)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def _profile_card_widget(self, profile: Dict[str, Any]) -> QFrame:
+        card = QFrame()
+        card.setObjectName("profileCard")
+        card.setFixedHeight(style.PROFILE_CARD_HEIGHT)
+        profile_id = profile.get("profile_id")
+        name = str(profile.get("display_name", ""))
+        card.setAccessibleName(f"Credential profile {name}")
+
+        row = QHBoxLayout(card)
+        row.setContentsMargins(
+            style.INSET, style.SPACE_0, style.INSET, style.SPACE_0
+        )
+        row.setSpacing(style.GAP_TIGHT)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(style.SPACE_4)
+        name_label = QLabel(name)
+        name_label.setStyleSheet(style.status_label_style(self._palette))
+        detail = QLabel(f"{profile.get('provider_id', 'deepseek')} · {CREDENTIAL_MASK}")
+        detail.setStyleSheet(style.secondary_text_style(self._palette))
+        text_col.addWidget(name_label)
+        text_col.addWidget(detail)
+        row.addLayout(text_col, stretch=1)
+
+        rename = QPushButton(_SETTINGS_RENAME)
+        rename.setAccessibleName(f"Rename {name}")
+        rename.clicked.connect(partial(self._on_rename_profile, profile_id))
+
+        replace = QPushButton(_SETTINGS_REPLACE)
+        replace.setAccessibleName(f"Replace key for {name}")
+        replace.clicked.connect(partial(self._on_replace_profile, profile_id))
+
+        delete = QToolButton()
+        delete.setObjectName("profileDeleteButton")
+        delete.setIcon(style.trash_icon(self._palette))
+        delete.setFixedSize(
+            style.PROFILE_ACTION_BUTTON_SIZE, style.PROFILE_ACTION_BUTTON_SIZE
+        )
+        delete.setAccessibleName(f"Delete {name}")
+        delete.setToolTip(f"Delete {name}")
+        delete.setFocusPolicy(Qt.StrongFocus)
+        delete.clicked.connect(partial(self._on_delete_profile, profile_id))
+
+        row.addWidget(rename)
+        row.addWidget(replace)
+        row.addWidget(delete)
+
+        self._profile_cards[profile_id] = {
+            "card": card,
+            "name_label": name_label,
+            "rename_button": rename,
+            "replace_button": replace,
+            "delete_button": delete,
+        }
+        return card
+
+    def _update_card(self, entry: Dict[str, Any], profile: Dict[str, Any]) -> None:
+        """Update one mounted card in place (no clear/rebuild, no flicker)."""
+        name = str(profile.get("display_name", ""))
+        entry["name_label"].setText(name)
+        entry["card"].setAccessibleName(f"Credential profile {name}")
+        entry["rename_button"].setAccessibleName(f"Rename {name}")
+        entry["replace_button"].setAccessibleName(f"Replace key for {name}")
+        entry["delete_button"].setAccessibleName(f"Delete {name}")
+        entry["delete_button"].setToolTip(f"Delete {name}")
+
+    def _sync_profile_cards(self) -> None:
+        """Reconcile the mounted card list with ``self._profiles`` incrementally.
+
+        Cards are added, removed or updated in place — never cleared and rebuilt —
+        so the list does not flash and the scroll anchor is preserved. A single
+        trailing stretch keeps the cards top-anchored (zero stretch before the
+        first card), so the first card sits just below Add API key and all
+        unused viewport space stays below the cards.
+        """
+        layout = self._settings_profiles_layout
+        if layout is None:
+            return
+        new_ids = [p.get("profile_id") for p in self._profiles]
+
+        # Drop the trailing stretch so it can be re-added as the last item.
+        if layout.count() and layout.itemAt(layout.count() - 1).spacerItem() is not None:
+            layout.takeAt(layout.count() - 1)
+
+        for profile_id in list(self._profile_cards):
+            if profile_id not in new_ids:
+                entry = self._profile_cards.pop(profile_id)
+                layout.removeWidget(entry["card"])
+                entry["card"].deleteLater()
+
+        if not self._profiles:
+            if self._empty_state_label is None:
+                label = QLabel(_SETTINGS_NO_PROFILES)
+                label.setObjectName("secondary")
+                label.setStyleSheet(style.secondary_text_style(self._palette))
+                label.setWordWrap(True)
+                self._empty_state_label = label
+                layout.addWidget(label)
+            layout.addStretch(1)
+            return
+
+        if self._empty_state_label is not None:
+            layout.removeWidget(self._empty_state_label)
+            self._empty_state_label.deleteLater()
+            self._empty_state_label = None
+
+        for profile in self._profiles:
+            profile_id = profile.get("profile_id")
+            if profile_id in self._profile_cards:
+                self._update_card(self._profile_cards[profile_id], profile)
+            else:
+                layout.addWidget(self._profile_card_widget(profile))
+
+        layout.addStretch(1)
+
+    def _begin_profile_action(self, message: str) -> None:
+        self._profile_action_pending = True
+        self._set_settings_action_status(message)
+        self._set_settings_actions_enabled(False)
+
+    def _end_profile_action(self) -> None:
+        self._profile_action_pending = False
+        self._set_settings_actions_enabled(True)
+
+    def _native_window_handle(self) -> int:
+        """Return the top-level window's native handle (HWND) for parenting.
+
+        The handle is passed to the native credential host so the secure prompt
+        is owned by, and appears in front of, this visible window in the
+        interactive session. It is an integer window handle, never a secret.
+        """
+        return int(self.winId())
+
+    def _prompt_profile_name(self, title: str, label: str, initial: str):
+        """Collect one display name; returns ``(name, ok)`` (Qt dialog)."""
+        return QInputDialog.getText(
+            self._settings_dialog or self, title, label, text=initial
+        )
+
+    def _name_is_in_use(self, name: str, exclude_id: Optional[str] = None) -> bool:
+        lowered = name.strip().lower()
+        return any(
+            p.get("profile_id") != exclude_id
+            and str(p.get("display_name", "")).lower() == lowered
+            for p in self._profiles
+        )
+
+    def _on_add_profile(self) -> None:
+        if self._profile_action_pending:
+            return
+        # The name and key are both collected in the native entry sheet (a
+        # separate process); the desktop owns only the request and the result.
+        self._begin_profile_action(CREDENTIAL_ACTION_PENDING)
+        request = build_manage_credential_request(
+            contract.new_correlation_id(),
+            self._native_window_handle(),
+            theme=self._palette.name,
+        )
+        self._set_status(STATE_RUNNING, "collecting API key")
+        if not self._send_credential(
+            request, self._on_add_secret_stored, self._on_add_secret_failed
+        ):
+            self._end_profile_action()
+            self._set_status(STATE_FAILED, "a request is already in progress")
+            self._set_settings_action_status(
+                "Another operation is in progress — try again."
+            )
+
+    def _on_add_secret_stored(self, result: Dict[str, Any]) -> None:
+        state = str(result.get("state", "failed"))
+        if state != "stored":
+            self._end_profile_action()
+            self._show_credential_result(result)
+            return
+        profile_id = result.get("profile_id")
+        name = result.get("display_name")
+        if not profile_id or not isinstance(name, str) or not name.strip():
+            self._end_profile_action()
+            self._set_settings_action_status(
+                profile_failure_message("profile_persist_failed")
+            )
+            self._set_status(STATE_FAILED, "invalid profile metadata")
+            return
+        self._set_settings_action_status("Adding profile…")
+        request = build_add_profile_request(
+            contract.new_correlation_id(), profile_id, name.strip()
+        )
+        if not self._send(
+            request,
+            partial(self._on_profile_action_saved, "added"),
+            self._on_profile_action_error,
+        ):
+            # The secret was stored but the metadata step never dispatched;
+            # remove the orphaned secret so no profile-less credential lingers.
+            self._cleanup_orphaned_secret(profile_id)
+            self._end_profile_action()
+            self._set_settings_action_status("Profile could not be added.")
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_add_secret_failed(self, reason: str) -> None:
+        self._end_profile_action()
+        self._set_settings_action_status(credential_action_message("failed"))
+        self._set_status(STATE_FAILED, reason)
+
+    def _cleanup_orphaned_secret(self, profile_id: str) -> None:
+        request = build_remove_credential_request(
+            contract.new_correlation_id(), None, profile_id=profile_id
+        )
+        self._send_credential(request, lambda _result: None, lambda _reason: None)
+
+    def _on_replace_profile(self, profile_id: str) -> None:
+        if self._profile_action_pending:
+            return
+        profile = next(
+            (p for p in self._profiles if p.get("profile_id") == profile_id), None
+        )
+        if profile is None:
+            return
+        self._begin_profile_action(CREDENTIAL_ACTION_PENDING)
+        request = build_manage_credential_request(
+            contract.new_correlation_id(),
+            self._native_window_handle(),
+            profile_id=profile_id,
+            display_name=profile.get("display_name"),
+            theme=self._palette.name,
+        )
+        self._set_status(STATE_RUNNING, "replacing API key")
+        if not self._send_credential(
+            request, self._on_replace_secret_stored, self._on_add_secret_failed
+        ):
+            self._end_profile_action()
+            self._set_status(STATE_FAILED, "a request is already in progress")
+            self._set_settings_action_status(
+                "Another operation is in progress — try again."
+            )
+
+    def _on_replace_secret_stored(self, result: Dict[str, Any]) -> None:
+        self._end_profile_action()
+        self._show_credential_result(result)
+        if str(result.get("state")) == "stored":
+            # Re-read local readiness so the strip stays truthful after a
+            # successful credential replacement (no provider/network call).
+            self._refresh_profiles()
+
+    def _show_credential_result(self, result: Dict[str, Any]) -> None:
+        state = str(result.get("state", "failed"))
+        message = credential_action_message(state, result.get("reason"))
+        self._set_settings_action_status(message)
+        if state == "stored":
+            self._set_status(STATE_SUCCESS, message)
+        elif state == "cancelled":
+            self._set_status(STATE_IDLE, message)
+        elif state == "unavailable":
+            self._set_status(STATE_UNAVAILABLE, message)
+        else:  # failed
+            self._set_status(STATE_FAILED, message)
+
+    def _on_rename_profile(self, profile_id: str) -> None:
+        if self._profile_action_pending:
+            return
+        profile = next(
+            (p for p in self._profiles if p.get("profile_id") == profile_id), None
+        )
+        if profile is None:
+            return
+        current_name = str(profile.get("display_name", ""))
+        name, ok = self._prompt_profile_name(
+            "Rename profile", "Display name:", current_name
+        )
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            self._set_settings_action_status("A profile name is required.")
+            return
+        if len(name) > _MAX_PROFILE_NAME_CHARS:
+            self._set_settings_action_status("That profile name is too long.")
+            return
+        if name == current_name:
+            return
+        if self._name_is_in_use(name, exclude_id=profile_id):
+            self._set_settings_action_status("That profile name is already in use.")
+            return
+        request = build_rename_profile_request(
+            contract.new_correlation_id(), profile_id, name
+        )
+        self._begin_profile_action("Renaming profile…")
+        if not self._send(
+            request,
+            partial(self._on_profile_action_saved, "renamed"),
+            self._on_profile_action_error,
+        ):
+            self._end_profile_action()
+            self._set_status(STATE_FAILED, "a request is already in progress")
+            self._set_settings_action_status(
+                "Another operation is in progress — try again."
+            )
+
+    def _on_delete_profile(self, profile_id: str) -> None:
+        if self._profile_action_pending:
+            return
+        profile = next(
+            (p for p in self._profiles if p.get("profile_id") == profile_id), None
+        )
+        if profile is None:
+            return
+        if not self._confirm_delete_profile(profile):
+            return
+        fallback = None
+        if profile_id == self._active_profile_id:
+            if len(self._profiles) > 1:
+                fallback, aborted = self._choose_delete_fallback(profile_id)
+                if aborted:
+                    return
+            # else: deleting the only profile leaves no active credential.
+        request = build_delete_profile_request(
+            contract.new_correlation_id(), profile_id, fallback
+        )
+        self._begin_profile_action("Removing profile…")
+        if not self._send(
+            request,
+            partial(self._on_profile_action_saved, "deleted"),
+            self._on_profile_action_error,
+        ):
+            self._end_profile_action()
+            self._set_status(STATE_FAILED, "a request is already in progress")
+            self._set_settings_action_status(
+                "Another operation is in progress — try again."
+            )
+
+    def _confirm_delete_profile(self, profile: Dict[str, Any]) -> bool:
+        box = QMessageBox(self._settings_dialog or self)
+        box.setWindowTitle("Delete profile")
+        box.setText(f'Delete the "{profile.get("display_name")}" profile?')
+        box.setInformativeText(
+            "The stored API key and the profile are deleted locally and never "
+            "displayed."
+        )
+        delete_button = box.addButton("Delete", QMessageBox.DestructiveRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        return box.clickedButton() is delete_button
+
+    def _choose_delete_fallback(self, deleting_id: str):
+        """Return ``(fallback_id_or_none, aborted)`` for deleting the active profile.
+
+        The user selects an explicit fallback or accepts no active credential;
+        the boundary never silently chooses another profile.
+        """
+        candidates = [
+            p for p in self._profiles if p.get("profile_id") != deleting_id
+        ]
+        items = [p.get("display_name") for p in candidates]
+        items.append("No active credential")
+        choice, ok = QInputDialog.getItem(
+            self._settings_dialog or self,
+            "Choose active credential",
+            "The profile you are deleting is active. Choose a new active credential:",
+            items,
+            0,
+            False,
+        )
+        if not ok:
+            return None, True
+        if choice == "No active credential":
+            return None, False
+        for profile in candidates:
+            if profile.get("display_name") == choice:
+                return profile.get("profile_id"), False
+        return None, False
+
+    def _on_active_profile_changed(self, index: int) -> None:
+        combo = self._settings_active_combo
+        if combo is None or self._profile_action_pending:
+            return
+        profile_id = combo.itemData(index) if index >= 0 else None
+        if profile_id == self._active_profile_id:
+            return
+        request = build_set_active_profile_request(
+            contract.new_correlation_id(), profile_id
+        )
+        self._begin_profile_action("Saving active credential…")
+        if not self._send(
+            request,
+            partial(self._on_profile_action_saved, "active_updated"),
+            self._on_profile_action_error,
+        ):
+            self._end_profile_action()
+            self._set_status(STATE_FAILED, "a request is already in progress")
+            self._set_settings_action_status(
+                "Another operation is in progress — try again."
+            )
+
+    def _on_profile_action_saved(self, kind: str, result: Dict[str, Any]) -> None:
+        self._profiles = list(result.get("profiles") or [])
+        self._active_profile_id = result.get("active_profile_id")
+        self._end_profile_action()
+        self._set_settings_action_status(PROFILE_ACTION_MESSAGES.get(kind, ""))
+        self._apply_provider_state(result)
+
+    def _on_profile_action_error(self, reason: str) -> None:
+        self._end_profile_action()
+        self._set_settings_action_status(profile_failure_message(reason))
+        self._set_status(STATE_FAILED, reason)
+        self._refresh_profiles()
+
+
+    def _on_project_opened(self, result: Dict[str, Any]) -> None:
+        self._root = result.get("root")
+        self._repository_state = result.get("repository_state", REPOSITORY_UNVERIFIED)
+        self._update_status()
+        self._update_scan_enabled()
+        self._set_status(STATE_SUCCESS, "project open")
+
+
+    def _on_scan_completed(self, result: Dict[str, Any]) -> None:
+        self._render_scan(result)
+        self._set_status(STATE_SUCCESS, "scan complete")
+        self._set_validation_state(VALIDATION_OK)
+
+    # -- preview ---------------------------------------------------------
+
+    def _next_preview_generation(self) -> int:
+        """Advance the preview generation and return its new value.
+
+        Every preview request chain is tagged with the generation that started
+        it, so a late response for a previously selected document is discarded
+        instead of overwriting the current document's preview.
+        """
+        self._preview_generation += 1
+        return self._preview_generation
+
+
+
+
+    def _refresh_preview(self) -> None:
+        """Request the version-bound preview for the current document selection.
+
+        With no open document the surface is cleared; otherwise a bounded
+        ``preview_document`` request is sent and the response is discarded unless
+        its generation still matches.
+        """
+        if not self._document_id:
+            self._clear_preview()
+            return
+        attempt = self._current_rule_delta_attempt()
+        if attempt is not None:
+            # A completed attempt bound to this exact document/revision is shown
+            # again without dispatching anything (P4.8b/v9), and its exact typed
+            # outcome is re-asserted on the strip — never erased and never
+            # relabelled as success. A different document or revision yields no
+            # attempt, which is why the passive lookup below may replace the body.
+            self._render_rule_delta_result(attempt)
+            self._set_rule_delta_status(attempt)
+            self._update_preview_actions()
+            return
+        # A request for a different document/revision must immediately replace
+        # any previously rendered body, so stale evidence never appears current
+        # while the passive lookup is pending. The preview document label is
+        # deliberately left alone here: it is written when the bounded response
+        # arrives, so a pending lookup never names a document early.
+        self._rule_delta_result_shown = False
+        self._rule_delta_reviewable_for = None
+        if self._preview_state_label is not None:
+            self._preview_state_label.setText("Loading")
+            self._preview_state_label.setStyleSheet(
+                style.state_chip_style(self._palette, style.STATE_INFO)
+            )
+        if self._preview_body is not None:
+            self._preview_body.setPlainText(
+                "Loading the preview for this document's saved revision…"
+            )
+        self._update_preview_actions()
+        generation = self._next_preview_generation()
+        cid = contract.new_correlation_id()
+        request = build_preview_request(cid, self._document_id)
+        self._set_status(STATE_RUNNING, "loading preview")
+        if not self._send(
+            request, partial(self._on_preview_loaded, generation), self._on_preview_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_preview_loaded(self, generation: int, result: Dict[str, Any]) -> None:
+        """Render a loaded preview, discarding a late response for an old document."""
+        if generation != self._preview_generation:
+            return
+        # Rendering may re-paint a completed Build-preview attempt bound to this
+        # document/revision; the strip is then re-derived from that attempt. With
+        # no attempt this load is a passive read, so it must not claim a preview
+        # success — that is what made opening a view look like provider work.
+        self._render_preview(result)
+        self._restore_operation_status()
+
+    def _on_preview_error(self, reason: str) -> None:
+        """A failed preview request shows a bounded safe state, never a stale preview."""
+        self._set_status(STATE_FAILED, document_failure_message(reason))
+        self._clear_preview()
+
+    def _render_preview(self, preview: Dict[str, Any]) -> None:
+        """Populate the read-only Preview from the boundary's preview record.
+
+        A plain document preview that reports only "no candidate"/"no document"
+        must not overwrite a completed Build-preview attempt bound to this same
+        document/revision: the attempt is the more informative surface, and
+        navigation must never erase it.
+
+        The global strip is not this method's concern — callers re-derive it via
+        :meth:`_restore_operation_status`.
+        """
+        doc = preview.get("document") or {}
+        state = str(preview.get("state", "unknown"))
+        binding = preview.get("binding")
+        kind = binding.get("kind") if binding else None
+
+        if state in ("no_candidate", "no_document"):
+            attempt = self._current_rule_delta_attempt()
+            if attempt is not None:
+                self._render_rule_delta_result(attempt)
+                return
+
+        self._rule_delta_result_shown = False
+        if self._preview_document_label is not None:
+            name = doc.get("name") or "Untitled"
+            revision = doc.get("revision_number", 0)
+            self._preview_document_label.setText(f"{name} — revision {revision}")
+
+        self._set_preview_state_badge(state, kind)
+        if self._preview_body is not None:
+            text = format_preview(preview)
+            if self._document_dirty:
+                text += (
+                    "\n\nNote: this preview reflects only the last saved "
+                    "revision. Your unsaved edits are not represented here."
+                )
+            self._preview_body.setPlainText(text)
+        self._update_preview_actions()
+
+    def _update_preview_actions(self) -> None:
+        """Expose only the action valid for the current saved document state."""
+        has_revision = bool((self._document_head or {}).get("revision_id"))
+        if self._preview_build_button is not None:
+            self._preview_build_button.setVisible(
+                bool(self._document_id)
+                and has_revision
+                and not self._document_dirty
+                and not self._candidate_is_current()
+                and not self._rule_delta_pending
+            )
+        if self._document_adopt_button is not None:
+            self._document_adopt_button.setVisible(self._candidate_is_current())
+
+    def _set_preview_state_badge(self, state: str, kind: Optional[str]) -> None:
+        """Set the Preview state badge word + semantic colour (never colour alone)."""
+        if self._preview_state_label is None:
+            return
+        self._preview_state_label.setText(preview_badge(state, kind))
+        token = _PREVIEW_STATE_TOKEN.get(state, style.STATE_NEUTRAL)
+        self._preview_state_label.setStyleSheet(style.state_chip_style(self._palette, token))
+        self._preview_state_label.setToolTip(preview_state_message(state))
+
+    def _clear_preview(self) -> None:
+        """Reset the read-only Preview to the bounded no-document empty state."""
+        self._rule_delta_result_shown = False
+        if self._preview_state_label is not None:
+            self._preview_state_label.setText(preview_state_label("no_document"))
+            self._preview_state_label.setStyleSheet(
+                style.state_chip_style(self._palette, style.STATE_NEUTRAL)
+            )
+            self._preview_state_label.setToolTip(preview_state_message("no_document"))
+        if self._preview_document_label is not None:
+            self._preview_document_label.setText("")
+        if self._preview_body is not None:
+            self._preview_body.setPlainText(
+                "No document is open. Create a document, describe the expected "
+                "behaviour, then save it before building a preview."
+            )
+        self._update_preview_actions()
+
+    # -- Document/version-authority flow (P4.4) ---------------------------
+
+    def _sync_library_selection(self) -> None:
+        """Point the explorer's selection at the selected/open item by stable id.
+
+        Selection is keyed by the opaque folder/document id, never list index,
+        title, creation order, tree position or revision number, so a refresh
+        cannot silently retarget the open document.
+        """
+        view = self._library_view
+        if view is None:
+            return
+        target = self._library_selected_id or self._document_id
+        item = self._library_item_by_id.get(target) if target else None
+        if item is None:
+            view.clearSelection()
+            return
+        view.setCurrentIndex(item.index())
+
+    def _update_library_actions(self) -> None:
+        """Enable the organise controls only when a live item is selected."""
+        selected = self._library_selected_id
+        has_selection = selected is not None
+        if self._library_rename_button is not None:
+            self._library_rename_button.setEnabled(has_selection)
+        if self._library_move_button is not None:
+            self._library_move_button.setEnabled(has_selection)
+        if self._library_trash_button is not None:
+            self._library_trash_button.setEnabled(has_selection)
+        if self._library_organise_row is not None:
+            self._library_organise_row.setVisible(has_selection)
+
+    def _selected_folder_id(self) -> Optional[str]:
+        """Return the selected folder id (for create-under), else ``None`` (root)."""
+        selected = self._library_selected_id
+        if selected and selected.startswith("dir:"):
+            return selected
+        return None
+
+    def _selected_item_name(self) -> Optional[str]:
+        """Return the display name of the selected item (for the rename prefill)."""
+        selected = self._library_selected_id
+        if not selected:
+            return None
+        for folder in self._library_folders:
+            if folder.get("folder_id") == selected:
+                return folder.get("name")
+        for doc in self._library_documents:
+            if doc.get("document_id") == selected:
+                return doc.get("name")
+        return None
+
+    def _candidate_is_current(self) -> bool:
+        """True when the latest candidate is bound to the current document head.
+
+        The candidate is current only while it is not adopted, its bound revision
+        is still the head, its fingerprint matches the head's content and its
+        accepted predecessor is still the current accepted version.
+        """
+        candidate = self._document_candidate
+        head = self._document_head
+        if not candidate or not head:
+            return False
+        return (
+            not candidate.get("adopted")
+            and candidate.get("document_revision_id") == head.get("revision_id")
+            and candidate.get("document_fingerprint") == head.get("content_fingerprint")
+            and candidate.get("accepted_predecessor_id")
+            == self._current_accepted_version_id
+        )
+
+    def _update_document_actions(self) -> None:
+        """Show one clear next action while preserving all existing safety gates."""
+        has_doc = self._document_id is not None
+        has_revision = bool((self._document_head or {}).get("revision_id"))
+
+        if self._document_empty_state is not None:
+            self._document_empty_state.setVisible(not has_doc)
+        if self._document_editor is not None:
+            self._document_editor.setVisible(has_doc)
+        if self._document_save_button is not None:
+            self._document_save_button.setVisible(has_doc)
+            self._document_save_button.setEnabled(
+                has_doc and (self._document_dirty or not has_revision)
+            )
+        if self._document_candidate_button is not None:
+            self._document_candidate_button.setVisible(
+                has_doc and has_revision and not self._document_dirty
+            )
+            label = (
+                "Update preview"
+                if self._rule_delta_reviewable_for == self._document_id
+                else "Build preview"
+            )
+            self._document_candidate_button.setText(label)
+            self._document_candidate_button.setAccessibleName(label)
+            self._document_candidate_button.setEnabled(
+                not self._document_candidate_pending and not self._rule_delta_pending
+            )
+        # Review and adoption live in Preview, not beside Save.
+        if self._document_review_button is not None:
+            self._document_review_button.setVisible(False)
+        if self._document_adopt_button is not None:
+            self._document_adopt_button.setVisible(self._candidate_is_current())
+        if self._document_action_hint is not None:
+            if not has_doc:
+                hint = ""
+            elif self._document_dirty:
+                hint = "Save changes to continue."
+            elif not has_revision:
+                hint = "Save this document to build a preview."
+            elif self._rule_delta_pending or self._document_candidate_pending:
+                hint = "Preparing the review state…"
+            else:
+                hint = "Preview uses the last saved revision."
+            self._document_action_hint.setText(hint)
+        self._update_preview_actions()
+
+    def _review_candidate(self) -> None:
+        """Open the Preview surface to review the current candidate."""
+        self._select_destination("preview")
+
+    def _update_document_status(self) -> None:
+        if self._document_status_label is None:
+            return
+        if self._document_id is None:
+            if self._document_title_label is not None:
+                self._document_title_label.setText("Document")
+            self._document_status_label.setText("Ready to start")
+            self._document_status_label.setStyleSheet(
+                style.state_chip_style(self._palette, style.STATE_NEUTRAL)
+            )
+            self._update_document_actions()
+            return
+        name = self._document_name or "Untitled"
+        if self._document_title_label is not None:
+            self._document_title_label.setText(name)
+        if self._document_dirty:
+            self._document_status_label.setText("Unsaved changes")
+            token = style.STATE_WARNING
+        else:
+            self._document_status_label.setText("Saved")
+            token = style.STATE_SUCCESS
+        self._document_status_label.setStyleSheet(
+            style.state_chip_style(self._palette, token)
+        )
+        self._update_document_actions()
+
+    def _mark_document_dirty(self, *_args: Any) -> None:
+        if self._document_loading:
+            return
+        self._document_dirty = True
+        self._update_document_status()
+        self._update_document_actions()
+
+    def _refresh_library(self) -> None:
+        """Request the joined folder/document tree for the explorer."""
+        cid = contract.new_correlation_id()
+        request = build_get_library_request(cid)
+        self._set_status(STATE_RUNNING, "listing documents")
+        if not self._send(request, self._on_library_loaded, self._on_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_library_loaded(self, result: Dict[str, Any]) -> None:
+        self._apply_library(result)
+        # Listing the library is a passive read: it reports no operation
+        # outcome, so the strip is left to the current truth (a bound attempt,
+        # else neutral) rather than a success token that would read as
+        # completed work.
+        self._restore_operation_status()
+
+    def _apply_library(self, tree: Dict[str, Any]) -> None:
+        """Adopt a joined tree and repopulate the explorer, preserving selection.
+
+        Selection is keyed by the opaque id, never list index, title, order, path
+        or tree position. Only an externally removed document (no longer listed)
+        clears the open selection, with a clear message.
+        """
+        self._library_folders = list(tree.get("folders") or [])
+        self._library_documents = list(tree.get("documents") or [])
+        self._documents = [
+            {
+                "document_id": d.get("document_id"),
+                "name": d.get("name"),
+                "kind": d.get("kind"),
+                "head_revision_number": d.get("head_revision_number", 0),
+                "revision_count": d.get("revision_count", 0),
+            }
+            for d in self._library_documents
+        ]
+        # A rename of the open document refreshes its header name.
+        if self._document_id is not None:
+            for d in self._library_documents:
+                if d.get("document_id") == self._document_id:
+                    self._document_name = d.get("name")
+                    break
+        self._populate_library_tree()
+        self._update_document_status()
+        if self._document_id is not None and not any(
+            d.get("document_id") == self._document_id for d in self._library_documents
+        ):
+            self._clear_open_document()
+            self._set_status(STATE_SUCCESS, "the open document was removed")
+
+    def _populate_library_tree(self) -> None:
+        """Rebuild the explorer's tree and trash strip from the joined library.
+
+        Folders whose own flag or an ancestor is trashed are hidden (their
+        descendants reappear when the folder is restored); documents are leaves
+        under a visible parent folder or the root. Trashed items (own flag) are
+        listed in the Trash strip with a Restore action.
+        """
+        model = self._library_model
+        if model is None:
+            return
+        folders = self._library_folders
+        documents = self._library_documents
+        folder_by_id = {f["folder_id"]: f for f in folders if f.get("folder_id")}
+
+        def hidden(fid: str) -> bool:
+            seen = set()
+            current = fid
+            while current is not None and current not in seen:
+                seen.add(current)
+                folder = folder_by_id.get(current)
+                if folder is None:
+                    return False
+                if folder.get("trashed"):
+                    return True
+                current = folder.get("parent_id")
+            return False
+
+        model.clear()
+        model.setHorizontalHeaderLabels(["Name"])
+        self._library_item_by_id = {}
+
+        children = {fid: [] for fid in folder_by_id}
+        roots = []
+        for fid, folder in folder_by_id.items():
+            if hidden(fid):
+                continue
+            pid = folder.get("parent_id")
+            if pid and pid in folder_by_id and not hidden(pid):
+                children.setdefault(pid, []).append(fid)
+            else:
+                roots.append(fid)
+
+        def name_sort(fid: str):
+            return (str(folder_by_id[fid].get("name") or "").lower(), fid)
+
+        roots.sort(key=name_sort)
+        for key in list(children):
+            children[key].sort(key=name_sort)
+
+        def add_folder(parent_item: QStandardItem, fid: str) -> None:
+            folder = folder_by_id[fid]
+            item = QStandardItem(folder.get("name") or fid)
+            item.setEditable(False)
+            item.setData(fid, Qt.UserRole)
+            item.setData("folder", Qt.UserRole + 1)
+            item.setFont(style.tree_folder_font())
+            parent_item.appendRow(item)
+            self._library_item_by_id[fid] = item
+            for kid in children.get(fid, []):
+                add_folder(item, kid)
+
+        root = model.invisibleRootItem()
+        for fid in roots:
+            add_folder(root, fid)
+
+        visible_docs = [d for d in documents if not d.get("trashed")]
+        visible_docs.sort(
+            key=lambda d: (
+                str(d.get("name") or "").lower(),
+                str(d.get("document_id") or ""),
+            )
+        )
+        for doc in visible_docs:
+            pid = doc.get("parent_id")
+            if pid and hidden(pid):
+                continue
+            item = QStandardItem(doc.get("name") or doc.get("document_id"))
+            item.setEditable(False)
+            item.setData(doc.get("document_id"), Qt.UserRole)
+            item.setData("document", Qt.UserRole + 1)
+            parent_item = self._library_item_by_id.get(pid, root)
+            parent_item.appendRow(item)
+            self._library_item_by_id[doc.get("document_id")] = item
+
+        self._library_view.expandAll()
+        self._populate_trash_list()
+        self._sync_library_selection()
+        self._update_library_actions()
+
+    def _populate_trash_list(self) -> None:
+        """Rebuild the recoverable Trash strip (own-trashed folders + documents)."""
+        layout = self._library_trash_layout
+        if layout is None:
+            return
+        while layout.count():
+            entry = layout.takeAt(0)
+            widget = entry.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        trash = [f for f in self._library_folders if f.get("trashed")]
+        trash += [d for d in self._library_documents if d.get("trashed")]
+        trash.sort(key=lambda x: str(x.get("name") or "").lower())
+
+        has_trash = bool(trash)
+        if self._library_trash_header is not None:
+            self._library_trash_header.setVisible(has_trash)
+        if self._library_trash_scroll is not None:
+            self._library_trash_scroll.setVisible(has_trash)
+        if not trash:
+            return
+
+        for entry in trash:
+            item_id = entry.get("folder_id") or entry.get("document_id")
+            name = entry.get("name") or item_id
+            label = QLabel(name)
+            label.setStyleSheet(style.status_label_style(self._palette))
+            label.setAccessibleName(f"Trashed {name}")
+            restore = QPushButton("Restore")
+            restore.setAccessibleName(f"Restore {name}")
+            restore.clicked.connect(partial(self._restore_item, item_id))
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(
+                style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+            )
+            row_layout.setSpacing(style.GAP_TIGHT)
+            row_layout.addWidget(label, stretch=1)
+            row_layout.addWidget(restore)
+            layout.addWidget(row)
+        layout.addStretch(1)
+
+    def _on_library_clicked(self, index) -> None:
+        """Handle a single click: select a folder, or open a document.
+
+        A folder click selects it (for Rename/Move/Trash); a document click
+        selects it and opens it with a single click. Opening an already-open,
+        clean document is a no-op (no accidental reopen); opening a different
+        document while dirty offers Save / Discard / Cancel.
+        """
+        model = self._library_model
+        if model is None:
+            return
+        item = model.itemFromIndex(index)
+        if item is None:
+            return
+        node_type = item.data(Qt.UserRole + 1)
+        item_id = item.data(Qt.UserRole)
+        if not item_id:
+            return
+        self._library_selected_id = item_id
+        self._update_library_actions()
+        if node_type == "document":
+            self._open_document_by_id(item_id)
+
+    def _new_document(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, "New document", "Document name (.md or .txt):"
+        )
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        self._pending_document_name = name
+        cid = contract.new_correlation_id()
+        request = build_create_document_request(cid, name, self._selected_folder_id())
+        self._set_status(STATE_RUNNING, "creating document")
+        if not self._send(request, self._on_document_created, self._on_create_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_document_created(self, result: Dict[str, Any]) -> None:
+        doc = result.get("document") or {}
+        self._document_id = doc.get("document_id")
+        self._apply_document_state(result)
+        # The boundary returns the updated tree in the same result, so the
+        # explorer reflects the new document without a second round-trip.
+        tree = result.get("tree")
+        if tree is not None:
+            self._apply_library(tree)
+        self._set_status(STATE_SUCCESS, "document created")
+
+    def _new_folder(self) -> None:
+        name, ok = QInputDialog.getText(self, "New folder", "Folder name:")
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        cid = contract.new_correlation_id()
+        request = build_create_folder_request(cid, name, self._selected_folder_id())
+        self._set_status(STATE_RUNNING, "creating folder")
+        if not self._send(
+            request, partial(self._on_library_mutated, "folder created"), self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_library_mutated(self, message: str, result: Dict[str, Any]) -> None:
+        """Apply an updated tree after a library mutation and report the outcome."""
+        self._apply_library(result)
+        self._set_status(STATE_SUCCESS, message)
+
+    def _rename_item(self) -> None:
+        item_id = self._library_selected_id
+        if not item_id:
+            return
+        current = self._selected_item_name() or ""
+        name, ok = QInputDialog.getText(
+            self, "Rename", "New name:", text=current
+        )
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        cid = contract.new_correlation_id()
+        request = build_rename_item_request(cid, item_id, name)
+        self._set_status(STATE_RUNNING, "renaming")
+        if not self._send(
+            request, partial(self._on_library_mutated, "renamed"), self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _move_item(self) -> None:
+        item_id = self._library_selected_id
+        if not item_id:
+            return
+        labels = ["(root)"]
+        ids: List[Optional[str]] = [None]
+        for folder in self._library_folders:
+            if folder.get("trashed"):
+                continue
+            if folder.get("folder_id") == item_id:
+                continue
+            labels.append(folder.get("name") or folder.get("folder_id"))
+            ids.append(folder.get("folder_id"))
+        choice, ok = QInputDialog.getItem(
+            self, "Move", "Move to folder:", labels, 0, False
+        )
+        if not ok:
+            return
+        try:
+            parent_id = ids[labels.index(choice)]
+        except ValueError:
+            return
+        cid = contract.new_correlation_id()
+        request = build_move_item_request(cid, item_id, parent_id)
+        self._set_status(STATE_RUNNING, "moving")
+        if not self._send(
+            request, partial(self._on_library_mutated, "moved"), self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _trash_item(self) -> None:
+        item_id = self._library_selected_id
+        if not item_id:
+            return
+        if self._item_is_non_empty_folder(item_id):
+            box = QMessageBox(self)
+            box.setWindowTitle("Move to Trash")
+            box.setText("Move this folder and its contents to Trash?")
+            box.setInformativeText(
+                "The folder contains items. Trash is recoverable — nothing is "
+                "permanently deleted."
+            )
+            trash_button = box.addButton("Move to Trash", QMessageBox.AcceptRole)
+            cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+            box.setDefaultButton(cancel_button)
+            box.exec()
+            if box.clickedButton() is not trash_button:
+                return
+        cid = contract.new_correlation_id()
+        request = build_trash_item_request(cid, item_id)
+        self._set_status(STATE_RUNNING, "moving to Trash")
+        if not self._send(
+            request, partial(self._on_library_mutated, "moved to Trash"), self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _item_is_non_empty_folder(self, item_id: str) -> bool:
+        """True when ``item_id`` is a folder with at least one live direct child."""
+        if not item_id.startswith("dir:"):
+            return False
+        for folder in self._library_folders:
+            if folder.get("trashed"):
+                continue
+            if folder.get("parent_id") == item_id:
+                return True
+        for doc in self._library_documents:
+            if doc.get("trashed"):
+                continue
+            if doc.get("parent_id") == item_id:
+                return True
+        return False
+
+    def _restore_item(self, item_id: str) -> None:
+        if not item_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_restore_item_request(cid, item_id)
+        self._set_status(STATE_RUNNING, "restoring")
+        if not self._send(
+            request, partial(self._on_library_mutated, "restored"), self._on_document_error
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_create_document_error(self, reason: str) -> None:
+        """Handle a create-document failure, naming the requested name on a conflict.
+
+        A name conflict identifies the requested (user-facing) name and asks for
+        another name, without exposing internal ids or paths. Every other create
+        failure falls through to the shared bounded error handler.
+        """
+        if reason == "document_name_in_use":
+            name = self._pending_document_name or ""
+            message = f'The name "{name}" is already in use. Choose another name.'
+            self._set_status(STATE_FAILED, message)
+            if self._document_result is not None:
+                self._document_result.setPlainText(
+                    f"New document unavailable.\n\n{message}"
+                )
+        else:
+            self._on_document_error(reason)
+
+    def _open_document_by_id(self, document_id: str) -> None:
+        """Open a document, guarding unsaved changes.
+
+        Opening the already-open clean document is a no-op (no accidental reopen
+        or duplicate request); opening a different document while dirty offers
+        Save / Discard / Cancel.
+        """
+        if document_id == self._document_id and not self._document_dirty:
+            return
+        if self._document_dirty:
+            self._guard_dirty_switch(document_id)
+            return
+        self._do_open_document(document_id)
+
+    def _guard_dirty_switch(self, target_id: str) -> None:
+        """Offer Save / Discard / Cancel before switching away from a dirty document."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Unsaved changes")
+        box.setText("Save changes to this document before opening another?")
+        box.setInformativeText("Your unsaved edits will be lost if you discard them.")
+        save_button = box.addButton("Save", QMessageBox.AcceptRole)
+        discard_button = box.addButton("Discard", QMessageBox.DestructiveRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_button:
+            self._pending_document_switch_id = target_id
+            self._save_document()
+        elif clicked is discard_button:
+            self._document_dirty = False
+            self._do_open_document(target_id)
+
+    def _next_document_open_generation(self) -> int:
+        """Advance the open generation so a late open response is discarded."""
+        self._document_open_generation += 1
+        return self._document_open_generation
+
+    def _do_open_document(self, document_id: str) -> None:
+        generation = self._next_document_open_generation()
+        cid = contract.new_correlation_id()
+        request = build_open_document_request(cid, document_id)
+        self._set_status(STATE_RUNNING, "opening document")
+        if not self._send(
+            request,
+            partial(self._on_working_document_opened, generation),
+            self._on_document_error,
+        ):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_working_document_opened(self, generation: int, result: Dict[str, Any]) -> None:
+        if generation != self._document_open_generation:
+            return
+        self._apply_document_state(result)
+        self._set_status(STATE_SUCCESS, "document opened")
+
+    def _apply_document_state(self, result: Dict[str, Any]) -> None:
+        """Load the full document state into the editor and the state area.
+
+        The open document id is taken from the result (not the explorer), so an
+        open always binds the editor to the exact document the boundary returned;
+        the explorer selection is re-pointed at it by id.
+        """
+        document = result.get("document") or {}
+        # Invalidate any pending/in-flight interpretation for the previous
+        # document so a late response can never render against this one.
+        self._next_rule_delta_generation()
+        self._reset_rule_delta_state()
+        self._document_id = document.get("document_id")
+        self._document_name = document.get("name")
+        head = result.get("head_revision") or {}
+        self._document_head = head
+        self._document_loading = True
+        try:
+            self._document_editor.setPlainText(head.get("content", ""))
+        finally:
+            self._document_loading = False
+        self._document_base_revision_id = head.get("revision_id")
+        self._document_dirty = False
+        self._sync_library_selection()
+        self._refresh_document_meta(result)
+
+    def _clear_open_document(self) -> None:
+        """Clear the open document after an external delete/corrupt.
+
+        This is the only path that changes the open selection without an explicit
+        user action. The editor is emptied and actions/candidate state are reset;
+        a clear message is shown and the user can Open another document.
+        """
+        self._next_rule_delta_generation()
+        self._reset_rule_delta_state()
+        self._document_id = None
+        self._document_name = None
+        self._document_base_revision_id = None
+        self._document_head = {}
+        self._document_candidate = None
+        self._document_candidate_id = None
+        self._document_versions = []
+        self._current_accepted_version_id = None
+        self._document_loading = True
+        try:
+            self._document_editor.setPlainText("")
+        finally:
+            self._document_loading = False
+        self._document_dirty = False
+        self._document_result.setPlainText(
+            "The open document was removed or is no longer available.\n\n"
+            "Select another document in the library to open it."
+        )
+        self._update_document_status()
+        self._update_document_actions()
+        self._refresh_preview()
+        self._populate_versions_list()
+        self._sync_library_selection()
+
+    def _refresh_document_meta(self, result: Dict[str, Any]) -> None:
+        """Refresh candidate/accepted/version metadata without touching the editor.
+
+        Used after candidate/adopt/restore so any unsaved editor text is never
+        silently discarded.
+        """
+        candidate = result.get("candidate")
+        self._document_candidate = candidate
+        self._document_candidate_id = (
+            candidate.get("candidate_id") if candidate else None
+        )
+        self._document_versions = list(result.get("versions") or [])
+        self._current_accepted_version_id = result.get("current_accepted_version_id")
+        self._populate_versions_list()
+        self._document_result.setPlainText(format_document_state(result))
+        self._update_document_status()
+        self._update_document_actions()
+        self._refresh_preview()
+
+    def _populate_versions_list(self) -> None:
+        """Rebuild the Versions drawer: revision-aware accepted-app rows.
+
+        Each row shows the accepted app and the document revision it accepted
+        (never a raw version id). The empty state explains that Save stores
+        requirements but does not adopt an app.
+        """
+        layout = self._versions_layout
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        if not self._document_versions:
+            empty = QLabel(
+                "No accepted app version yet.\n\n"
+                "Save stores your requirements; it does not adopt an app. "
+                "To make an accepted app, create a preview and then adopt it."
+            )
+            empty.setObjectName("secondary")
+            empty.setStyleSheet(style.secondary_text_style(self._palette))
+            empty.setWordWrap(True)
+            empty.setAccessibleName("No accepted app version")
+            layout.addWidget(empty)
+            next_button = QPushButton(
+                "Build preview"
+                if self._document_id and self._document_head and not self._document_dirty
+                else "Go to Document"
+            )
+            next_button.setObjectName("primaryButton")
+            next_button.setAccessibleName(next_button.text())
+            if next_button.text() == "Build preview":
+                next_button.clicked.connect(self._build_preview)
+            else:
+                next_button.clicked.connect(partial(self._select_destination, "document"))
+            layout.addWidget(next_button, alignment=Qt.AlignLeft)
+            layout.addStretch(1)
+            return
+
+        for index, version in enumerate(self._document_versions, start=1):
+            version_id = version.get("version_id")
+            revision_number = version.get("document_revision_number")
+            if revision_number is not None:
+                label_text = f"Accepted app {index} — from revision {revision_number}"
+            else:
+                label_text = f"Accepted app {index}"
+            if version_id == self._current_accepted_version_id:
+                label_text += " (current)"
+            if version.get("restore_of"):
+                label_text += " (restored)"
+            label = QLabel(label_text)
+            label.setStyleSheet(style.status_label_style(self._palette))
+            label.setAccessibleName(label_text)
+
+            restore = QPushButton("Restore")
+            restore.setAccessibleName(f"Restore {label_text}")
+            restore.clicked.connect(partial(self._restore_version, version_id))
+
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(
+                style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+            )
+            row_layout.setSpacing(style.GAP_TIGHT)
+            row_layout.addWidget(label, stretch=1)
+            row_layout.addWidget(restore)
+            layout.addWidget(row)
+
+        layout.addStretch(1)
+
+    def _save_document(self) -> None:
+        if not self._document_id:
+            return
+        content = self._document_editor.toPlainText()
+        cid = contract.new_correlation_id()
+        request = build_save_document_request(
+            cid, self._document_id, content, self._document_base_revision_id
+        )
+        self._set_status(STATE_RUNNING, "saving document")
+        if not self._send(request, self._on_document_saved, self._on_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_document_saved(self, result: Dict[str, Any]) -> None:
+        revision = result.get("revision") or {}
+        self._document_base_revision_id = revision.get("revision_id")
+        self._document_head = revision
+        self._document_dirty = False
+        self._update_document_status()
+        self._update_document_actions()
+        self._set_status(
+            STATE_SUCCESS, f"document saved (rev {result.get('head_revision_number')})"
+        )
+        self._refresh_preview()
+        # A dirty-switch that chose Save now opens the deferred target document.
+        if self._pending_document_switch_id is not None:
+            target = self._pending_document_switch_id
+            self._pending_document_switch_id = None
+            self._do_open_document(target)
+
+    # -- Provider-to-rule-delta interpretation flow (P4.8) ------------------
+
+    def _next_rule_delta_generation(self) -> int:
+        """Advance the interpretation generation and return its new value.
+
+        Every prepare/interpret chain is tagged with the generation that started
+        it, so a late or stale response for a previously opened document is
+        discarded rather than shown against the wrong document.
+        """
+        self._rule_delta_generation += 1
+        return self._rule_delta_generation
+
+    def _reset_rule_delta_state(self) -> None:
+        """Clear any pending interpretation scope and reviewable flag.
+
+        Called when the open document changes so a confirmation dialog left
+        open, or an in-flight response, can never bind to a different document.
+        """
+        self._pending_rule_delta_token = None
+        self._pending_rule_delta_document_id = None
+        self._pending_rule_delta_disclosure = ""
+        self._rule_delta_reviewable_for = None
+
+    def _build_preview(self) -> None:
+        """Build (or update) the provider-backed rule-delta preview.
+
+        The first call only builds the offline disclosure manifest
+        (``prepare_rule_delta``); it never contacts the provider. A confirmation
+        dialog (default Cancel) then gates the single ``interpret_rule_delta``
+        request. Duplicate clicks and late/stale responses are suppressed.
+        """
+        if (
+            not self._document_id
+            or self._rule_delta_pending
+            or self._document_candidate_pending
+        ):
+            return
+        generation = self._next_rule_delta_generation()
+        self._rule_delta_pending = True
+        self._update_document_actions()
+        cid = contract.new_correlation_id()
+        request = build_prepare_rule_delta_request(cid, self._document_id)
+        self._set_status(STATE_RUNNING, "preparing preview")
+        if not self._send(
+            request,
+            partial(self._on_rule_delta_prepared, generation),
+            self._on_rule_delta_error,
+        ):
+            self._rule_delta_pending = False
+            self._update_document_actions()
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_rule_delta_prepared(self, generation: int, result: Dict[str, Any]) -> None:
+        """Store the disclosure and open the confirmation dialog (offline so far)."""
+        if generation != self._rule_delta_generation:
+            return
+        self._rule_delta_pending = False
+        self._update_document_actions()
+        if not result.get("available"):
+            reason = str(result.get("reason", "unknown"))
+            self._set_status(STATE_FAILED, delta_interpret_state_label(reason))
+            self._render_rule_delta_failure(delta_interpret_state_label(reason))
+            return
+        token = result.get("token")
+        disclosure = result.get("disclosure") or {}
+        if not token:
+            self._set_status(STATE_FAILED, "preview disclosure is incomplete")
+            return
+        self._pending_rule_delta_token = token
+        self._pending_rule_delta_document_id = self._document_id
+        self._pending_rule_delta_disclosure = format_delta_disclosure(disclosure)
+        self._confirm_rule_delta()
+
+    def _confirm_rule_delta(self) -> None:
+        """Show the itemized disclosure and require explicit confirmation.
+
+        The default action is Cancel; cancelling (or closing the box) sends
+        nothing. Only an explicit "Build preview" proceeds to the single request.
+        """
+        box = QMessageBox(self)
+        box.setWindowTitle("Confirm rule interpretation request")
+        box.setText("Send this disclosure to DeepSeek for one rule-interpretation call?")
+        box.setInformativeText(self._pending_rule_delta_disclosure)
+        box.setDetailedText(
+            "The requirement and code-owned instructions listed above will leave "
+            "this machine and be sent to the fixed provider endpoint. Exactly one "
+            "request is made, with no retry, no repair and no fallback. The result "
+            "is a reviewable candidate — never an automatic change. Cancelling "
+            "sends nothing."
+        )
+        build_button = box.addButton("Build preview", QMessageBox.AcceptRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        if box.clickedButton() is not build_button:
+            self._pending_rule_delta_token = None
+            self._pending_rule_delta_document_id = None
+            self._pending_rule_delta_disclosure = ""
+            self._set_status(STATE_SUCCESS, "preview cancelled")
+            return
+        self._send_rule_delta()
+
+    def _send_rule_delta(self) -> None:
+        """Send the single confirmed interpretation request.
+
+        Only the bound token travels; the scope is re-derived and re-bound by the
+        boundary. A document switch between the dialog and this dispatch makes
+        the token stale, so nothing is sent.
+        """
+        token = self._pending_rule_delta_token
+        document_id = self._pending_rule_delta_document_id
+        self._pending_rule_delta_token = None
+        self._pending_rule_delta_document_id = None
+        self._pending_rule_delta_disclosure = ""
+        if not token or document_id != self._document_id:
+            self._set_status(STATE_FAILED, "preview is out of date")
+            return
+        generation = self._rule_delta_generation
+        cid = contract.new_correlation_id()
+        request = build_interpret_rule_delta_request(cid, document_id, token, True)
+        self._rule_delta_pending = True
+        self._update_document_actions()
+        self._set_status(STATE_RUNNING, "interpreting requirement")
+        if not self._send(
+            request,
+            partial(self._on_rule_delta_result, generation),
+            self._on_rule_delta_error,
+        ):
+            self._rule_delta_pending = False
+            self._update_document_actions()
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_rule_delta_result(self, generation: int, result: Dict[str, Any]) -> None:
+        """Render the bounded interpretation result, discarding a late response."""
+        if generation != self._rule_delta_generation:
+            return
+        self._rule_delta_pending = False
+        state = str(result.get("state", "unknown"))
+        self._rule_delta_reviewable_for = (
+            self._document_id if state == _RULE_DELTA_REVIEWABLE else None
+        )
+        self._record_rule_delta_attempt(result)
+        self._update_document_actions()
+        self._render_rule_delta_result(result)
+        self._set_rule_delta_status(result)
+
+    def _on_rule_delta_error(self, reason: str) -> None:
+        self._rule_delta_pending = False
+        self._update_document_actions()
+        self._set_status(STATE_FAILED, document_failure_message(reason))
+
+    def _record_rule_delta_attempt(self, result: Dict[str, Any]) -> None:
+        """Store the latest completed attempt bound to the current doc/revision.
+
+        The typed result envelope is reused verbatim (never reconstructed from a
+        status label), so Sent/Usage/reason stay exact. The attempt is bound to
+        the document and saved revision the interpret was dispatched for.
+        """
+        self._rule_delta_attempt = dict(result)
+        self._rule_delta_attempt_document_id = self._document_id
+        self._rule_delta_attempt_revision_id = self._document_base_revision_id
+
+    def _current_rule_delta_attempt(self) -> Optional[Dict[str, Any]]:
+        """Return the recorded attempt only if it is bound to the current doc/rev."""
+        if self._rule_delta_attempt is None:
+            return None
+        if self._rule_delta_attempt_document_id != self._document_id:
+            return None
+        if self._rule_delta_attempt_revision_id != self._document_base_revision_id:
+            return None
+        return self._rule_delta_attempt
+
+    def _set_rule_delta_status(self, result: Dict[str, Any]) -> None:
+        """Set the global status strip from a rendered interpretation result.
+
+        Only a reviewable candidate is a successful preview outcome; a
+        credential-missing / credential-rejected (or any other bounded) failure
+        must never render the protocol envelope as "success".
+        """
+        state = str(result.get("state", "unknown"))
+        label = delta_interpret_state_label(state)
+        if state == _RULE_DELTA_REVIEWABLE:
+            self._set_status(STATE_SUCCESS, f"preview {label}")
+        else:
+            self._set_status(STATE_FAILED, f"preview {label}")
+
+    def _restore_operation_status(self) -> None:
+        """Re-assert the honest strip state for the current document/revision.
+
+        A completed Build-preview attempt bound to the open document and saved
+        revision owns the strip with its exact typed outcome (state, reason,
+        Sent and Usage evidence); with no such attempt the strip falls back to
+        the neutral baseline. This is the single owner consulted by passive
+        navigation and passive reads, so opening a destination can neither
+        fabricate a completed provider operation nor erase real evidence, and a
+        terminal attempt still survives navigation and refresh unchanged.
+        """
+        attempt = self._current_rule_delta_attempt()
+        if attempt is None:
+            self._set_neutral_status()
+        else:
+            self._set_rule_delta_status(attempt)
+
+    def _render_rule_delta_result(self, result: Dict[str, Any]) -> None:
+        """Populate the Preview surface from a bounded interpretation result."""
+        self._rule_delta_result_shown = True
+        state = str(result.get("state", "unknown"))
+        label = delta_interpret_state_label(state)
+        if self._preview_state_label is not None:
+            self._preview_state_label.setText(label)
+            token = _RULE_DELTA_STATE_TOKEN.get(state, style.STATE_NEUTRAL)
+            self._preview_state_label.setStyleSheet(
+                style.state_chip_style(self._palette, token)
+            )
+        if self._preview_document_label is not None:
+            self._preview_document_label.setText(self._document_name or "Untitled")
+        if self._preview_body is not None:
+            text = format_delta_interpret_result(result)
+            if state == _RULE_DELTA_REVIEWABLE:
+                text += (
+                    "\n\nReviewable only. 'Use this version' is a separate, "
+                    "explicit step and is never automatic."
+                )
+            else:
+                text += "\n\nApp Candidate: none was created by this attempt."
+            self._preview_body.setPlainText(text)
+        self._update_preview_actions()
+
+    def _render_rule_delta_failure(self, label: str) -> None:
+        """Show a calm, bounded unavailable state for a failed prepare."""
+        self._rule_delta_result_shown = True
+        if self._preview_state_label is not None:
+            self._preview_state_label.setText(label)
+            self._preview_state_label.setStyleSheet(
+                style.state_chip_style(self._palette, style.STATE_ERROR)
+            )
+        if self._preview_document_label is not None:
+            self._preview_document_label.setText(self._document_name or "Untitled")
+        if self._preview_body is not None:
+            self._preview_body.setPlainText(
+                "This requirement cannot be interpreted as a rule change. "
+                "Nothing was sent."
+            )
+
+    def _create_candidate(self) -> None:
+        if not self._document_id or self._document_candidate_pending:
+            return
+        self._document_candidate_pending = True
+        self._update_document_actions()
+        cid = contract.new_correlation_id()
+        request = build_create_candidate_request(cid, self._document_id)
+        self._set_status(STATE_RUNNING, "creating candidate")
+        if not self._send(request, self._on_candidate_ready, self._on_document_error):
+            self._document_candidate_pending = False
+            self._update_document_actions()
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_candidate_ready(self, result: Dict[str, Any]) -> None:
+        self._document_candidate_pending = False
+        self._refresh_document_meta(result)
+        self._set_status(STATE_SUCCESS, "candidate created")
+
+    def _adopt_candidate(self) -> None:
+        if not self._document_id or not self._document_candidate_id:
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Use this version")
+        box.setText("Use this candidate as the Accepted Version?")
+        box.setInformativeText(
+            "The candidate is bound to the hand-written quotation fixture, not "
+            "generated from the document. Adoption revalidates it first."
+        )
+        adopt_button = box.addButton("Use this version", QMessageBox.AcceptRole)
+        cancel_button = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(cancel_button)
+        box.exec()
+        if box.clickedButton() is not adopt_button:
+            return
+        cid = contract.new_correlation_id()
+        request = build_adopt_candidate_request(
+            cid, self._document_id, self._document_candidate_id
+        )
+        self._set_status(STATE_RUNNING, "adopting candidate")
+        if not self._send(request, self._on_candidate_adopted, self._on_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_candidate_adopted(self, result: Dict[str, Any]) -> None:
+        self._refresh_document_meta(result)
+        self._set_status(STATE_SUCCESS, "candidate adopted")
+
+    def _restore_version(self, version_id: str) -> None:
+        if not self._document_id or not version_id:
+            return
+        cid = contract.new_correlation_id()
+        request = build_restore_version_request(cid, self._document_id, version_id)
+        self._set_status(STATE_RUNNING, "restoring accepted version")
+        if not self._send(request, self._on_version_restored, self._on_document_error):
+            self._set_status(STATE_FAILED, "a request is already in progress")
+
+    def _on_version_restored(self, result: Dict[str, Any]) -> None:
+        self._refresh_document_meta(result)
+        self._set_status(STATE_SUCCESS, "accepted version restored")
+
+    def _on_document_error(self, reason: str) -> None:
+        self._document_candidate_pending = False
+        self._update_document_actions()
+        self._set_status(STATE_FAILED, document_failure_message(reason))
+        if self._document_result is not None:
+            self._document_result.setPlainText(
+                f"Operation unavailable.\n\n{document_failure_message(reason)}"
+            )
+
+
+    def _on_open_failed(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+        self._set_validation_state(VALIDATION_FAILED)
+        self._update_scan_enabled()
+
+
+    def _on_scan_failed(self, reason: str) -> None:
+        self._set_status(STATE_FAILED, reason)
+        self._set_validation_state(VALIDATION_FAILED)
+
+    # -- rendering -------------------------------------------------------
+
+    def _render_scan(self, result: Dict[str, Any]) -> None:
+        """Map the scan result onto the secondary evidence surfaces."""
+        report = result.get("report", {})
+        evidence = result.get("evidence", {})
+        self._views["plan"].setPlainText(_json_text(report.get("plan", [])))
+        self._views["diff"].setPlainText(_DIFF_UNAVAILABLE)
+        self._views["problems"].setPlainText(
+            _json_text(
+                {
+                    "limitations": report.get("limitations", []),
+                    "parse_errors": evidence.get("parse_errors", []),
+                }
+            )
+        )
+        self._views["tests"].setPlainText(
+            "No test execution is available in this read-only slice."
+        )
+        self._views["evidence"].setPlainText(
+            _json_text(
+                {
+                    "validation": report.get("validation", {}),
+                    "scanner_evidence": evidence,
+                    "raw_result": result,
+                }
+            )
+        )
+
+
+    def _on_completed(self, correlation_id: str, result: Dict[str, Any]) -> None:
+        callbacks = self._pending.pop(correlation_id, None)
+        if callbacks is None:
+            return
+        on_success, _ = callbacks
+        on_success(result)
+
+    def _on_failed(self, correlation_id: str, reason: str) -> None:
+        callbacks = self._pending.pop(correlation_id, None)
+        if callbacks is None:
+            return
+        _, on_error = callbacks
+        on_error(reason)
+
+    def _on_blocked(self, correlation_id: str) -> None:
+        self._pending.pop(correlation_id, None)
+        self._set_status(STATE_BLOCKED, correlation_id)
+
+    def _on_unavailable(self, message: str) -> None:
+        self._set_status(STATE_UNAVAILABLE, message)
+
+    def _on_credential_host_blocked(self, correlation_id: str) -> None:
+        """A credential host that timed out or was abandoned must not leave the
+        add/replace action pending; it ends with a bounded failure instead."""
+        self._pending.pop(correlation_id, None)
+        self._end_profile_action()
+        self._set_settings_action_status(credential_action_message("failed"))
+        self._set_status(STATE_BLOCKED, "credential prompt blocked")
+
+    def _on_credential_host_unavailable(self, message: str) -> None:
+        """The credential host could not be launched; end with a bounded failure."""
+        self._end_profile_action()
+        self._set_settings_action_status(credential_action_message("failed"))
+        self._set_status(STATE_UNAVAILABLE, message)
+
+    def closeEvent(self, event) -> None:
+        """Reap the supervised backend when the window closes."""
+        self._supervisor.terminate()
+        self._credential_supervisor.terminate()
+        super().closeEvent(event)
+
+
+def _parse_scan_path(args: Sequence[str]) -> str:
+    for arg in args:
+        if arg == "--scan-once" or arg == contract.SERVE_SENTINEL:
+            continue
+        if not arg.startswith("-"):
+            return arg
+    return _DEFAULT_SCAN_PATH
+
+
+def run_gui(argv: Optional[Sequence[str]] = None) -> int:
+    """Create and run the desktop window; returns the application exit code."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([sys.argv[0]] + args)
+    palette = style.palette_for(app)
+    style.apply(app, palette)
+    window = MainWindow(palette=palette)
+    window.show()
+    # Automatic local readiness at startup: read saved profiles and redacted
+    # credential presence through the local boundary so the fixed status strip
+    # is truthful without a manual command, and populate the document selector
+    # for the primary Document workspace. Never a provider or network call.
+    window._refresh_profiles()
+    window._refresh_library()
+    return app.exec()
+
+
+def run_scan_once(
+    scan_path: str = _DEFAULT_SCAN_PATH, timeout_ms: int = _DEFAULT_TIMEOUT_MS
+) -> int:
+    """Run one supervised scan headlessly and print the result to stdout.
+
+    Used by ``--scan-once`` so the same QProcess supervision path — not the
+    boundary's own loop — can be exercised from a script or a frozen build.
+    """
+    app = QCoreApplication.instance() or QCoreApplication([])
+    loop = QEventLoop()
+    supervisor = BackendSupervisor(timeout_ms=timeout_ms)
+    outcome: Dict[str, Any] = {}
+
+    supervisor.completed.connect(
+        lambda cid, result: _finish(outcome, loop, STATE_SUCCESS, result=result)
+    )
+    supervisor.failed.connect(
+        lambda cid, reason: _finish(outcome, loop, STATE_FAILED, reason=reason)
+    )
+    supervisor.blocked.connect(lambda cid: _finish(outcome, loop, STATE_BLOCKED))
+    supervisor.unavailable.connect(
+        lambda message: _finish(outcome, loop, STATE_UNAVAILABLE, message=message)
+    )
+
+    correlation_id = contract.new_correlation_id()
+    supervisor.submit(correlation_id, build_request(correlation_id, scan_path))
+    loop.exec()
+
+    # Reap the backend before returning so the supervised QProcess is never
+    # destroyed while its child is still running.
+    supervisor.terminate()
+
+    if outcome.get("status") == STATE_SUCCESS:
+        print(json.dumps(outcome["result"], indent=2, sort_keys=True, ensure_ascii=False))
+        return 0
+    print(
+        f"scan did not complete: {outcome.get('status')} "
+        f"({outcome.get('reason') or outcome.get('message') or 'no detail'})",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _finish(
+    outcome: Dict[str, Any],
+    loop: QEventLoop,
+    status: str,
+    **detail: Any,
+) -> None:
+    outcome["status"] = status
+    outcome.update(detail)
+    loop.quit()
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Entry point: ``--scan-once`` runs headless supervision; else the GUI."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--scan-once" in args:
+        return run_scan_once(_parse_scan_path(args))
+    return run_gui(args)
+
+
+class BackendSupervisor(QObject):
+    """Supervise the headless backend and route its responses.
+
+    The supervisor owns one :class:`QProcess`, an incremental
+    :class:`~hrca.client_core.LineBuffer`, a :class:`~hrca.client_core.ResponseRouter`,
+    and a single-shot request timeout. It supports one in-flight request at a
+    time, which is all this slice requires.
+    """
+
+    completed = Signal(str, object)  # correlation_id, result dict
+    failed = Signal(str, str)        # correlation_id, reason/code
+    blocked = Signal(str)            # correlation_id (abandoned)
+    unavailable = Signal(str)        # human-readable backend-level message
+
+    def __init__(
+        self,
+        command: Optional[List[str]] = None,
+        timeout_ms: int = _DEFAULT_TIMEOUT_MS,
+        parent: Optional[QObject] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._command = command if command is not None else resolve_backend_command()
+        self._timeout_ms = timeout_ms
+        self._router = ResponseRouter()
+        self._line_buffer = LineBuffer()
+        self._proc: Optional[QProcess] = None
+        self._started = False
+        self._current: Optional[str] = None
+        self._pending_write: Optional[str] = None
+
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._on_timeout)
+
+    # -- public ----------------------------------------------------------
+
+    def submit(self, correlation_id: str, request: Dict[str, Any]) -> bool:
+        """Submit one pre-built request envelope; returns False if already busy.
+
+        The caller builds the envelope (with :mod:`hrca.client_core` builders)
+        so the supervisor never decides what action to take; it only carries the
+        bytes across the boundary and matches the response by correlation id.
+        """
+        if self._current is not None:
+            return False
+        self._current = correlation_id
+        self._router.track(correlation_id)
+        self._ensure_started()
+
+        line = contract.dumps(request) + "\n"
+        if self._started:
+            self._write(line)
+        else:
+            self._pending_write = line
+        self._timer.start(self._timeout_ms)
+        return True
+
+    def terminate(self) -> None:
+        """Terminate the backend (cancellation v1) and abandon in-flight work."""
+        ids = self._router.abandon_all()
+        self._current = None
+        for correlation_id in ids:
+            self.blocked.emit(correlation_id)
+        self._reap()
+
+    def _reap(self) -> None:
+        """Stop the timer and reap the QProcess child, without emitting signals.
+
+        Kept separate from :meth:`terminate` so a Python finalizer can reap the
+        process without emitting ``blocked`` (whose slots reference the owning
+        window, which may already be mid-teardown when the finalizer runs).
+
+        ``_current`` is cleared first so the ``finished`` / ``errorOccurred``
+        signals that ``waitForFinished`` can trigger during reaping are ignored
+        instead of cascading into ``failed`` / ``unavailable``.
+        """
+        self._current = None
+        self._timer.stop()
+        if self._proc is not None:
+            proc = self._proc
+            self._proc = None
+            self._started = False
+            # Bounded reaping so the child never outlives the QProcess object:
+            # graceful SIGTERM first, then SIGKILL, each with a bounded wait.
+            if proc.state() != QProcess.NotRunning:
+                proc.terminate()
+                if not proc.waitForFinished(1500):
+                    proc.kill()
+                    proc.waitForFinished(1500)
+            proc.deleteLater()
+
+    def __del__(self) -> None:
+        """Reap the backend when the supervisor is collected (no explicit close).
+
+        PySide6 does not emit ``QObject.destroyed`` when a parent-less object is
+        reclaimed by the Python garbage collector, so a Python-level finalizer is
+        the only reliable hook to terminate the QProcess child before its C++
+        side is destroyed. It reaps directly (via :meth:`_reap`) rather than
+        through :meth:`terminate`, because emitting ``blocked`` here would invoke
+        slots on a window that is already being torn down.
+
+        :meth:`_reap` is bounded (SIGTERM, then SIGKILL, each with a bounded
+        wait) and idempotent (it clears ``_proc`` before reaping), so a second
+        call is safe. The only exception tolerated here is the narrow PySide6
+        ``RuntimeError`` raised when Qt has already torn down the child
+        ``QObject`` (``Internal C++ object already deleted``) during interpreter
+        shutdown — in that case there is no live process left to reap. Any other
+        exception propagates: an unexpected lifecycle failure must not be hidden.
+        """
+        try:
+            self._reap()
+        except RuntimeError:
+            pass
+
+    # -- QProcess plumbing ----------------------------------------------
+
+    def _ensure_started(self) -> None:
+        if self._proc is not None and self._proc.state() != QProcess.NotRunning:
+            return
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.SeparateChannels)
+        proc.started.connect(self._on_started)
+        proc.readyReadStandardOutput.connect(self._on_stdout)
+        proc.readyReadStandardError.connect(self._on_stderr)
+        proc.errorOccurred.connect(self._on_error)
+        proc.finished.connect(self._on_finished)
+        self._proc = proc
+        self._started = False
+        self._pending_write = None
+        proc.start(self._command[0], self._command[1:])
+
+    def _write(self, line: str) -> None:
+        if self._proc is not None:
+            self._proc.write(line.encode("utf-8"))
+
+    def _on_started(self) -> None:
+        self._started = True
+        if self._pending_write is not None:
+            line = self._pending_write
+            self._pending_write = None
+            self._write(line)
+
+    def _on_stdout(self) -> None:
+        proc = self.sender()
+        if proc is None or proc is not self._proc:
+            return
+        data = bytes(proc.readAllStandardOutput())
+        text = data.decode("utf-8", errors="replace")
+        try:
+            lines = self._line_buffer.feed(text)
+        except contract.ContractError:
+            self._fail_current("message_too_large")
+            self.terminate()
+            return
+        for line in lines:
+            if not line:
+                continue
+            try:
+                envelope = contract.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                self._fail_current(REASON_NON_JSON)
+                self.terminate()
+                return
+            if not isinstance(envelope, dict):
+                self._fail_current(REASON_NON_JSON)
+                self.terminate()
+                return
+            self._route(envelope)
+
+    def _on_stderr(self) -> None:
+        # Backend logs belong on stderr; the client drains them so the pipe
+        # never fills and, in this slice, ignores their content.
+        proc = self.sender()
+        if proc is not None and proc is self._proc:
+            proc.readAllStandardError()
+
+    def _on_error(self, error: QProcess.ProcessError) -> None:
+        if self.sender() is not None and self.sender() is not self._proc:
+            return
+        if self._current is not None:
+            self._fail_current(REASON_LAUNCH_FAILED)
+            self.unavailable.emit("backend failed to start")
+
+    def _on_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
+        proc = self.sender()
+        if self._current is not None:
+            self._fail_current(REASON_BACKEND_EXITED)
+        if self._proc is proc:
+            self._proc = None
+            self._started = False
+
+    def _on_timeout(self) -> None:
+        # Cancellation v1: terminate and restart; the abandoned request is
+        # marked blocked, never silently failed.
+        self.terminate()
+
+    # -- routing ---------------------------------------------------------
+
+    def _route(self, envelope: Dict[str, Any]) -> None:
+        correlation_id = envelope.get("correlation_id")
+        if not self._router.match(correlation_id):
+            # Stale response whose correlation id no longer matches an
+            # in-flight request: discard.
+            return
+        self._router.resolve(correlation_id)
+        self._current = None
+        self._timer.stop()
+        if envelope.get("ok"):
+            self.completed.emit(correlation_id, envelope.get("result", {}))
+        else:
+            error = envelope.get("error") or {}
+            code = error.get("code") if isinstance(error.get("code"), str) else "internal_error"
+            self.failed.emit(correlation_id, code)
+
+    def _fail_current(self, reason: str) -> None:
+        if self._current is None:
+            return
+        correlation_id = self._current
+        self._current = None
+        self._router.resolve(correlation_id)
+        self._timer.stop()
+        self.failed.emit(correlation_id, reason)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+__all__ = [
+    "PythonHighlighter",
+    "CodeView",
+    "ElidedLabel",
+    "HairlineSplitter",
+    "BackendSupervisor",
+    "MainWindow",
+    "run_gui",
+    "run_scan_once",
+    "main",
+]

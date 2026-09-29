@@ -1,0 +1,209 @@
+{
+  "corpus": "validation",
+  "notes": [
+    "Every expectation in this file was authored by hand against the P5.5a contract, not produced by running the implementation. The check records, the form-input literals and the rejection sentences are stated here independently of hrca.validation_policy, so a drift in that module is a failing test rather than a silently updated oracle.",
+    "The plan and the candidate binding are NOT pinned as literals. They depend on the scanner grammar context, which is the running interpreter's, so a literal would be portable only by accident. What is pinned is the plan's *shape*: the ordered check ids, each check's full record, and the policy version.",
+    "The simulated container writes exactly what packaging/runner/runner_main.py writes for the same payload: it resolves the handler through the code-owned registry, calls it as (result, error), and emits {\"result\": ...} or {\"error\": ...} as compact JSON. That is why a simulated pass is a faithful reproduction of the in-image wire contract and not a guess at it.",
+    "A 'mode' names how the simulated container behaves for one check: 'ok' writes a valid result, 'nonzero' exits 1, 'garbage' writes unparseable output, 'timeout_injected' raises TimeoutError before writing, 'timeout_real' raises subprocess.TimeoutExpired, which is what subprocess.run(timeout=...) actually raises.",
+    "'timeout_injected' and 'timeout_real' are separate cases because they exercise two different exception provenances through one lifecycle: a literal TimeoutError, and the genuine subprocess.TimeoutExpired that CPython raises for subprocess.run(timeout=...). Since the P5.5r1 repair both reach the runner's kill, removal, staged-root cleanup and bounded token, so both must report timed_out with the runner's own 'timeout' limitation and no leak.",
+    "unavailable is the only outcome reachable on a host with no reachable Docker daemon, which is what this environment reports. It is the honest result, not a skipped test."
+  ],
+  "candidate_check": {
+    "note": "The candidate-validation check (P5.5a-r2), pinned by the image digest the local hrca-runner:v1 was actually rebuilt to. This file is the fixture a rebuild must re-pin: if the image is rebuilt and these two digests are not updated, the candidate-syntax tests fail rather than a run quietly reporting evidence about an image nobody reviewed. Repinned at P5.5a-r3c. Two rebuilds from the same pinned base produced the SAME platform manifest (sha256:0ba2c00a...) and the SAME config (sha256:89b3c9d9...) and the SAME eight layer diff_ids, but a DIFFERENT attestation manifest each time, so the tag's immutable identity - which docker inspect reports as an index digest - moved on every rebuild (0ae0f7f5..., then f6b3752c..., then 0809a47a...). Content is reproducible; that index identity is not. The candidate path was NOT exercised against any of these identities: preparing an image is not validating one, and P5.5b remains unauthorized.",
+    "image": "hrca-runner:v1",
+    "image_digest": "sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258",
+    "entrypoint": "runner_syntax",
+    "candidate_mount": "/candidate",
+    "artifact_schema": "hrca-syntax-check/1",
+    "record": {
+      "check_id": "check:candidate_syntax",
+      "ordinal": 4,
+      "kind": "candidate_syntax",
+      "entrypoint": "runner_syntax",
+      "candidate_mount": "/candidate",
+      "image": "hrca-runner:v1",
+      "image_digest": "sha256:0809a47a00fcce555500b02d6645b68a565ad2a8299416bd9aa02f459ebaf258",
+      "timeout_seconds": 10.0,
+      "resource_profile": "runner_default",
+      "network_policy": "none",
+      "credential_policy": "none",
+      "working_directory": "image_owned",
+      "expected_artifact": "output.json"
+    },
+    "mount_order": ["staged_input_read_only", "staged_output", "candidate_read_only"],
+    "mount_count": 3
+  },
+  "policy_version": "1.0.0",
+  "plan_schema_version": "1.0.0",
+  "attempt_schema_version": "1.0.0",
+  "result_schema_version": "1.0.0",
+  "check_order": [
+    "check:late_return_fee",
+    "check:quotation_alternate",
+    "check:quotation_reference"
+  ],
+  "checks": {
+    "check:late_return_fee": {
+      "ordinal": 3,
+      "package_id": "late-return-fee",
+      "form_input": {"days_late": 1},
+      "parameters": null,
+      "timeout_seconds": 10.0,
+      "resource_profile": "runner_default",
+      "network_policy": "none",
+      "credential_policy": "none",
+      "working_directory": "image_owned",
+      "expected_artifact": "output.json"
+    },
+    "check:quotation_alternate": {
+      "ordinal": 2,
+      "package_id": "quotation-rules-alt",
+      "form_input": {"subtotal": "200.00", "member": true, "region": "west"},
+      "parameters": null,
+      "timeout_seconds": 10.0,
+      "resource_profile": "runner_default",
+      "network_policy": "none",
+      "credential_policy": "none",
+      "working_directory": "image_owned",
+      "expected_artifact": "output.json"
+    },
+    "check:quotation_reference": {
+      "ordinal": 1,
+      "package_id": "quotation-rules",
+      "form_input": {"subtotal": "200.00", "member": true, "region": "west"},
+      "parameters": null,
+      "timeout_seconds": 10.0,
+      "resource_profile": "runner_default",
+      "network_policy": "none",
+      "credential_policy": "none",
+      "working_directory": "image_owned",
+      "expected_artifact": "output.json"
+    }
+  },
+  "expected_isolation": {
+    "network_disabled": true,
+    "read_only_rootfs": true,
+    "non_root": true,
+    "capabilities_dropped": true,
+    "no_new_privileges": true,
+    "resource_bounded": true,
+    "input_mount_read_only": true,
+    "mount_count": 2,
+    "write_mounts_are_staged_only": true,
+    "no_docker_socket_mount": true,
+    "image_is_code_owned": true,
+    "removed_after_run": true,
+    "init_reaps_children": true
+  },
+  "expected_argv_prefix": [
+    "docker",
+    "run",
+    "--name",
+    "<container>",
+    "--rm",
+    "--init",
+    "--network",
+    "none",
+    "--user",
+    "65534:65534",
+    "--security-opt",
+    "no-new-privileges",
+    "--cap-drop",
+    "ALL",
+    "--read-only"
+  ],
+  "override_rejections": {
+    "command": "a plan request may not supply a command",
+    "shell": "a plan request may not supply a command",
+    "argv": "a plan request may not supply a command",
+    "image": "a plan request may not select an image",
+    "mount": "a plan request may not add a mount",
+    "environment": "a plan request may not set the environment",
+    "timeout": "a plan request may not set a timeout",
+    "memory": "a plan request may not set resource limits",
+    "network": "a plan request may not change the network policy",
+    "credential": "a plan request may not supply a credential",
+    "privileged": "a plan request may not change the privilege model",
+    "cwd": "a plan request may not set a working directory",
+    "handler": "a plan request may not redefine a check"
+  },
+  "scenarios": [
+    {
+      "case": "all_checks_pass",
+      "purpose": "The exact supported case: every product-owned check runs, exits zero and validates. This is passing evidence and still not an approval.",
+      "modes": {"check:late_return_fee": "ok", "check:quotation_alternate": "ok", "check:quotation_reference": "ok"},
+      "runtime": "available",
+      "expect_state": "passed",
+      "expect_check_states": ["passed", "passed", "passed"],
+      "evidence_complete": true,
+      "expect_limitations": []
+    },
+    {
+      "case": "one_check_fails",
+      "purpose": "A single failing check cannot be averaged away by its passing neighbours: the overall state is the most severe state any check reached.",
+      "modes": {"check:late_return_fee": "ok", "check:quotation_alternate": "nonzero", "check:quotation_reference": "ok"},
+      "runtime": "available",
+      "expect_state": "failed",
+      "expect_check_states": ["passed", "failed", "passed"],
+      "evidence_complete": false
+    },
+    {
+      "case": "every_check_fails",
+      "modes": {"check:late_return_fee": "nonzero", "check:quotation_alternate": "nonzero", "check:quotation_reference": "nonzero"},
+      "runtime": "available",
+      "expect_state": "failed",
+      "expect_check_states": ["failed", "failed", "failed"],
+      "evidence_complete": false
+    },
+    {
+      "case": "artifact_unreadable",
+      "purpose": "A container that exits zero but writes nothing parseable is unknown, never passed: missing or malformed evidence is visible and non-passing.",
+      "modes": {"check:late_return_fee": "garbage", "check:quotation_alternate": "ok", "check:quotation_reference": "ok"},
+      "runtime": "available",
+      "expect_state": "unknown",
+      "expect_check_states": ["unknown", "passed", "passed"],
+      "evidence_complete": false
+    },
+    {
+      "case": "timeout_injected",
+      "purpose": "An injected TimeoutError is the one shape the accepted runner catches, so this is the case where its kill-and-cleanup path runs.",
+      "modes": {"check:late_return_fee": "timeout_injected", "check:quotation_alternate": "ok", "check:quotation_reference": "ok"},
+      "runtime": "available",
+      "expect_state": "timed_out",
+      "expect_check_states": ["timed_out", "passed", "passed"],
+      "evidence_complete": false,
+      "timeout_cleanup_ran": true
+    },
+    {
+      "case": "timeout_real",
+      "purpose": "A genuine subprocess.TimeoutExpired, the exception CPython raises for subprocess.run(timeout=...), follows the runner's timeout lifecycle exactly once: kill, removal, staged-root cleanup and the bounded token.",
+      "modes": {"check:late_return_fee": "timeout_real", "check:quotation_alternate": "ok", "check:quotation_reference": "ok"},
+      "runtime": "available",
+      "expect_state": "timed_out",
+      "expect_check_states": ["timed_out", "passed", "passed"],
+      "evidence_complete": false,
+      "timeout_cleanup_ran": true
+    },
+    {
+      "case": "cancelled_before_dispatch",
+      "purpose": "Cancellation is cooperative and pre-dispatch: every check reports cancelled with no argv, because nothing ran.",
+      "modes": {"check:late_return_fee": "ok", "check:quotation_alternate": "ok", "check:quotation_reference": "ok"},
+      "runtime": "available",
+      "cancel": true,
+      "expect_state": "cancelled",
+      "expect_check_states": ["cancelled", "cancelled", "cancelled"],
+      "evidence_complete": false,
+      "dispatched": false
+    },
+    {
+      "case": "runtime_unavailable",
+      "purpose": "With no reachable container runtime, every check is unavailable and carries the runner's own bounded preflight reason. Nothing is dispatched and nothing is invented to fill the gap.",
+      "modes": {"check:late_return_fee": "ok", "check:quotation_alternate": "ok", "check:quotation_reference": "ok"},
+      "runtime": "absent",
+      "expect_state": "unavailable",
+      "expect_check_states": ["unavailable", "unavailable", "unavailable"],
+      "evidence_complete": false,
+      "dispatched": false
+    }
+  ]
+}

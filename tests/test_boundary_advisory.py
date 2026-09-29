@@ -13,7 +13,10 @@ import os
 import tempfile
 import unittest
 
-from hrca import advisory, boundary, contract, credential_store, deepseek_transport, provider
+from hrca import boundary
+from hrca.core import contract
+from hrca.integrations import credential_store, deepseek_transport, provider
+from hrca.twin import advisory
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.normpath(os.path.join(_HERE, "..", "fixtures"))

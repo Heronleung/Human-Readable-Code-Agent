@@ -19,8 +19,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtWidgets import QApplication
 
-    from hrca import client, contract
-    from hrca.client import MainWindow
+    from hrca.core import contract
+    from hrca.ui import client
+    from hrca.ui.client import MainWindow
 
     HAS_PYSIDE6 = True
 except ImportError:  # pragma: no cover - exercised in the no-Qt environment
@@ -185,6 +186,31 @@ def _interpret_result(state="reviewable_candidate"):
             "binding": {"document_revision_id": "rev:1"},
         }
     return result
+
+
+def _terminal_result(state, sent, usage=None, limitations=None):
+    """An accurate terminal interpret envelope (no reviewable candidate)."""
+    return {
+        "schema_version": "1.0.0",
+        "state": state,
+        "provider_id": "deepseek",
+        "model": "deepseek-flash",
+        "token": "delta:abc123",
+        "sent": sent,
+        "usage": usage,
+        "candidate": None,
+        "limitations": limitations or [],
+    }
+
+
+def _no_candidate_preview(document_id="doc:d1", name="requirements.md",
+                          revision_number=1):
+    return {
+        "document": {"document_id": document_id, "name": name, "kind": "md",
+                      "revision_number": revision_number, "revision_id": "rev:1"},
+        "state": "no_candidate",
+        "binding": None,
+    }
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
@@ -406,11 +432,12 @@ class RuleDeltaGuiTests(unittest.TestCase):
         self.window._send = fake
         self.window._build_preview()
         self.window._on_rule_delta_result(
-            self.window._rule_delta_generation, _interpret_result("credential_missing")
+            self.window._rule_delta_generation,
+            _terminal_result("credential_missing", sent=False),
         )
         return fake
 
-    def test_provider_refresh_clears_stale_credential_missing(self):
+    def test_provider_refresh_keeps_completed_credential_missing(self):
         fake = self._render_credential_missing()
         self.assertIn("Credential missing", self.window._preview_body.toPlainText())
         self.assertEqual(
@@ -431,16 +458,17 @@ class RuleDeltaGuiTests(unittest.TestCase):
             }
         )
 
-        # The stale failure is cleared from the Preview body, the badge and the
-        # global status strip, and no prepare/interpret is re-dispatched.
-        self.assertNotIn("Credential missing", self.window._preview_body.toPlainText())
-        self.assertNotEqual(
+        # The completed attempt is retained (re-rendered), not erased or
+        # relabelled as a preview success; no prepare/interpret is re-dispatched.
+        self.assertIn("Credential missing", self.window._preview_body.toPlainText())
+        self.assertEqual(
             self.window._preview_state_label.text(), "Credential missing"
         )
-        self.assertNotEqual(
+        self.assertEqual(
             self.window.status_label.text(),
             "Status: failed — preview Credential missing",
         )
+        self.assertNotIn("preview ready", self.window.status_label.text())
         self.assertEqual(len(fake.requests), before)
         actions = [r["action"] for r in fake.requests]
         self.assertNotIn(contract.ACTION_INTERPRET_RULE_DELTA, actions)
@@ -524,6 +552,370 @@ class RuleDeltaGuiTests(unittest.TestCase):
         self.assertEqual(
             self.window.status_label.text(),
             "Status: failed — preview API key rejected",
+        )
+
+    # -- P4.8b/v9: completed-attempt retention across navigation -------------
+
+    def _render_terminal_attempt(self, state, sent):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation, _terminal_result(state, sent)
+        )
+        return fake
+
+    def _navigate_around(self):
+        # Document -> Preview -> Versions -> Preview, re-rendering the preview
+        # with the honest "no candidate" boundary result each visit.
+        for _ in range(3):
+            self.window._select_destination("document")
+            self.window._select_destination("preview")
+            self.window._on_preview_loaded(
+                self.window._preview_generation, _no_candidate_preview()
+            )
+            self.window._select_destination("versions")
+            self.window._select_destination("preview")
+            self.window._on_preview_loaded(
+                self.window._preview_generation, _no_candidate_preview()
+            )
+
+    def _provider_actions(self, fake):
+        return [
+            r["action"]
+            for r in fake.requests
+            if r["action"] in (
+                contract.ACTION_PREPARE_RULE_DELTA,
+                contract.ACTION_INTERPRET_RULE_DELTA,
+            )
+        ]
+
+    def test_credential_rejected_survives_navigation(self):
+        fake = self._render_terminal_attempt("credential_rejected", sent=True)
+        self.assertEqual(
+            self.window.status_label.text(),
+            "Status: failed — preview API key rejected",
+        )
+
+        self._navigate_around()
+
+        body = self.window._preview_body.toPlainText()
+        self.assertIn("API key rejected", body)
+        self.assertIn("Sent: yes", body)
+        self.assertIn("Usage: unknown", body)
+        self.assertEqual(self.window._preview_state_label.text(), "API key rejected")
+        self.assertEqual(
+            self.window.status_label.text(),
+            "Status: failed — preview API key rejected",
+        )
+        # Navigation never re-dispatches a provider prepare/interpret.
+        self.assertEqual(self._provider_actions(fake), [contract.ACTION_PREPARE_RULE_DELTA])
+
+    def test_credential_missing_survives_navigation_with_sent_no(self):
+        fake = self._render_terminal_attempt("credential_missing", sent=False)
+
+        self._navigate_around()
+
+        body = self.window._preview_body.toPlainText()
+        self.assertIn("Credential missing", body)
+        self.assertIn("Sent: no", body)
+        self.assertIn("Usage: unknown", body)
+        self.assertEqual(self.window._preview_state_label.text(), "Credential missing")
+        self.assertEqual(
+            self.window.status_label.text(),
+            "Status: failed — preview Credential missing",
+        )
+        self.assertEqual(self._provider_actions(fake), [contract.ACTION_PREPARE_RULE_DELTA])
+
+    def test_nearby_failure_survives_navigation(self):
+        fake = self._render_terminal_attempt("timeout", sent=True)
+
+        self._navigate_around()
+
+        body = self.window._preview_body.toPlainText()
+        self.assertIn("Timed out", body)
+        self.assertIn("Sent: yes", body)
+        self.assertEqual(self.window._preview_state_label.text(), "Timed out")
+        self.assertEqual(self._provider_actions(fake), [contract.ACTION_PREPARE_RULE_DELTA])
+
+    def test_reviewable_attempt_survives_navigation(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation, _interpret_result("reviewable_candidate")
+        )
+        self.assertIn("Reviewable", self.window._preview_body.toPlainText())
+
+        self._navigate_around()
+
+        self.assertIn("Reviewable", self.window._preview_body.toPlainText())
+        self.assertEqual(self.window._preview_state_label.text(), "Reviewable")
+        self.assertEqual(self._provider_actions(fake), [contract.ACTION_PREPARE_RULE_DELTA])
+
+    def test_navigation_without_attempt_is_honest_and_offline(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._select_destination("preview")
+        self.window._on_preview_loaded(
+            self.window._preview_generation, _no_candidate_preview()
+        )
+
+        self.assertEqual(self.window._preview_state_label.text(), "No preview yet")
+        self.assertIsNone(self.window._rule_delta_attempt)
+        self.assertIsNone(self.window._rule_delta_reviewable_for)
+        self.assertIsNone(self.window._document_candidate)
+        self.assertEqual(self._provider_actions(fake), [])
+
+    def test_document_switch_does_not_leak_prior_attempt(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation,
+            _terminal_result("credential_rejected", sent=True),
+        )
+        self.assertIn("API key rejected", self.window._preview_body.toPlainText())
+
+        # A different document must not show the old attempt as current.
+        self.window._apply_document_state(_state("doc:d2", "other.md"))
+        self.window._on_preview_loaded(
+            self.window._preview_generation, _no_candidate_preview("doc:d2", "other.md")
+        )
+        self.assertNotIn("API key rejected", self.window._preview_body.toPlainText())
+        self.assertEqual(self.window._preview_state_label.text(), "No preview yet")
+
+        # Returning to the original unchanged document restores its bound attempt.
+        self.window._apply_document_state(_state())
+        self.window._on_preview_loaded(
+            self.window._preview_generation, _no_candidate_preview()
+        )
+        self.assertIn("API key rejected", self.window._preview_body.toPlainText())
+        self.assertEqual(self.window._preview_state_label.text(), "API key rejected")
+
+    def test_revision_change_hides_prior_attempt(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation,
+            _terminal_result("credential_rejected", sent=True),
+        )
+        self.assertIn("API key rejected", self.window._preview_body.toPlainText())
+
+        # Saving a new revision rebinds the document; the old attempt is no
+        # longer current and must not be repainted for the new revision.
+        self.window._on_document_saved({
+            "revision": {"revision_id": "rev:2", "revision_number": 2,
+                         "content": "Members receive a 10% discount on quotations.",
+                         "content_fingerprint": "g" * 64},
+            "head_revision_number": 2,
+        })
+        self.window._on_preview_loaded(
+            self.window._preview_generation, _no_candidate_preview(revision_number=2)
+        )
+        self.assertNotIn("API key rejected", self.window._preview_body.toPlainText())
+        self.assertEqual(self.window._preview_state_label.text(), "No preview yet")
+
+    def test_cancel_preserves_prior_attempt(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation,
+            _terminal_result("credential_rejected", sent=True),
+        )
+        self.assertIn("API key rejected", self.window._preview_body.toPlainText())
+
+        patcher, _boxes = _patch_box(None)  # default Cancel
+        with patcher:
+            self.window._build_preview()
+            self.window._on_rule_delta_prepared(
+                self.window._rule_delta_generation, _prepare_result()
+            )
+
+        # Cancelling sends nothing (no interpret) and keeps the prior attempt.
+        self.assertIn("API key rejected", self.window._preview_body.toPlainText())
+        self.assertEqual(self.window._preview_state_label.text(), "API key rejected")
+        self.assertNotIn(
+            contract.ACTION_INTERPRET_RULE_DELTA, self._provider_actions(fake)
+        )
+
+    def test_failure_creates_no_candidate(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation,
+            _terminal_result("credential_rejected", sent=True),
+        )
+        self.assertIsNone(self.window._document_candidate)
+        self.assertIsNone(self.window._document_candidate_id)
+        self.assertIsNone(self.window._rule_delta_reviewable_for)
+
+    # -- P4.8b/v12: passive navigation is operation-neutral ------------------
+
+    def _library_tree(self, document_id="doc:d1", name="requirements.md"):
+        """A joined library tree still listing the open document.
+
+        A listing that omitted it would legitimately clear the open document,
+        which is a different (and real) outcome than the one under test.
+        """
+        return {
+            "folders": [],
+            "documents": [
+                {
+                    "document_id": document_id,
+                    "name": name,
+                    "kind": "md",
+                    "head_revision_number": 1,
+                    "revision_count": 1,
+                }
+            ],
+        }
+
+    def _navigate_with_reads(self):
+        """Traverse Document/Preview/Versions, completing every passive read.
+
+        Each visit runs its destination's read to completion, which is what the
+        native app does when the destinations are opened. Versions performs no
+        read of its own, so it shows whatever the last honest state was.
+        """
+        for _ in range(2):
+            self.window._select_destination("document")
+            self.window._on_library_loaded(self._library_tree())
+            self.window._select_destination("preview")
+            self.window._on_preview_loaded(
+                self.window._preview_generation, _no_candidate_preview()
+            )
+            self.window._select_destination("versions")
+
+    def test_no_attempt_navigation_is_neutral(self):
+        self.window._apply_document_state(_state())
+        self.window._send = _FakeSend()
+
+        self._navigate_with_reads()
+
+        # Opening a destination is not a provider operation, so the strip never
+        # claims one — not on a fresh visit and not on a repeated one.
+        status = self.window.status_label.text()
+        self.assertEqual(status, "Status: idle — ready")
+        self.assertNotIn("success", status)
+        self.assertNotIn("preview ready", status)
+        # The destinations keep their own truthful bodies beside it.
+        self.assertEqual(self.window._preview_state_label.text(), "No preview yet")
+        self.assertIn(
+            "no app preview yet", self.window._preview_body.toPlainText()
+        )
+
+    def test_no_attempt_navigation_dispatches_no_provider_work(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+
+        self._navigate_with_reads()
+
+        # Passive navigation reads only; it never reaches the provider, never
+        # creates a Candidate and never adopts an Accepted Version.
+        actions = [r["action"] for r in fake.requests]
+        self.assertEqual(self._provider_actions(fake), [])
+        self.assertNotIn(contract.ACTION_DOCUMENT_CREATE_CANDIDATE, actions)
+        self.assertNotIn(contract.ACTION_DOCUMENT_ADOPT, actions)
+        self.assertIsNone(self.window._document_candidate)
+        self.assertIsNone(self.window._document_candidate_id)
+        self.assertIsNone(self.window._current_accepted_version_id)
+        self.assertEqual(self.window._document_versions, [])
+        # The only traffic is the two passive reads themselves.
+        self.assertTrue(
+            set(actions) <= {
+                contract.ACTION_LIBRARY_GET,
+                contract.ACTION_DOCUMENT_PREVIEW,
+            }
+        )
+
+    def test_library_listing_is_not_an_operation_outcome(self):
+        self.window._apply_document_state(_state())
+        self.window._select_destination("preview")
+        self.window._on_preview_loaded(
+            self.window._preview_generation, _no_candidate_preview()
+        )
+        # Give the strip a completed-operation token, as opening a document does.
+        self.window._set_status(client.STATE_SUCCESS, "document opened")
+
+        self.window._select_destination("document")
+        self.window._on_library_loaded(self._library_tree())
+
+        status = self.window.status_label.text()
+        self.assertEqual(status, "Status: idle — ready")
+        self.assertNotIn("success", status)
+        # The listing itself still reached the explorer.
+        self.assertEqual(len(self.window._library_documents), 1)
+
+    def test_cancel_requested_attempt_survives_navigation(self):
+        # A cancellation that reaches the client as a typed interpret envelope
+        # is a completed attempt, so it keeps its exact evidence like any other
+        # terminal state: "Cancelled", nothing sent, no usage.
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation,
+            _terminal_result("cancel_requested", sent=False),
+        )
+        self.assertEqual(
+            self.window.status_label.text(), "Status: failed — preview Cancelled"
+        )
+
+        self._navigate_with_reads()
+
+        body = self.window._preview_body.toPlainText()
+        self.assertIn("Cancelled", body)
+        self.assertIn("Sent: no", body)
+        self.assertIn("Usage: unknown", body)
+        self.assertEqual(self.window._preview_state_label.text(), "Cancelled")
+        self.assertEqual(
+            self.window.status_label.text(), "Status: failed — preview Cancelled"
+        )
+        self.assertEqual(
+            self._provider_actions(fake), [contract.ACTION_PREPARE_RULE_DELTA]
+        )
+
+    def test_attempt_status_survives_refresh_after_navigation(self):
+        self.window._apply_document_state(_state())
+        fake = _FakeSend()
+        self.window._send = fake
+        self.window._build_preview()
+        self.window._on_rule_delta_result(
+            self.window._rule_delta_generation,
+            _terminal_result("credential_rejected", sent=True),
+        )
+        self._navigate_with_reads()
+
+        self.window._apply_provider_state(
+            {
+                "state": "configured",
+                "provider_id": "deepseek",
+                "model": "deepseek-flash",
+                "credential_present": True,
+            }
+        )
+
+        # The strip stays consistent with the re-rendered body: the attempt's
+        # exact typed outcome, never a success token and never neutral.
+        self.assertEqual(
+            self.window.status_label.text(), "Status: failed — preview API key rejected"
+        )
+        self.assertIn("Sent: yes", self.window._preview_body.toPlainText())
+        self.assertEqual(
+            self._provider_actions(fake), [contract.ACTION_PREPARE_RULE_DELTA]
         )
 
 

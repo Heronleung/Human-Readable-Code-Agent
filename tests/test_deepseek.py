@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from hrca import credential_store, deepseek
+from hrca.integrations import credential_store, deepseek
 
 
 class DeepSeekIdentityTests(unittest.TestCase):

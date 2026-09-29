@@ -6,14 +6,9 @@ import json
 import os
 import unittest
 
-from hrca.planning import (
-    PLAN_VERSION,
-    TaskValidationError,
-    build_plan,
-    validate_task,
-)
-from hrca.report import build_report
-from hrca.scanner import scan_directory
+from hrca.source.planning import PLAN_VERSION, TaskValidationError, build_plan, validate_task
+from hrca.source.report import build_report
+from hrca.source.scanner import scan_directory
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.normpath(os.path.join(_HERE, "..", "fixtures"))

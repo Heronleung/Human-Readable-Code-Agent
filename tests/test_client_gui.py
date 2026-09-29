@@ -8,7 +8,9 @@ core and its tests remain installable without Qt. Every test runs with
 from __future__ import annotations
 
 import gc
+import json
 import os
+import subprocess
 import sys
 import time
 import unittest
@@ -27,36 +29,14 @@ try:
         QPlainTextEdit,
         QPushButton,
         QStackedWidget,
-        QTabBar,
         QToolButton,
         QWidget,
     )
 
-    from hrca import contract, style
-    from hrca.client import (
-        BackendSupervisor,
-        CodeView,
-        DocumentView,
-        MainWindow,
-        PythonHighlighter,
-        _NAV_LABELS,
-        _SETTINGS_ACTIVE_LABEL,
-        _SETTINGS_ADD_PROFILE,
-        _SETTINGS_NO_PROFILES,
-        _SETTINGS_RENAME,
-        _SETTINGS_REPLACE,
-    )
-    from hrca.client_core import (
-        CREDENTIAL_ACTION_PENDING,
-        CREDENTIAL_MASK,
-        PROFILE_ACTION_MESSAGES,
-        PROVIDER_STATUS_PENDING,
-        TWIN_AVAILABLE,
-        TWIN_LOADING,
-        TWIN_STALE,
-        VALIDATION_OK,
-        build_request,
-    )
+    from hrca.core import contract
+    from hrca.ui import style
+    from hrca.ui.client import BackendSupervisor, CodeView, MainWindow, PythonHighlighter, _NAV_LABELS, _SETTINGS_ACTIVE_LABEL, _SETTINGS_ADD_PROFILE, _SETTINGS_NO_PROFILES, _SETTINGS_RENAME, _SETTINGS_REPLACE
+    from hrca.boundary.client_core import CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, PROVIDER_STATUS_PENDING, VALIDATION_OK, build_open_project_request, build_request, resolve_credential_host_command
 
     HAS_PYSIDE6 = True
 except ImportError:  # pragma: no cover - exercised in the no-Qt environment
@@ -120,8 +100,13 @@ def _sample_tree() -> dict:
     }
 
 
-def _run_supervisor(command, timeout_ms=8000, test_timeout_ms=12000):
-    """Run one supervised request and return the first outcome signal."""
+def _run_supervisor(command, timeout_ms=8000, test_timeout_ms=12000,
+                    request=None):
+    """Run one supervised request and return the first outcome signal.
+
+    ``request`` defaults to the read-only scan of ``fixtures``, so every
+    caller that names only a command keeps its original behaviour.
+    """
     _app()
     loop = QEventLoop()
     outcome = {}
@@ -144,7 +129,10 @@ def _run_supervisor(command, timeout_ms=8000, test_timeout_ms=12000):
     safety.timeout.connect(lambda: done("test_timeout"))
     safety.start(test_timeout_ms)
 
-    supervisor.submit("cid-test", build_request("cid-test", "fixtures"))
+    supervisor.submit(
+        "cid-test",
+        request if request is not None else build_request("cid-test", "fixtures"),
+    )
     loop.exec()
     safety.stop()
     supervisor.terminate()
@@ -186,7 +174,6 @@ class MainWindowLayoutTests(unittest.TestCase):
     def test_window_starts_with_no_project(self):
         window = MainWindow()
         self.assertIsNone(window._root)
-        self.assertEqual(window._project_label.text(), "No project open")
 
     def test_default_status_fields(self):
         window = MainWindow()
@@ -194,68 +181,7 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertIn("Unverified", window._repo_label.text())
         self.assertIn("unavailable", window._provider_label.text())
         self.assertIn("idle", window._validation_label.text())
-        self.assertIn("empty", window._twin_label.text())
 
-    def test_twin_default_state_is_empty(self):
-        window = MainWindow()
-        self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertIn("No Code Map", window._codemap_document.toPlainText())
-        self.assertIn("empty", window._twin_label.text())
-
-    def test_twin_state_transitions(self):
-        window = MainWindow()
-        window._set_twin_state(TWIN_STALE)
-        self.assertEqual(window._twin_chip.text(), "Stale")
-        self.assertIn("stale", window._codemap_document.toPlainText())
-        self.assertIn("stale", window._twin_label.text())
-
-    def test_all_six_twin_states(self):
-        window = MainWindow()
-        for state, word in style.TWIN_STATE_WORD.items():
-            with self.subTest(state=state):
-                window._set_twin_state(state)
-                self.assertEqual(window._twin_chip.text(), word)
-                self.assertTrue(window._codemap_document.toPlainText())
-                self.assertIn(state, window._twin_label.text())
-
-    def test_six_status_fields_populated(self):
-        window = MainWindow()
-        for field in (
-            window._root_label,
-            window._repo_label,
-            window._file_label,
-            window._twin_label,
-            window._provider_label,
-            window._validation_label,
-        ):
-            self.assertTrue(field.fullText(), field.objectName())
-
-    def _laid_out_sizes(self, window, width):
-        window.resize(width, 840)
-        window._select_destination("source_code_map")
-        window.show()
-        QApplication.processEvents()
-        return list(window._horizontal_splitter.sizes())
-
-    def test_horizontal_splitter_stretch_factors(self):
-        # PySide6 exposes only ``setStretchFactor``, not a getter, so the
-        # factors are verified by how the three panes share extra width. The
-        # narrow width is chosen above the rail+library-explorer+minimum-pane
-        # squeeze point so the Explorer (stretch 0) keeps its width and the 3:2
-        # growth is clean.
-        window = MainWindow()
-        narrow = self._laid_out_sizes(window, 1440)
-        wide = self._laid_out_sizes(window, 2160)
-        explorer_narrow, source_narrow, twin_narrow = narrow
-        explorer_wide, source_wide, twin_wide = wide
-        # Explorer has stretch factor 0: it keeps its width as the window grows.
-        self.assertEqual(explorer_wide, explorer_narrow)
-        # Source and Twin split the added width 3:2 (stretch factors 3 and 2).
-        source_growth = source_wide - source_narrow
-        twin_growth = twin_wide - twin_narrow
-        self.assertGreater(source_growth, 0)
-        self.assertGreater(twin_growth, 0)
-        self.assertAlmostEqual(source_growth / twin_growth, 3.0 / 2.0, delta=0.15)
 
     def test_layout_builds_for_both_palettes_and_sizes(self):
         sizes = ((1024, 640), (1360, 840), (1920, 1080))
@@ -267,11 +193,7 @@ class MainWindowLayoutTests(unittest.TestCase):
                     window.show()
                     QApplication.processEvents()
                     self.assertIs(window._palette, palette)
-                    self.assertEqual(window._horizontal_splitter.count(), 3)
                     self.assertEqual(window._content_stack.count(), 6)
-                    self.assertEqual(window._horizontal_splitter.widget(0), window._explorer_panel)
-                    self.assertEqual(window._horizontal_splitter.widget(1), window._source_panel)
-                    self.assertEqual(window._horizontal_splitter.widget(2), window._twin_panel)
 
     def test_main_window_uses_supplied_palette(self):
         for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
@@ -289,7 +211,7 @@ class MainWindowLayoutTests(unittest.TestCase):
         for key in ("plan", "diff", "problems", "tests", "evidence"):
             self.assertIn(key, window._views)
 
-    def test_open_project_sets_root_and_requests_tree(self):
+    def test_open_project_sets_root_without_loading_a_tree(self):
         window = MainWindow()
         sent = []
 
@@ -300,42 +222,10 @@ class MainWindowLayoutTests(unittest.TestCase):
         window._send = fake_send
         window._on_project_opened({"root": "/some/root", "repository_state": "Unverified"})
         self.assertEqual(window._root, "/some/root")
-        self.assertEqual(window._project_label.text(), "/some/root")
-        self.assertEqual(sent[0]["action"], contract.ACTION_GET_TREE)
+        # Opening a project binds the workspace root and requests nothing: the
+        # tree view it used to load is not part of this product surface.
+        self.assertEqual(sent, [])
 
-    def test_tree_load_populates_model(self):
-        window = MainWindow()
-        window._on_tree_loaded(_sample_tree())
-        self.assertEqual(window._tree_model.rowCount(), 3)
-        # Folder labels are plain names: the disclosure chevron is painted in a
-        # fixed branch slot, never embedded in the label text.
-        self.assertEqual(window._tree_model.item(0, 0).text(), "app")
-        self.assertEqual(window._tree_model.item(1, 0).text(), "empty_dir")
-
-    def test_tree_click_requests_document(self):
-        window = MainWindow()
-        window._on_tree_loaded(_sample_tree())
-        sent = []
-
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            return True
-
-        window._send = fake_send
-        file_item = window._tree_model.item(0, 0).child(0)
-        index = window._tree_model.indexFromItem(file_item)
-        window._on_tree_clicked(index)
-        self.assertEqual(sent[0]["action"], contract.ACTION_GET_DOCUMENT)
-        self.assertEqual(sent[0]["path"], "app/main.py")
-
-    def test_document_open_adds_tab(self):
-        window = MainWindow()
-        window._on_document_opened(
-            "app/main.py",
-            {"path": "app/main.py", "name": "main.py", "size": 10, "content": "print('hi')\n"},
-        )
-        self.assertEqual(window._source_tabs.count(), 1)
-        self.assertEqual(window._current_document, "app/main.py")
 
     def test_scan_renders_secondary_surfaces(self):
         window = MainWindow()
@@ -345,13 +235,6 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertIn("掃描與分析", window._views["evidence"].toPlainText())
         self.assertEqual(window._validation_state, VALIDATION_OK)
 
-    def test_three_pane_primary_layout(self):
-        window = MainWindow()
-        splitter = window._horizontal_splitter
-        self.assertEqual(splitter.count(), 3)
-        self.assertEqual(splitter.widget(0), window._explorer_panel)
-        self.assertEqual(splitter.widget(1), window._source_panel)
-        self.assertEqual(splitter.widget(2), window._twin_panel)
 
     def test_nav_rail_is_primary_navigation(self):
         window = MainWindow()
@@ -380,13 +263,6 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertTrue(window._nav_group_container.isHidden())
         self.assertIn("▸", window._advanced_button.text())
 
-    def test_source_starts_on_empty_state(self):
-        window = MainWindow()
-        self.assertEqual(window._source_stack.currentIndex(), 0)
-        window._on_document_opened(
-            "a.py", {"path": "a.py", "name": "a.py", "size": 6, "content": "x = 1\n"}
-        )
-        self.assertEqual(window._source_stack.currentIndex(), 1)
 
     def test_scan_button_disabled_until_project_open(self):
         window = MainWindow()
@@ -463,33 +339,18 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertIsNotNone(status_bar)
         self.assertEqual(status_bar.height(), style.STATUS_BAR_HEIGHT)
 
-        # Source & Code Map retains the three-pane geometry once selected.
-        window._select_destination("source_code_map")
-        QApplication.processEvents()
-        splitter = window._horizontal_splitter
-        explorer_w, source_w, twin_w = splitter.sizes()
-        self.assertGreaterEqual(explorer_w, style.EXPLORER_MIN_WIDTH)
-        self.assertLessEqual(explorer_w, style.EXPLORER_MAX_WIDTH)
-        self.assertGreaterEqual(source_w, style.SOURCE_MIN_WIDTH)
-        self.assertGreaterEqual(twin_w, style.TWIN_MIN_WIDTH)
-
-        for pane in (window._explorer_panel, window._source_panel, window._twin_panel):
-            self.assertGreater(pane.width(), 0)
-            self.assertGreater(pane.height(), 0)
-
-        explorer_rect = window._explorer_panel.geometry()
-        source_rect = window._source_panel.geometry()
-        twin_rect = window._twin_panel.geometry()
-        self.assertLessEqual(explorer_rect.right(), source_rect.left())
-        self.assertLessEqual(source_rect.right(), twin_rect.left())
-
-        allocated = sum(splitter.sizes()) + 2 * style.SPLITTER_HANDLE_WIDTH
-        self.assertLessEqual(abs(allocated - splitter.width()), 2)
+        # Every remaining destination still pages to a laid-out, non-empty
+        # surface at each size: the rail never selects a page it cannot show.
+        for key in window._nav_buttons:
+            window._select_destination(key)
+            QApplication.processEvents()
+            page = window._content_stack.currentWidget()
+            self.assertGreater(page.width(), 0)
+            self.assertGreater(page.height(), 0)
 
     def test_geometry_matrix_across_palettes_and_sizes(self):
-        # The narrowest size is above the rail + library-explorer + minimum-pane
-        # squeeze point so the Source & Code Map panes can each hold their
-        # minimum width.
+        # The narrowest size is above the rail + library-explorer squeeze point
+        # so every destination page still holds a usable geometry.
         sizes = ((1440, 640), (1680, 840), (1920, 1080))
         for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
             for width, height in sizes:
@@ -503,11 +364,6 @@ class MainWindowLayoutTests(unittest.TestCase):
             "very_deeply_nested_directory_structure/level_one/level_two/"
             "level_three/level_four/level_five/final_target_project_root"
         )
-        window._current_document = (
-            "src/hrca/very_deeply_nested_directory_structure/level_one/"
-            "level_two/level_three/level_four/level_five/"
-            "a_particularly_long_source_module_name.py"
-        )
         window._update_status()
         window.resize(1360, 840)
         window.show()
@@ -515,7 +371,6 @@ class MainWindowLayoutTests(unittest.TestCase):
 
         for name, label, full in (
             ("root", window._root_label, f"Root: {window._root}"),
-            ("file", window._file_label, f"File: {window._current_document}"),
         ):
             with self.subTest(field=name):
                 # The complete value is preserved un-elided in the tooltip and
@@ -535,25 +390,28 @@ class MainWindowLayoutTests(unittest.TestCase):
     def test_long_path_fields_stay_on_one_status_row(self):
         window = MainWindow()
         window._root = "/home/heron/projects/Human-Readable-Code-Agent/" + "x" * 120
-        window._current_document = "src/hrca/" + "y" * 120 + ".py"
         window._update_status()
+        # Mode A collapses the diagnostic row by default; Details reveals it.
+        self.assertTrue(all(lbl.isHidden() for lbl in window._diagnostic_labels))
+        window._status_details_button.setChecked(True)
+        self.assertTrue(all(not lbl.isHidden() for lbl in window._diagnostic_labels))
         window.resize(1360, 840)
         window.show()
         QApplication.processEvents()
 
         root_label = window._root_label
-        file_label = window._file_label
+        repo_label = window._repo_label
         # Both fields remain visible and take a non-zero width on the row.
         self.assertTrue(root_label.isVisible())
-        self.assertTrue(file_label.isVisible())
+        self.assertTrue(repo_label.isVisible())
         self.assertGreater(root_label.width(), 0)
-        self.assertGreater(file_label.width(), 0)
+        self.assertGreater(repo_label.width(), 0)
         # They share one status row (the same vertical position in the bar).
         status_bar = window.findChild(QWidget, "statusBar")
         self.assertIsNotNone(status_bar)
         root_y = root_label.mapTo(status_bar, root_label.rect().topLeft()).y()
-        file_y = file_label.mapTo(status_bar, file_label.rect().topLeft()).y()
-        self.assertAlmostEqual(root_y, file_y, delta=1)
+        repo_y = repo_label.mapTo(status_bar, repo_label.rect().topLeft()).y()
+        self.assertAlmostEqual(root_y, repo_y, delta=1)
 
 
 def _source_doc(rel_path: str) -> dict:
@@ -727,1219 +585,12 @@ def _helpers_code_map_result() -> dict:
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class TwinPaneTests(unittest.TestCase):
-    """P3.4 read-only Code Map pane: auto-sync, procedural document and entity list.
-
-    These tests drive the *presentation* half only — they feed a bounded
-    ``get_code_map`` result or a fake ``_send`` and assert the pane renders the
-    procedural document and the compact entity list as text and issues the
-    sync → get_code_map selection chain. No filesystem, Twin store or backend is
-    touched.
-    """
-
-    def setUp(self):
-        _app()
-
-    def _fake_send(self, window):
-        sent = []
-
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            return True
-
-        window._send = fake_send
-        return sent
-
-    def _chain_send(self, window, sync_result=None, result=None,
-                    sync_error=None, get_error=None):
-        """A ``_send`` double that synchronously completes the sync→get chain."""
-        sent = []
-
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            action = request["action"]
-            if action == contract.ACTION_SYNC_TWIN:
-                if sync_error is not None:
-                    on_error(sync_error)
-                else:
-                    on_success(sync_result or {"state": "synchronized",
-                                               "persisted": True, "counts": {}})
-            elif action == contract.ACTION_GET_CODE_MAP:
-                if get_error is not None:
-                    on_error(get_error)
-                else:
-                    on_success(result or _code_map_result())
-            else:
-                on_success({})
-            return True
-
-        window._send = fake_send
-        return sent
-
-    def test_tree_load_triggers_auto_sync_when_root_open(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        sent = self._fake_send(window)
-        window._on_tree_loaded(_sample_tree())
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
-        self.assertNotIn("path", sent[0])
-        self.assertEqual(sent[0]["task"], {})
-
-    def test_tree_load_without_root_does_not_sync(self):
-        window = MainWindow()
-        sent = self._fake_send(window)
-        window._on_tree_loaded(_sample_tree())
-        self.assertEqual(sent, [])
-
-    def test_code_map_loaded_renders_document_and_entity_list(self):
-        window = MainWindow()
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        self.assertEqual(window._twin_chip.text(), "Available")
-        doc = window._codemap_document.toPlainText()
-        self.assertIn("Module app.service", doc)
-        self.assertIn("Method handle(request)", doc)
-        # The compact ordered entity list renders module + method entries.
-        self.assertTrue(window._codemap_entity_list.isVisibleTo(window._twin_panel))
-        self.assertEqual(window._codemap_entity_list.count(), 2)
-        self.assertEqual(
-            window._codemap_entity_list.item(0).text(),
-            "module: app.service — Module app.service",
-        )
-        self.assertEqual(
-            window._codemap_entity_list.item(1).text(),
-            "method: app.service.Service.handle — Method handle(request)",
-        )
-
-    def test_code_map_without_entities_hides_list(self):
-        window = MainWindow()
-        result = _code_map_result()
-        result["entities"] = []
-        window._on_code_map_loaded(result, rel_path="app/service.py")
-        self.assertEqual(window._codemap_entity_list.count(), 0)
-        self.assertFalse(window._codemap_entity_list.isVisibleTo(window._twin_panel))
-
-    def test_sync_result_sets_chip_and_status(self):
-        window = MainWindow()
-        window._on_twin_synced(
-            {
-                "state": "synchronized",
-                "persisted": True,
-                "counts": {"artifacts": 3, "behavior_nodes": 2,
-                           "correspondences": 5, "projections": 4},
-            }
-        )
-        self.assertEqual(window._twin_chip.text(), "Available")
-        self.assertIn("twin synchronized", window.status_label.text())
-
-    def test_sync_conflict_maps_to_conflict_chip(self):
-        window = MainWindow()
-        window._on_twin_synced({"state": "conflict", "counts": {}, "reason": "draft"})
-        self.assertEqual(window._twin_chip.text(), "Conflict")
-
-    def test_entity_selection_requests_scoped_code_map(self):
-        window = MainWindow()
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        sent = self._fake_send(window)
-        window._on_entity_selected(window._codemap_entity_list.item(0))
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["action"], contract.ACTION_GET_CODE_MAP)
-        self.assertEqual(sent[0]["task"]["selector"], "app.service")
-
-    def test_document_open_loads_code_map_for_python(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        sent = self._fake_send(window)
-        window._on_document_opened("app/main.py", _source_doc("app/main.py"))
-        # Selection immediately sets Loading and issues a scoped sync first; the
-        # previous projection (here, the empty state) stays mounted under an
-        # in-place "Updating…" status line — it is not cleared or replaced.
-        self.assertEqual(window._twin_chip.text(), "Loading")
-        self.assertEqual(window._codemap_document.toPlainText(),
-                         "No Code Map has been generated for this project.")
-        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
-        self.assertIn("Updating Code Map for app/main.py",
-                      window._codemap_status.text())
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
-        self.assertEqual(sent[0]["task"]["changed_paths"], ["app/main.py"])
-
-    def test_document_open_skips_code_map_for_non_python(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        sent = self._fake_send(window)
-        window._on_document_opened(
-            "notes.txt",
-            {"path": "notes.txt", "name": "notes.txt", "size": 5,
-             "kind": "preview", "content": "hello\n"},
-        )
-        self.assertEqual(sent, [])
-        self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertEqual(window._codemap_entity_list.count(), 0)
-
-    def test_selection_syncs_then_renders_code_map(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        sent = self._chain_send(window)
-        window._on_document_opened("app/main.py", _source_doc("app/main.py"))
-        self.assertEqual([r["action"] for r in sent],
-                         [contract.ACTION_SYNC_TWIN, contract.ACTION_GET_CODE_MAP])
-        self.assertEqual(sent[0]["task"]["changed_paths"], ["app/main.py"])
-        self.assertEqual(sent[1]["task"], {})  # whole-document (no selector)
-        self.assertEqual(window._twin_chip.text(), "Available")
-        self.assertIn("Method handle(request)", window._codemap_document.toPlainText())
-        self.assertEqual(window._codemap_entity_list.count(), 2)
-
-    def test_no_change_sync_still_renders_code_map(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        sent = self._chain_send(
-            window, sync_result={"state": "no_change", "persisted": True, "counts": {}}
-        )
-        window._on_document_opened("app/main.py", _source_doc("app/main.py"))
-        # ``no_change`` is a successful sync: the Code Map is still fetched.
-        self.assertEqual([r["action"] for r in sent][1], contract.ACTION_GET_CODE_MAP)
-        self.assertEqual(window._twin_chip.text(), "Available")
-        self.assertIn("Method handle(request)", window._codemap_document.toPlainText())
-
-    def test_pyi_selection_triggers_same_code_map_chain(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        sent = self._fake_send(window)
-        window._on_document_opened("app/stubs.pyi", _source_doc("app/stubs.pyi"))
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
-        self.assertEqual(sent[0]["task"]["changed_paths"], ["app/stubs.pyi"])
-
-    def test_late_code_map_for_previous_selection_is_discarded(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        self._fake_send(window)
-        window._on_document_opened("app/main.py", _source_doc("app/main.py"))  # gen 1
-        window._on_document_opened("app/service.py", _source_doc("app/service.py"))  # gen 2
-        # A late Code Map for generation 1 must not overwrite generation 2.
-        window._on_code_map_loaded(_code_map_result(), generation=1, rel_path="app/main.py")
-        self.assertEqual(window._twin_chip.text(), "Loading")
-        self.assertNotIn("Method handle", window._codemap_document.toPlainText())
-        # A current-generation Code Map (2) does render.
-        window._on_code_map_loaded(_code_map_result(), generation=2, rel_path="app/service.py")
-        self.assertEqual(window._twin_chip.text(), "Available")
-        self.assertIn("Method handle(request)", window._codemap_document.toPlainText())
-
-    def test_late_scoped_sync_does_not_trigger_get_code_map(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        sent = self._fake_send(window)
-        window._on_document_opened("app/main.py", _source_doc("app/main.py"))  # gen 1
-        window._on_document_opened("app/service.py", _source_doc("app/service.py"))  # gen 2
-        before = len(sent)  # two scoped syncs, no get_code_map yet
-        window._on_selection_synced("app/main.py", 1,
-                                    {"state": "synchronized", "counts": {}})
-        self.assertEqual(len(sent), before)  # stale generation: no get_code_map
-
-    def test_get_code_map_failure_shows_bounded_state(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        self._chain_send(window, get_error="twin_not_found")
-        window._on_document_opened("app/main.py", _source_doc("app/main.py"))
-        # A failed load retains the previous projection (the empty state) and
-        # surfaces the reason in the in-place status line, not by flashing Empty.
-        self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertEqual(window._codemap_document.toPlainText(),
-                         "No Code Map has been generated for this project.")
-        self.assertIn("twin_not_found", window._codemap_status.text())
-        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
-        self.assertIn("failed", window.status_label.text())
-
-    def test_sync_failure_shows_bounded_state(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        sent = self._chain_send(window, sync_error="blocked")
-        window._on_document_opened("app/main.py", _source_doc("app/main.py"))
-        # Only the scoped sync was issued; its failure surfaces a bounded status
-        # line while the previous projection stays mounted.
-        self.assertEqual([r["action"] for r in sent], [contract.ACTION_SYNC_TWIN])
-        self.assertEqual(window._twin_chip.text(), "Empty")
-        self.assertIn("blocked", window._codemap_status.text())
-        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
-
-    def test_active_file_scope_switches_and_pin_prevents_replacement(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        self._chain_send(window, result=_function_code_map_result())
-        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
-        self.assertIn("Function add", window._codemap_document.toPlainText())
-        self.assertNotIn("fmt", window._codemap_document.toPlainText())
-
-        self._chain_send(window, result=_helpers_code_map_result())
-        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
-        doc = window._codemap_document.toPlainText()
-        self.assertIn("Function fmt(value) -> str", doc)
-        self.assertNotIn("calculator", doc)  # old content is not mislabelled as helpers
-
-        # Pinning the helpers projection freezes it against a later switch back.
-        window._twin_lock_button.click()
-        doc_before = window._codemap_document.toPlainText()
-        sent = self._fake_send(window)
-        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
-        self.assertEqual(sent, [])
-        self.assertEqual(window._codemap_document.toPlainText(), doc_before)
-
-    def test_file_switch_retains_projection_until_atomic_replace(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        self._chain_send(window, result=_function_code_map_result())
-        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
-        calc_doc = window._codemap_document.toPlainText()
-        self.assertIn("Function add", calc_doc)
-
-        # Switch to helpers with a deferred response: the calculator projection
-        # stays mounted and a small in-place indicator appears.
-        sent = self._fake_send(window)
-        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
-        self.assertEqual(window._codemap_document.toPlainText(), calc_doc)
-        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
-        self.assertIn("Updating Code Map for helpers.py", window._codemap_status.text())
-        self.assertEqual(window._twin_chip.text(), "Loading")
-
-        # A single atomic replacement once the helpers response arrives.
-        window._on_code_map_loaded(
-            _helpers_code_map_result(),
-            generation=window._twin_generation,
-            rel_path="helpers.py",
-        )
-        helpers_doc = window._codemap_document.toPlainText()
-        self.assertIn("Function fmt(value) -> str", helpers_doc)
-        self.assertNotIn("calculator", helpers_doc)
-        # The status message clears, but its fixed-height region stays mounted.
-        self.assertEqual(window._codemap_status.text(), "")
-        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
-
-        # A late calculator response (older generation) is discarded.
-        window._on_code_map_loaded(
-            _function_code_map_result(),
-            generation=window._twin_generation - 1,
-            rel_path="calculator.py",
-        )
-        self.assertEqual(window._codemap_document.toPlainText(), helpers_doc)
-
-    def test_file_switch_failure_retains_projection(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        self._chain_send(window, result=_function_code_map_result())
-        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
-        calc_doc = window._codemap_document.toPlainText()
-
-        # Switch to helpers whose Code Map load fails: the calculator projection
-        # is retained and a bounded failure status is shown (no flash to Empty).
-        self._chain_send(window, get_error="twin_not_found")
-        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
-        self.assertEqual(window._codemap_document.toPlainText(), calc_doc)
-        self.assertIn("twin_not_found", window._codemap_status.text())
-        self.assertTrue(window._codemap_status.isVisibleTo(window._twin_panel))
-        self.assertEqual(window._twin_chip.text(), "Available")
-
-    def _laid_out_twin_window(self):
-        """A shown, settled MainWindow so Code Map geometry is actually computed."""
-        window = MainWindow()
-        window._root = "/some/root"
-        window.resize(1200, 800)
-        window.show()
-        QApplication.processEvents()
-        return window
-
-    def test_updating_state_preserves_document_geometry(self):
-        """Available -> Updating keeps the procedural document geometry fixed.
-
-        The in-place status region is a fixed-height, always-mounted label, so
-        entering the Updating state must not move the document, change its size,
-        alter its scroll range/position, or change the status region's own
-        geometry — the observable values that would visibly "jump" on a reflow.
-        """
-        window = self._laid_out_twin_window()
-        self._chain_send(window, result=_function_code_map_result())
-        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
-        QApplication.processEvents()
-
-        doc = window._codemap_document
-        status = window._codemap_status
-        calc_doc = doc.toPlainText()
-        self.assertIn("Function add", calc_doc)
-        self.assertGreater(doc.height(), 0)
-
-        before = {
-            "doc": doc.geometry(),
-            "scroll_value": doc.verticalScrollBar().value(),
-            "scroll_max": doc.verticalScrollBar().maximum(),
-            "status": status.geometry(),
-        }
-
-        # Deferred switch: the calculator projection stays mounted under an
-        # "Updating…" message. No geometry may change while the request is pending.
-        sent = self._fake_send(window)
-        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
-        QApplication.processEvents()
-
-        self.assertEqual(doc.toPlainText(), calc_doc)  # projection retained
-        self.assertIn("Updating Code Map for helpers.py", status.text())
-        self.assertEqual(len(sent), 1)
-
-        self.assertEqual(doc.geometry(), before["doc"])
-        self.assertEqual(doc.verticalScrollBar().value(), before["scroll_value"])
-        self.assertEqual(doc.verticalScrollBar().maximum(), before["scroll_max"])
-        self.assertEqual(status.geometry(), before["status"])
-        self.assertEqual(status.height(), style.CODEMAP_STATUS_HEIGHT)
-
-        # A matching complete response replaces the projection atomically and
-        # clears the message; the reserved status region itself never moves.
-        window._on_code_map_loaded(
-            _helpers_code_map_result(),
-            generation=window._twin_generation,
-            rel_path="helpers.py",
-        )
-        QApplication.processEvents()
-        self.assertIn("Function fmt(value) -> str", doc.toPlainText())
-        self.assertNotIn("calculator", doc.toPlainText())
-        self.assertEqual(status.text(), "")
-        self.assertEqual(status.geometry(), before["status"])
-        self.assertEqual(status.height(), style.CODEMAP_STATUS_HEIGHT)
-
-    def test_updating_failure_preserves_document_geometry(self):
-        """A failed switch retains the projection and geometry, showing a bounded status."""
-        window = self._laid_out_twin_window()
-        self._chain_send(window, result=_function_code_map_result())
-        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
-        QApplication.processEvents()
-
-        doc = window._codemap_document
-        status = window._codemap_status
-        calc_doc = doc.toPlainText()
-        before = {
-            "doc": doc.geometry(),
-            "scroll_value": doc.verticalScrollBar().value(),
-            "status": status.geometry(),
-        }
-
-        self._chain_send(window, get_error="twin_not_found")
-        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
-        QApplication.processEvents()
-
-        self.assertEqual(doc.toPlainText(), calc_doc)
-        self.assertIn("twin_not_found", status.text())
-        self.assertEqual(doc.geometry(), before["doc"])
-        self.assertEqual(doc.verticalScrollBar().value(), before["scroll_value"])
-        self.assertEqual(status.geometry(), before["status"])
-        self.assertEqual(window._twin_chip.text(), "Available")
-
-    def test_scan_completed_refreshes_selected_code_map(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        window._current_document = "app/main.py"
-        sent = self._fake_send(window)
-        window._on_scan_completed(_sample_result())
-        self.assertEqual(sent[0]["action"], contract.ACTION_SYNC_TWIN)
-        self.assertEqual(sent[0]["task"]["changed_paths"], ["app/main.py"])
-
-    def test_scan_completed_without_supported_selection_is_noop(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        window._current_document = None
-        sent = self._fake_send(window)
-        window._on_scan_completed(_sample_result())
-        self.assertEqual(sent, [])
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class CodeMapPinTests(unittest.TestCase):
-    """P3.4 Code Map pane follow/pin (lock) and entity-list navigation.
-
-    The pane is renamed "Code Map", starts unlocked and auto-follows the active
-    supported source tab; a single monochrome lock pins the displayed Code Map
-    to its source path until unpinned. The compact entity list is plain ordered
-    text: selecting an entry scopes the document to that entity's nested
-    procedure.
-    """
-
-    def setUp(self):
-        _app()
-
-    def _fake_send(self, window):
-        sent = []
-
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            return True
-
-        window._send = fake_send
-        return sent
-
-    def _chain_send(self, window, result=None):
-        sent = []
-
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            action = request["action"]
-            if action == contract.ACTION_SYNC_TWIN:
-                on_success({"state": "synchronized", "persisted": True, "counts": {}})
-            elif action == contract.ACTION_GET_CODE_MAP:
-                on_success(result or _code_map_result())
-            return True
-
-        window._send = fake_send
-        return sent
-
-    # -- rename + lock control ------------------------------------------
-
-    def test_pane_title_is_code_map(self):
-        window = MainWindow()
-        self.assertEqual(window._twin_header_label.text(), "CODE MAP")
-        self.assertEqual(window._twin_header_label.accessibleName(), "Code Map")
-        self.assertEqual(window._codemap_document.accessibleName(), "Code Map content")
-
-    def test_single_non_emoji_lock_control(self):
-        window = MainWindow()
-        lock = window._twin_lock_button
-        self.assertIsInstance(lock, QToolButton)
-        self.assertTrue(lock.isCheckable())
-        self.assertEqual(lock.text(), "")
-        self.assertFalse(lock.icon().isNull())
-        buttons = window._twin_panel.findChildren(QToolButton, "twinLockButton")
-        self.assertEqual(len(buttons), 1)
-
-    def test_starts_unlocked(self):
-        window = MainWindow()
-        self.assertFalse(window._twin_pinned)
-        self.assertFalse(window._twin_lock_button.isChecked())
-        self.assertEqual(window._twin_lock_button.accessibleName(), "Pin Code Map")
-
-    def test_lock_disabled_without_selection(self):
-        window = MainWindow()
-        self.assertFalse(window._twin_lock_button.isEnabled())
-        self.assertIn("No supported source file", window._twin_lock_button.toolTip())
-        window._root = "/some/root"
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        self.assertTrue(window._twin_lock_button.isEnabled())
-
-    # -- follow / pin / unpin -------------------------------------------
-
-    def test_python_selection_auto_renders(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        sent = self._chain_send(window)
-        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
-        self.assertEqual(
-            [r["action"] for r in sent],
-            [contract.ACTION_SYNC_TWIN, contract.ACTION_GET_CODE_MAP],
-        )
-        self.assertEqual(window._twin_chip.text(), "Available")
-        self.assertIn("Method handle(request)", window._codemap_document.toPlainText())
-
-    def test_switch_follows_new_selection(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        sent = self._fake_send(window)
-        window._on_document_opened("calculator.py", _source_doc("calculator.py"))
-        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
-        syncs = [r for r in sent if r["action"] == contract.ACTION_SYNC_TWIN]
-        self.assertEqual(len(syncs), 2)
-        self.assertEqual(syncs[0]["task"]["changed_paths"], ["calculator.py"])
-        self.assertEqual(syncs[1]["task"]["changed_paths"], ["helpers.py"])
-
-    def test_pin_retains_code_map_across_switch(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        window._twin_lock_button.click()  # pin to app/service.py
-        self.assertTrue(window._twin_pinned)
-        self.assertTrue(window._twin_lock_button.isChecked())
-        self.assertEqual(window._twin_lock_button.accessibleName(), "Unpin Code Map")
-        doc_before = window._codemap_document.toPlainText()
-        sent = self._fake_send(window)
-        window._on_document_opened("other.py", _source_doc("other.py"))
-        self.assertEqual(sent, [])
-        self.assertEqual(window._codemap_document.toPlainText(), doc_before)
-        self.assertEqual(window._active_twin_path, "app/service.py")
-
-    def test_unlock_immediately_follows_active_tab(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        window._twin_lock_button.click()  # pin
-        self._fake_send(window)
-        window._on_document_opened("helpers.py", _source_doc("helpers.py"))
-        sent = self._fake_send(window)
-        window._twin_lock_button.click()  # unpin -> follow helpers.py now
-        self.assertFalse(window._twin_pinned)
-        syncs = [r for r in sent if r["action"] == contract.ACTION_SYNC_TWIN]
-        self.assertEqual(len(syncs), 1)
-        self.assertEqual(syncs[0]["task"]["changed_paths"], ["helpers.py"])
-
-    def test_late_response_does_not_relabel_pinned_content(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        self._chain_send(window)
-        window._on_document_opened("app/service.py", _source_doc("app/service.py"))
-        self.assertEqual(window._twin_chip.text(), "Available")
-        window._twin_lock_button.click()  # pin advances the generation
-        doc_before = window._codemap_document.toPlainText()
-        window._on_code_map_loaded(_code_map_result(), generation=1, rel_path="app/service.py")
-        self.assertEqual(window._codemap_document.toPlainText(), doc_before)
-
-    def test_pinned_survives_unsupported_switch(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        window._twin_lock_button.click()
-        doc_before = window._codemap_document.toPlainText()
-        sent = self._fake_send(window)
-        window._on_document_opened(
-            "notes.txt",
-            {
-                "path": "notes.txt",
-                "name": "notes.txt",
-                "size": 5,
-                "kind": "preview",
-                "content": "hello\n",
-            },
-        )
-        self.assertEqual(sent, [])
-        self.assertEqual(window._codemap_document.toPlainText(), doc_before)
-        self.assertTrue(window._twin_lock_button.isChecked())
-
-    # -- entity list navigation + evidence -------------------------------
-
-    def test_entity_list_items_are_plain_ordered_items(self):
-        window = MainWindow()
-        window._on_code_map_loaded(_function_code_map_result(), rel_path="calculator.py")
-        self.assertEqual(window._codemap_entity_list.count(), 3)
-        expected = (
-            ("module: calculator — Module calculator", "calculator"),
-            ("function: calculator.add — Function add(left: float, right: float) -> float",
-             "calculator.add"),
-            ("function: calculator.divide — Function divide(left: float, right: float) -> float",
-             "calculator.divide"),
-        )
-        for i, (label, locator) in enumerate(expected):
-            item = window._codemap_entity_list.item(i)
-            self.assertEqual(item.text(), label)
-            self.assertEqual(item.data(Qt.UserRole), locator)
-            # Plain ordered items, not interactive buttons.
-            self.assertIsNone(window._codemap_entity_list.itemWidget(item))
-
-    def test_divide_selection_sends_scoped_get_code_map(self):
-        window = MainWindow()
-        window._on_code_map_loaded(_function_code_map_result(), rel_path="calculator.py")
-        sent = self._fake_send(window)
-        window._on_entity_selected(window._codemap_entity_list.item(2))
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]["action"], contract.ACTION_GET_CODE_MAP)
-        self.assertEqual(sent[0]["task"]["selector"], "calculator.divide")
-
-    def test_details_toggle_shows_and_hides_evidence(self):
-        window = MainWindow()
-        window._on_code_map_loaded(_function_code_map_result(), rel_path="calculator.py")
-        self.assertTrue(window._codemap_details_button.isCheckable())
-        self.assertEqual(window._codemap_details_button.accessibleName(),
-                         "Show Code Map evidence")
-        self.assertFalse(window._codemap_details.isVisibleTo(window._twin_panel))
-        window._codemap_details_button.click()
-        self.assertTrue(window._codemap_details.isVisibleTo(window._twin_panel))
-        self.assertEqual(window._codemap_details_button.accessibleName(),
-                         "Hide Code Map evidence")
-        window._codemap_details_button.click()
-        self.assertFalse(window._codemap_details.isVisibleTo(window._twin_panel))
-        self.assertEqual(window._codemap_details_button.accessibleName(),
-                         "Show Code Map evidence")
-
-    def test_evidence_renders_block_metadata(self):
-        window = MainWindow()
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        window._codemap_details_button.click()
-        evidence = window._codemap_details.toPlainText()
-        self.assertIn("Entity — codemap:app.service:entity:0", evidence)
-        self.assertIn("source: app/service.py:1", evidence)
-        self.assertIn("provenance: verified", evidence)
-        self.assertIn("confidence: high", evidence)
-        self.assertIn("state: current", evidence)
-        self.assertIn("editability: replace_description", evidence)
-
-    def test_document_and_details_are_read_only_text(self):
-        window = MainWindow()
-        window._on_code_map_loaded(_function_code_map_result(), rel_path="calculator.py")
-        self.assertIsInstance(window._codemap_document, QPlainTextEdit)
-        self.assertTrue(window._codemap_document.isReadOnly())
-        self.assertIsInstance(window._codemap_details, QPlainTextEdit)
-        self.assertTrue(window._codemap_details.isReadOnly())
-        self.assertIn("Function add", window._codemap_document.toPlainText())
-        self.assertEqual(window._codemap_entity_list.count(), 3)
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class CodeMapDraftTests(unittest.TestCase):
-    """P3.4 editable Code Map draft surface (offscreen, presentation-only).
-
-    These tests drive the presentation half only: they feed a bounded
-    ``get_code_map`` result and a fake ``_send``, then assert the edit surface
-    renders read-only facts, exposes only typed-editable blocks as one-line
-    editors (purpose text, decision condition), offers draft-only Add note /
-    Add step structure controls, and issues the seven draft actions through the
-    boundary as *typed operations*. No Twin store, draft persistence, source
-    mutation or network is exercised.
-    """
-
-    PURPOSE_ID = "codemap:app.service.Service.handle:purpose:1"
-    DECISION_ID = "codemap:app.service.Service.handle:decision:2"
-
-    def setUp(self):
-        _app()
-
-    def _fake_send(self, window):
-        sent = []
-
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            return True
-
-        window._send = fake_send
-        return sent
-
-    def _loaded_edit_surface(self):
-        """A window with a Code Map loaded, edit mode entered, and a scoped
-        ``get_code_map`` result rendered. Returns ``(window, sent)``."""
-        window = MainWindow()
-        window._root = "/some/root"
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        sent = self._fake_send(window)
-        window._edit_button.click()  # enter edit mode -> get_code_map
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        return window, sent
-
-    # -- edit action enablement + surface ----------------------------------
-
-    def test_edit_button_disabled_without_active_code_map(self):
-        window = MainWindow()
-        self.assertFalse(window._edit_button.isEnabled())
-
-    def test_edit_button_enabled_with_code_map(self):
-        window = MainWindow()
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        self.assertTrue(window._edit_button.isEnabled())
-        self.assertEqual(window._edit_button.objectName(), "editCodeMapButton")
-
-    def test_enter_edit_mode_requests_scoped_code_map_and_switches_page(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        sent = self._fake_send(window)
-        window._edit_button.click()
-        self.assertEqual([r["action"] for r in sent], [contract.ACTION_GET_CODE_MAP])
-        self.assertEqual(sent[0]["task"]["selector"], "app.service.Service.handle")
-        self.assertEqual(window._twin_stack.currentIndex(), 1)
-        self.assertTrue(window._edit_mode)
-
-    def test_exit_edit_mode_returns_to_readonly(self):
-        window = MainWindow()
-        window._root = "/some/root"
-        window._on_code_map_loaded(_code_map_result(), rel_path="app/service.py")
-        self._fake_send(window)
-        window._edit_button.click()
-        self.assertEqual(window._twin_stack.currentIndex(), 1)
-        window._exit_edit_mode()
-        self.assertFalse(window._edit_mode)
-        self.assertFalse(window._edit_button.isChecked())
-        self.assertEqual(window._twin_stack.currentIndex(), 0)
-
-    def test_draft_notice_is_present_and_bounded(self):
-        window, _ = self._loaded_edit_surface()
-        self.assertEqual(
-            window._draft_notice.text(),
-            "Edits create a draft only. Source code is unchanged.",
-        )
-        self.assertIn("Source code is unchanged", window._draft_notice.text())
-
-    # -- structured controls -----------------------------------------------
-
-    def test_read_only_facts_are_a_label_not_editable(self):
-        window, _ = self._loaded_edit_surface()
-        self.assertIsInstance(window._draft_facts, QLabel)
-        self.assertEqual(window._draft_facts.accessibleName(), "Read-only facts")
-        text = window._draft_facts.text()
-        self.assertIn("Scope: app.service.Service.handle", text)
-        self.assertIn("Baseline revision: abc123", text)
-
-    def test_controls_cover_only_typed_editable_blocks(self):
-        window, _ = self._loaded_edit_surface()
-        # Verified facts are not editable: only purpose and decision rows exist.
-        self.assertEqual(len(window._draft_controls), 2)
-        self.assertIn(self.PURPOSE_ID, window._draft_controls)
-        self.assertIn(self.DECISION_ID, window._draft_controls)
-
-    def test_purpose_and_condition_are_one_line_editors(self):
-        window, _ = self._loaded_edit_surface()
-        purpose = window._draft_controls[self.PURPOSE_ID]
-        condition = window._draft_controls[self.DECISION_ID]
-        self.assertIsInstance(purpose, QLineEdit)
-        self.assertIsInstance(condition, QLineEdit)
-        self.assertEqual(purpose.text(), "Handles a request")
-        self.assertEqual(condition.text(), "request is valid")
-        self.assertEqual(purpose.accessibleName(), "purpose editor")
-        self.assertEqual(condition.accessibleName(), "condition editor")
-        # Each row carries a checkable Mark unresolved toggle.
-        self.assertTrue(window._draft_unresolved[self.PURPOSE_ID].isCheckable())
-        self.assertTrue(window._draft_unresolved[self.DECISION_ID].isCheckable())
-
-    def test_add_note_and_step_inputs_are_present(self):
-        window, _ = self._loaded_edit_surface()
-        self.assertEqual(window._note_input.accessibleName(), "Add note text")
-        self.assertEqual(window._step_input.accessibleName(), "Add step text")
-        self.assertIsInstance(window._note_input, QLineEdit)
-        self.assertIsInstance(window._step_input, QLineEdit)
-
-    # -- save / dirty lifecycle -------------------------------------------
-
-    def test_typing_marks_dirty_and_save_collects_operations(self):
-        window, sent = self._loaded_edit_surface()
-        purpose = window._draft_controls[self.PURPOSE_ID]
-        purpose.setText("  A service handler  ")
-        self.assertTrue(window._draft_dirty)
-        window.save_draft_button.click()
-        self.assertEqual(sent[-1]["action"], contract.ACTION_SAVE_DRAFT)
-        operations = sent[-1]["task"]["operations"]
-        self.assertEqual(len(operations), 1)
-        self.assertEqual(operations[0]["op"], "replace_description")
-        self.assertEqual(operations[0]["target_block_id"], self.PURPOSE_ID)
-        self.assertEqual(operations[0]["proposed_text"], "A service handler")
-
-    def test_add_note_step_and_mark_unresolved_collect_typed_operations(self):
-        window, sent = self._loaded_edit_surface()
-        window._note_input.setText("Review this handler")
-        window._step_input.setText("   result = total   ")
-        window._draft_unresolved[self.DECISION_ID].setChecked(True)
-        self.assertTrue(window._draft_dirty)
-        window.save_draft_button.click()
-        operations = sent[-1]["task"]["operations"]
-        self.assertEqual(len(operations), 3)
-        note_op = next(
-            o for o in operations
-            if o["op"] == "insert_block" and o["block_type"] == "note"
-        )
-        self.assertEqual(note_op["owning_entity_id"], "app.service.Service.handle")
-        self.assertEqual(note_op["proposed_text"], "Review this handler")
-        step_op = next(
-            o for o in operations
-            if o["op"] == "insert_block" and o["block_type"] == "step"
-        )
-        self.assertEqual(step_op["proposed_payload"], {"operation": "assign"})
-        self.assertEqual(step_op["proposed_text"], "result = total")
-        unresolved_op = next(o for o in operations if o["op"] == "mark_unresolved")
-        self.assertEqual(unresolved_op["target_block_id"], self.DECISION_ID)
-        self.assertEqual(unresolved_op["reason"], "review")
-
-    def test_save_success_shows_operations_and_clears_dirty(self):
-        window, _ = self._loaded_edit_surface()
-        window._draft_dirty = True
-        window._on_draft_saved(
-            {
-                "draft": {
-                    "operations": [
-                        {
-                            "op": "replace_description",
-                            "target_block_id": self.PURPOSE_ID,
-                            "intent_class": "documentation_intent",
-                            "proposed": {"display_text": "A service handler"},
-                        }
-                    ]
-                },
-                "persisted": True,
-            }
-        )
-        self.assertFalse(window._draft_dirty)
-        text = window._draft_result.toPlainText()
-        self.assertIn("Replace description — ", text)
-        self.assertIn("A service handler", text)
-
-    # -- lifecycle actions -------------------------------------------------
-
-    def test_discard_reset_compare_generate_send_actions(self):
-        for button, action in (
-            ("discard_draft_button", contract.ACTION_DISCARD_DRAFT),
-            ("reset_draft_button", contract.ACTION_RESET_DRAFT),
-            ("compare_draft_button", contract.ACTION_COMPARE_DRAFT),
-            ("generate_draft_button", contract.ACTION_GENERATE_INTENT_DELTA),
-        ):
-            window, sent = self._loaded_edit_surface()
-            getattr(window, button).click()
-            self.assertEqual(sent[-1]["action"], action)
-
-    def test_plan_proposal_sends_plan_proposal_action(self):
-        window, sent = self._loaded_edit_surface()
-        window.plan_proposal_button.click()
-        self.assertEqual(sent[-1]["action"], contract.ACTION_PLAN_PROPOSAL)
-
-    def test_plan_proposal_no_change_is_honest(self):
-        window, _ = self._loaded_edit_surface()
-        window._on_proposal_ready({"no_change": True})
-        self.assertIn("No changes", window._draft_result.toPlainText())
-
-    def test_proposal_ready_renders_non_applied_package(self):
-        window, _ = self._loaded_edit_surface()
-        window._on_proposal_ready(
-            {
-                "no_change": False,
-                "state": "ready",
-                "proposal": {
-                    "state": "ready",
-                    "proposal_id": "proposal:abc",
-                    "target_scope": {"entities": ["app.service"], "artifacts": []},
-                    "affected_artifacts": [],
-                    "preserved_constraints": [],
-                    "assumptions": [],
-                    "clarifications": [],
-                    "plan_steps": [],
-                    "risks": [],
-                    "validation_plan": [],
-                    "reason": None,
-                },
-            }
-        )
-        text = window._draft_result.toPlainText()
-        self.assertIn("Proposal Package (not applied)", text)
-        self.assertIn("Applied: false", text)
-        self.assertIn("proposal Ready", window.status_label.text())
-
-    # -- result rendering --------------------------------------------------
-
-    def test_no_change_intent_delta_is_honest(self):
-        window, _ = self._loaded_edit_surface()
-        window._on_intent_delta_ready({"no_change": True})
-        self.assertIn("No changes", window._draft_result.toPlainText())
-        self.assertIn("no changes", window.status_label.text())
-
-    def test_intent_delta_marks_non_executable(self):
-        window, _ = self._loaded_edit_surface()
-        window._on_intent_delta_ready(
-            {
-                "no_change": False,
-                "intent_delta": {
-                    "intent": "documentation_intent",
-                    "entries": [
-                        {
-                            "operation": "replace_description",
-                            "owning_entity_id": "app.service.Service.handle",
-                            "required_approval_level": "human",
-                        }
-                    ],
-                },
-            }
-        )
-        text = window._draft_result.toPlainText()
-        self.assertIn("Executable: false", text)
-        self.assertIn("Intent: documentation_intent", text)
-        self.assertIn("Replace description on app.service.Service.handle", text)
-
-    def test_compare_conflict_is_surfaced(self):
-        window, _ = self._loaded_edit_surface()
-        window._on_draft_compared(
-            {
-                "draft_id": "draft:1",
-                "operations": [
-                    {
-                        "op": "replace_description",
-                        "target_block_id": self.PURPOSE_ID,
-                        "intent_class": "documentation_intent",
-                        "proposed": {"display_text": "Changed"},
-                    }
-                ],
-                "conflict": {"state": "stale", "reason": "baseline moved"},
-            }
-        )
-        text = window._draft_result.toPlainText()
-        self.assertIn("Conflict", text)
-        self.assertIn("baseline moved", text)
-
-    def test_draft_error_shows_bounded_reason(self):
-        window, _ = self._loaded_edit_surface()
-        window._on_draft_error("draft_stale")
-        self.assertIn("draft_stale", window._draft_result.toPlainText())
-        self.assertIn("failed", window.status_label.text())
-
-    # -- dirty leave (no auto-save) ----------------------------------------
-
-    def test_dirty_leave_save_routes_to_save_then_exit(self):
-        window, sent = self._loaded_edit_surface()
-        purpose = window._draft_controls[self.PURPOSE_ID]
-        purpose.setText("A service handler")
-        self.assertTrue(window._draft_dirty)
-        with mock.patch.object(window, "_prompt_dirty_leave", return_value="save"):
-            window._attempt_leave_edit_mode()
-        self.assertEqual(sent[-1]["action"], contract.ACTION_SAVE_DRAFT)
-        # Leaving is deferred until the save completes.
-        self.assertTrue(window._edit_mode)
-        window._on_draft_saved({"draft": {"operations": []}, "persisted": True})
-        self.assertFalse(window._edit_mode)
-        self.assertEqual(window._twin_stack.currentIndex(), 0)
-
-    def test_dirty_leave_discard_exits_without_saving(self):
-        window, sent = self._loaded_edit_surface()
-        window._draft_dirty = True
-        with mock.patch.object(window, "_prompt_dirty_leave", return_value="discard"):
-            window._attempt_leave_edit_mode()
-        self.assertFalse(any(r["action"] == contract.ACTION_SAVE_DRAFT for r in sent))
-        self.assertFalse(window._edit_mode)
-
-    def test_dirty_leave_remain_keeps_edit_mode(self):
-        window, sent = self._loaded_edit_surface()
-        window._draft_dirty = True
-        with mock.patch.object(window, "_prompt_dirty_leave", return_value="remain"):
-            window._attempt_leave_edit_mode()
-        self.assertTrue(window._edit_mode)
-        self.assertTrue(window._edit_button.isChecked())
-
-    def test_file_switch_does_not_discard_or_retarget_dirty_draft(self):
-        window, sent = self._loaded_edit_surface()
-        purpose = window._draft_controls[self.PURPOSE_ID]
-        purpose.setText("A service handler")  # marks the draft dirty
-        self.assertTrue(window._draft_dirty)
-
-        # Switching files while a dirty draft is open must not silently discard
-        # or retarget the draft: edit mode, the dirty flag and the target scope
-        # all survive the switch.
-        window._on_document_opened("other.py", _source_doc("other.py"))
-        self.assertTrue(window._edit_mode)
-        self.assertTrue(window._draft_dirty)
-        self.assertIn("Scope: app.service.Service.handle", window._draft_facts.text())
-
-    # -- stale guard --------------------------------------------------------
-
-    def test_clearing_active_path_disables_edit_action(self):
-        window, _ = self._loaded_edit_surface()
-        self.assertTrue(window._edit_button.isEnabled())
-        window._exit_edit_mode()
-        window._set_active_twin_path(None)
-        self.assertFalse(window._edit_button.isEnabled())
-
-
-@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class ExplorerTreeTests(unittest.TestCase):
-    """P3.2 v2.6 stable Project Explorer disclosure indicators.
-
-    Folder rows carry a plain name; the disclosure chevron is painted by the
-    branch style in a fixed 20 px slot, so toggling a folder never moves its
-    label, child indentation or row geometry. Leaf folders show no indicator
-    but keep normal depth alignment; kind-aware documents still open through
-    the boundary.
-    """
-
-    def setUp(self):
-        _app()
-
-    def _window_with_tree(self, palette=None):
-        window = MainWindow(palette=palette)
-        window.resize(1360, 840)
-        window.show()
-        QApplication.processEvents()
-        window._on_tree_loaded(_sample_tree())
-        QApplication.processEvents()
-        return window
-
-    def _app_index(self, window):
-        return window._tree_model.indexFromItem(window._tree_model.item(0, 0))
-
-    def _mouse_event(self, view, etype, index):
-        pos = view.visualRect(index).center()
-        return QMouseEvent(
-            etype,
-            QPointF(pos),
-            QPointF(view.viewport().mapToGlobal(pos)),
-            Qt.LeftButton,
-            Qt.LeftButton,
-            Qt.KeyboardModifier.NoModifier,
-        )
-
-    def _press(self, view, index):
-        view.mousePressEvent(self._mouse_event(view, QEvent.MouseButtonPress, index))
-
-    def test_folder_labels_are_plain_names_without_chevron_glyphs(self):
-        window = self._window_with_tree()
-        app_item = window._tree_model.item(0, 0)
-        self.assertEqual(app_item.text(), "app")
-        self.assertNotIn("›", app_item.text())
-        self.assertNotIn("⌄", app_item.text())
-
-    def test_folder_toggle_never_shifts_label_x(self):
-        window = self._window_with_tree()
-        index = self._app_index(window)
-        x_before = window._tree_view.visualRect(index).x()
-        rect_before = window._tree_view.visualRect(index)
-        for _ in range(3):
-            window._tree_view.expand(index)
-            QApplication.processEvents()
-            self.assertEqual(window._tree_view.visualRect(index).x(), x_before)
-            self.assertEqual(window._tree_view.visualRect(index), rect_before)
-            window._tree_view.collapse(index)
-            QApplication.processEvents()
-            self.assertEqual(window._tree_view.visualRect(index).x(), x_before)
-            self.assertEqual(window._tree_view.visualRect(index), rect_before)
-        self.assertEqual(window._tree_model.item(0, 0).text(), "app")
-
-    def test_child_indentation_is_constant(self):
-        window = self._window_with_tree()
-        index = self._app_index(window)
-        window._tree_view.expand(index)
-        QApplication.processEvents()
-        child = window._tree_model.item(0, 0).child(0)  # main.py
-        child_index = window._tree_model.indexFromItem(child)
-        self.assertEqual(
-            window._tree_view.visualRect(child_index).x(),
-            window._tree_view.visualRect(index).x() + style.TREE_INDENT,
-        )
-        self.assertEqual(window._tree_view.indentation(), style.TREE_INDENT)
-
-    def test_siblings_align_at_same_depth(self):
-        window = self._window_with_tree()
-        window._tree_view.expand(self._app_index(window))
-        QApplication.processEvents()
-        main_py = window._tree_model.item(0, 0).child(0)
-        data_json = window._tree_model.item(0, 0).child(1)
-        self.assertEqual(
-            window._tree_view.visualRect(window._tree_model.indexFromItem(main_py)).x(),
-            window._tree_view.visualRect(window._tree_model.indexFromItem(data_json)).x(),
-        )
-
-    def test_leaf_folder_has_no_false_disclosure(self):
-        window = self._window_with_tree()
-        empty_item = window._tree_model.item(1, 0)  # empty_dir
-        self.assertEqual(empty_item.text(), "empty_dir")
-        self.assertEqual(empty_item.rowCount(), 0)
-
-    def test_file_rows_have_no_chevron(self):
-        window = self._window_with_tree()
-        notes_item = window._tree_model.item(2, 0)  # notes.txt
-        self.assertEqual(notes_item.text(), "notes.txt")
-
-    def test_folder_click_toggles_not_open_document(self):
-        window = self._window_with_tree()
-        index = self._app_index(window)
-        sent = []
-
-        def fake_send(request, on_success, on_error):
-            sent.append(request)
-            return True
-
-        window._send = fake_send
-        self._press(window._tree_view, index)
-        self.assertEqual(sent, [])  # no document request for a folder
-        self.assertTrue(window._tree_view.isExpanded(index))
-
-    def test_folder_rapid_double_click_toggles_twice(self):
-        window = self._window_with_tree()
-        index = self._app_index(window)
-        view = window._tree_view
-        self.assertFalse(view.isExpanded(index))
-        # A rapid second click arrives as a MouseButtonDblClick; both clicks must
-        # toggle, so an open then a close leaves the folder collapsed again.
-        self._press(view, index)
-        self.assertTrue(view.isExpanded(index))
-        view.mouseDoubleClickEvent(
-            self._mouse_event(view, QEvent.MouseButtonDblClick, index)
-        )
-        self.assertFalse(view.isExpanded(index))
-
-    def test_keyboard_right_expands_left_collapses(self):
-        window = self._window_with_tree()
-        index = self._app_index(window)
-        window._tree_view.setCurrentIndex(index)
-        window._tree_view.keyPressEvent(
-            QKeyEvent(QEvent.KeyPress, Qt.Key_Right, Qt.KeyboardModifier.NoModifier)
-        )
-        self.assertTrue(window._tree_view.isExpanded(index))
-        window._tree_view.setCurrentIndex(index)
-        window._tree_view.keyPressEvent(
-            QKeyEvent(QEvent.KeyPress, Qt.Key_Left, Qt.KeyboardModifier.NoModifier)
-        )
-        self.assertFalse(window._tree_view.isExpanded(index))
-
-    def test_indicator_and_geometry_stable_across_sizes_and_palettes(self):
-        for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
-            for width, height in ((1024, 640), (1360, 840), (1920, 1080)):
-                with self.subTest(palette=palette.name, size=(width, height)):
-                    window = MainWindow(palette=palette)
-                    window.resize(width, height)
-                    window.show()
-                    QApplication.processEvents()
-                    window._on_tree_loaded(_sample_tree())
-                    QApplication.processEvents()
-                    index = self._app_index(window)
-                    x_before = window._tree_view.visualRect(index).x()
-                    self.assertEqual(window._tree_view.indentation(), style.TREE_INDENT)
-                    window._tree_view.expand(index)
-                    QApplication.processEvents()
-                    self.assertEqual(window._tree_view.visualRect(index).x(), x_before)
-                    child_index = window._tree_model.indexFromItem(
-                        window._tree_model.item(0, 0).child(0)
-                    )
-                    self.assertEqual(
-                        window._tree_view.visualRect(child_index).x(),
-                        x_before + style.TREE_INDENT,
-                    )
-                    window._tree_view.collapse(index)
-                    QApplication.processEvents()
-                    self.assertEqual(window._tree_view.visualRect(index).x(), x_before)
-
-    def test_kind_aware_documents_render(self):
-        window = MainWindow()
-        window._on_document_opened(
-            "app/main.py",
-            {"path": "app/main.py", "name": "main.py", "size": 10,
-             "kind": "source", "content": "print('hi')\n"},
-        )
-        source_view = window._open_tabs["app/main.py"]
-        self.assertIsInstance(source_view, DocumentView)
-        self.assertTrue(source_view._banner.isHidden())
-
-        window._on_document_opened(
-            "app/data.json",
-            {"path": "app/data.json", "name": "data.json", "size": 8,
-             "kind": "preview", "content": '{"k": 1}\n'},
-        )
-        preview_view = window._open_tabs["app/data.json"]
-        self.assertFalse(preview_view._banner.isHidden())
-        self.assertIn("Read-only preview", preview_view._banner.text())
-
-        window._on_document_opened(
-            "app/image.png",
-            {"path": "app/image.png", "name": "image.png", "size": 4,
-             "kind": "unavailable", "reason": "binary"},
-        )
-        unavailable_view = window._open_tabs["app/image.png"]
-        self.assertFalse(unavailable_view._banner.isHidden())
-        self.assertIn("Binary", unavailable_view._banner.text())
-        self.assertEqual(unavailable_view._body.toPlainText(), "")
-
-    def test_expanding_folder_preserves_state_and_geometry(self):
-        window = MainWindow()
-        window.resize(1360, 840)
-        window.show()
-        QApplication.processEvents()
-        window._on_tree_loaded(_sample_tree())
-        window._on_document_opened(
-            "app/main.py",
-            {"path": "app/main.py", "name": "main.py", "size": 10,
-             "kind": "source", "content": "print('hi')\n"},
-        )
-        tabs_before = window._source_tabs.count()
-        destination_before = window._nav_destination
-        page_before = window._content_stack.currentIndex()
-        sizes_before = list(window._horizontal_splitter.sizes())
-
-        app_item = window._tree_model.item(0, 0)
-        index = window._tree_model.indexFromItem(app_item)
-        self._press(window._tree_view, index)  # expand a folder
-
-        self.assertEqual(window._source_tabs.count(), tabs_before)
-        self.assertEqual(window._nav_destination, destination_before)
-        self.assertEqual(window._content_stack.currentIndex(), page_before)
-        self.assertEqual(list(window._horizontal_splitter.sizes()), sizes_before)
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
@@ -1949,8 +600,8 @@ class NavigationRailTests(unittest.TestCase):
     The six always-visible bottom tabs are replaced by a compact labelled rail:
     Document and Preview are the only always-visible primary destinations, then
     a divider, Versions, and a collapsed Advanced disclosure grouping
-    Source & Code Map / Change Review / Validation Evidence. Every retained
-    surface stays reachable and no output is silently discarded.
+    Change Review / Validation Evidence. Every retained surface stays reachable
+    and no output is silently discarded.
     """
 
     def setUp(self):
@@ -1971,8 +622,8 @@ class NavigationRailTests(unittest.TestCase):
         self.assertEqual(window._content_stack.count(), 6)
         self.assertEqual(
             set(window._nav_buttons),
-            {"document", "preview", "versions",
-             "source_code_map", "change_review", "validation_evidence"},
+            {"document", "preview", "versions", "memory",
+             "change_review", "validation_evidence"},
         )
         self.assertIsInstance(window._advanced_button, QPushButton)
         self.assertIsNotNone(window._nav_group_container)
@@ -2010,7 +661,7 @@ class NavigationRailTests(unittest.TestCase):
             ("document", 0),
             ("preview", 1),
             ("versions", 2),
-            ("source_code_map", 3),
+            ("memory", 3),
             ("change_review", 4),
             ("validation_evidence", 5),
         ):
@@ -2051,7 +702,7 @@ class NavigationRailTests(unittest.TestCase):
     def test_advanced_group_selection_expands_disclosure(self):
         window = MainWindow()
         self.assertTrue(window._nav_group_container.isHidden())
-        window._select_destination("source_code_map")
+        window._select_destination("change_review")
         self.assertFalse(window._nav_group_container.isHidden())
         self.assertTrue(window._advanced_button.isChecked())
 
@@ -2059,8 +710,6 @@ class NavigationRailTests(unittest.TestCase):
 
     def test_advanced_groups_expose_retained_surfaces(self):
         window = MainWindow()
-        # Source & Code Map is the retained three-pane splitter.
-        self.assertEqual(window._horizontal_splitter.count(), 3)
         # Change Review keeps Agent Chat (chat composer), Plan, Diff and the raw
         # Candidate tab; Validation Evidence keeps Problems, Tests, Evidence.
         for key in ("plan", "diff", "problems", "tests", "evidence"):
@@ -2097,6 +746,20 @@ class BackendSupervisorTests(unittest.TestCase):
         self.assertEqual(outcome.get("status"), "success")
         self.assertEqual(outcome["result"]["task_id"], "P3.1")
         self.assertEqual(outcome["result"]["report"]["outcome"]["status"], "no_change")
+
+    def test_open_project_completes_against_the_real_backend(self):
+        # The desktop-to-backend project-open exchange, end to end: the client
+        # resolves the source-checkout backend command, starts it as a real child
+        # process, and one ``open_project`` request comes back with the root it
+        # accepted. Before UI-TRANSITION-1R the launch died with
+        # "No module named hrca.boundary.__main__" and no response ever arrived,
+        # so project open was only unit-verified.
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        outcome, _ = _run_supervisor(
+            None, request=build_open_project_request("cid-test", root)
+        )
+        self.assertEqual(outcome.get("status"), "success")
+        self.assertEqual(outcome["result"]["root"], root)
 
     def test_non_json_stdout_marks_failed(self):
         outcome, _ = _run_supervisor([sys.executable, "-c", "print('not json')"])
@@ -2194,6 +857,52 @@ class BackendSupervisorTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class CredentialHostLaunchTests(unittest.TestCase):
+    """The Settings add-credential flow launches a real child process.
+
+    UI-TRANSITION-1C: the resolver named ``-m hrca.credential_host``, a module
+    that does not exist, so the launch died at dispatch with
+    "No module named hrca.credential_host" before the host could answer.
+
+    These tests start the *real* resolved command and prove it reaches the
+    host's own request handling. No credential is requested, supplied, read,
+    written or logged: the request stream is empty, or carries one malformed
+    line, which the host answers with a bounded secret-free envelope before it
+    ever looks at a store, a sheet or the Credential Manager.
+    """
+
+    def setUp(self):
+        _app()
+
+    def _launch(self, request_text):
+        return subprocess.run(
+            resolve_credential_host_command(frozen=False),
+            input=request_text, capture_output=True, text=True, timeout=60,
+        )
+
+    def test_empty_request_stream_exits_cleanly(self):
+        # No request at all: the host reads EOF and exits without touching
+        # anything. The point is that the *process* started.
+        proc = self._launch("")
+        self.assertNotIn("No module named", proc.stderr)
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual("", proc.stdout.strip())
+
+    def test_one_malformed_line_reaches_the_host_request_handler(self):
+        # The envelope can only have been produced by credential_host.main, so
+        # it is the proof that dispatch reached the host rather than failing
+        # earlier. A malformed request names no operation, so the native prompt
+        # and the Credential Manager write are unreachable from it.
+        proc = self._launch("not-a-request\n")
+        self.assertNotIn("No module named", proc.stderr)
+        self.assertEqual(proc.returncode, 0)
+        envelope = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertFalse(envelope["ok"])
+        self.assertEqual(envelope["error"]["code"], "malformed_request")
+        self.assertEqual(envelope["contract_version"], contract.CONTRACT_VERSION)
+        self.assertNotIn("hwnd", json.dumps(envelope))
+
+
 class ProviderReadinessGuiTests(unittest.TestCase):
     """P4.2a redacted provider readiness presentation (offscreen).
 
@@ -2234,9 +943,17 @@ class ProviderReadinessGuiTests(unittest.TestCase):
         window = MainWindow()
         self.assertEqual(window.settings_button.text(), "Settings")
         self.assertEqual(window.settings_button.accessibleName(), "Settings")
-        # The Settings gear sits directly left of Open Project in the toolbar.
+        # Mode A: the provider readiness chip sits between the primary actions
+        # and the Settings ghost action, which closes the command bar.
         bar = window.settings_button.parentWidget().layout()
-        self.assertLess(bar.indexOf(window.settings_button), bar.indexOf(window.open_project_button))
+        self.assertLess(
+            bar.indexOf(window.open_project_button),
+            bar.indexOf(window._provider_status_label),
+        )
+        self.assertLess(
+            bar.indexOf(window._provider_status_label),
+            bar.indexOf(window.settings_button),
+        )
 
     def test_provider_status_region_is_reserved(self):
         window = MainWindow()
@@ -2409,12 +1126,14 @@ class SettingsDialogTests(unittest.TestCase):
                 self.assertEqual(button.minimumHeight(), style.COMMAND_BAR_BUTTON_HEIGHT)
                 self.assertEqual(button.maximumHeight(), style.COMMAND_BAR_BUTTON_HEIGHT)
 
-    def test_open_project_remains_primary_others_secondary(self):
+    def test_command_bar_uses_the_named_action_vocabulary(self):
+        # Mode A: the command bar carries explicit roles rather than one
+        # undifferentiated button class. Open Project and Scan are named
+        # secondary actions; Settings is a quiet ghost action.
         window = MainWindow()
-        self.assertEqual(window.open_project_button.objectName(), "primaryButton")
-        for button in (window.settings_button, window.scan_button):
-            with self.subTest(button=button.text()):
-                self.assertEqual(button.objectName(), "commandBarButton")
+        self.assertEqual(window.open_project_button.objectName(), "secondaryButton")
+        self.assertEqual(window.scan_button.objectName(), "secondaryButton")
+        self.assertEqual(window.settings_button.objectName(), "ghostButton")
 
     def test_dialog_minimum_geometry(self):
         window = MainWindow()

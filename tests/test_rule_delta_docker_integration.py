@@ -16,16 +16,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from hrca import (
-    app_package,
-    boundary,
-    container_runner,
-    contract,
-    delta_verifier,
-    provider,
-    rule_delta,
-    rule_delta_interpret,
-)
+from hrca import boundary
+from hrca.core import contract
+from hrca.execution import app_package, container_runner, delta_verifier, rule_delta, rule_delta_interpret
+from hrca.integrations import provider
 
 _REQUIREMENT = "Members receive a 10% discount on quotations."
 

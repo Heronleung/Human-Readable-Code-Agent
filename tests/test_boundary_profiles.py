@@ -5,7 +5,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from hrca import boundary, contract, credential_store
+from hrca import boundary
+from hrca.core import contract
+from hrca.integrations import credential_store
 
 _SECRET_LIKE = "secret-token-abc123"
 _PID = "a" * 32
@@ -54,7 +56,7 @@ class BoundaryProfileTests(unittest.TestCase):
         # not render the profile's key as "present": the per-profile presence
         # fact follows classify_retrieval (an actual non-empty read), so it
         # agrees with the top-level readiness state and the interpret action.
-        from hrca import provider_config
+        from hrca.integrations import provider_config
 
         class EmptyBlobStore(credential_store.FakeCredentialStore):
             def has(self, target):

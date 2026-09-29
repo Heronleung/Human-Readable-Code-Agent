@@ -1,0 +1,202 @@
+{
+  "agent_run": {
+    "adapter": "fixture",
+    "event_ids": [
+      "event:run:fixture:sess-cancelled-001:run-001:96c0507f86f8f5b6ce7aa28f401017b7",
+      "event:run:fixture:sess-cancelled-001:run-001:afe47ba3fc3f6282d3ad992fe8bf7830",
+      "event:run:fixture:sess-cancelled-001:run-001:1860a852a82192b8b48bd8f646ab655c"
+    ],
+    "finalized": true,
+    "first_source_timestamp": "2026-01-01T11:00:00Z",
+    "id": "run:fixture:sess-cancelled-001:run-001",
+    "ingest_sequence": 3,
+    "last_source_timestamp": "2026-01-01T11:01:00Z",
+    "project_id": "project:fixture:63f44b4a67929a9f0ffb4514c4c1bdc6",
+    "provenance": "derived",
+    "quarantine_sequence": 0,
+    "record_kind": "agent_run",
+    "rejection_sequence": 0,
+    "session_id": "sess-cancelled-001",
+    "state": "cancelled",
+    "stream_closed": false,
+    "terminal_event_id": "event:run:fixture:sess-cancelled-001:run-001:1860a852a82192b8b48bd8f646ab655c",
+    "work_package_id": "workpackage:fixture:ae99ca6ff0f68bd10e9c4750ece60922"
+  },
+  "change_sets": [
+    {
+      "entity_refs": [
+        "app.service.handle"
+      ],
+      "id": "changeset:run:fixture:sess-cancelled-001:run-001:b8321dbe8900d8e2711c4d03375a5fdc",
+      "paths": [
+        "src/app/service.py"
+      ],
+      "privacy": {
+        "exclusions": 0,
+        "redactions": 0,
+        "truncations": 0
+      },
+      "provenance": "source",
+      "record_kind": "change_set",
+      "run_id": "run:fixture:sess-cancelled-001:run-001",
+      "source_id": "cs-1",
+      "summary": "partial edit before cancellation"
+    }
+  ],
+  "decisions": [
+    {
+      "decided_at": "2026-01-01T11:00:25Z",
+      "id": "decision:run:fixture:sess-cancelled-001:run-001:5d7c88d96fef4acd75eca08589d69359",
+      "privacy": {
+        "exclusions": 0,
+        "redactions": 0,
+        "truncations": 0
+      },
+      "provenance": "source",
+      "rationale": "the work package was withdrawn",
+      "record_kind": "decision",
+      "run_id": "run:fixture:sess-cancelled-001:run-001",
+      "source_id": "dec-1",
+      "summary": "stop before touching the public entry point"
+    }
+  ],
+  "events": [
+    {
+      "change_set_id": null,
+      "code_entity_link_ids": [],
+      "content_fingerprint": "a5eb848cd64f6c83a53537cc1647a8c84c2480be53b084417eabbc0f20ce085d",
+      "decision_ids": [],
+      "event_type": "run_started",
+      "evidence_ids": [],
+      "id": "event:run:fixture:sess-cancelled-001:run-001:96c0507f86f8f5b6ce7aa28f401017b7",
+      "ingest_ordinal": 1,
+      "payload": {},
+      "privacy": {
+        "exclusions": 0,
+        "redactions": 0,
+        "truncations": 0
+      },
+      "provenance": "source",
+      "record_kind": "agent_run_event",
+      "run_id": "run:fixture:sess-cancelled-001:run-001",
+      "source_event_id": "ev-001",
+      "source_sequence": 1,
+      "source_timestamp": "2026-01-01T11:00:00Z",
+      "transition": {
+        "from": "unstarted",
+        "to": "open"
+      }
+    },
+    {
+      "change_set_id": "changeset:run:fixture:sess-cancelled-001:run-001:b8321dbe8900d8e2711c4d03375a5fdc",
+      "code_entity_link_ids": [],
+      "content_fingerprint": "0a723815078d10e66a8f3f6fd28fe31264b519644cc58f07fb3be97ded8be143",
+      "decision_ids": [
+        "decision:run:fixture:sess-cancelled-001:run-001:5d7c88d96fef4acd75eca08589d69359"
+      ],
+      "event_type": "run_progress",
+      "evidence_ids": [
+        "evidence:run:fixture:sess-cancelled-001:run-001:cba7d6256e773c5125579d6904f8c804"
+      ],
+      "id": "event:run:fixture:sess-cancelled-001:run-001:afe47ba3fc3f6282d3ad992fe8bf7830",
+      "ingest_ordinal": 2,
+      "payload": {},
+      "privacy": {
+        "exclusions": 0,
+        "redactions": 0,
+        "truncations": 0
+      },
+      "provenance": "source",
+      "record_kind": "agent_run_event",
+      "run_id": "run:fixture:sess-cancelled-001:run-001",
+      "source_event_id": "ev-002",
+      "source_sequence": 2,
+      "source_timestamp": "2026-01-01T11:00:20Z",
+      "transition": {
+        "from": "open",
+        "to": "open"
+      }
+    },
+    {
+      "change_set_id": null,
+      "code_entity_link_ids": [],
+      "content_fingerprint": "a5fb5bae60957d9221dea4dde15f43fee453bc3ef8032e221944cf85524bc8db",
+      "decision_ids": [],
+      "event_type": "run_terminated",
+      "evidence_ids": [],
+      "id": "event:run:fixture:sess-cancelled-001:run-001:1860a852a82192b8b48bd8f646ab655c",
+      "ingest_ordinal": 3,
+      "payload": {},
+      "privacy": {
+        "exclusions": 0,
+        "redactions": 0,
+        "truncations": 0
+      },
+      "provenance": "source",
+      "record_kind": "agent_run_event",
+      "run_id": "run:fixture:sess-cancelled-001:run-001",
+      "source_event_id": "ev-003",
+      "source_sequence": 3,
+      "source_timestamp": "2026-01-01T11:01:00Z",
+      "transition": {
+        "from": "open",
+        "to": "cancelled"
+      }
+    }
+  ],
+  "evidence": [
+    {
+      "artifact_ref": "logs/sess-cancelled-001.jsonl",
+      "bytes": 2048,
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+      "id": "evidence:run:fixture:sess-cancelled-001:run-001:cba7d6256e773c5125579d6904f8c804",
+      "kind": "transcript",
+      "privacy": {
+        "exclusions": 0,
+        "redactions": 0,
+        "truncations": 0
+      },
+      "provenance": "source",
+      "record_kind": "evidence",
+      "run_id": "run:fixture:sess-cancelled-001:run-001",
+      "source_id": "evd-1"
+    }
+  ],
+  "generator": "hrca-memory",
+  "projects": [
+    {
+      "adapter": "fixture",
+      "id": "project:fixture:63f44b4a67929a9f0ffb4514c4c1bdc6",
+      "name": "Demo Repository",
+      "privacy": {
+        "exclusions": 0,
+        "redactions": 0,
+        "truncations": 0
+      },
+      "provenance": "source",
+      "record_kind": "project",
+      "session_id": "sess-cancelled-001",
+      "source_id": "proj-demo"
+    }
+  ],
+  "quarantines": [],
+  "rejections": [],
+  "schema_version": "0.9.0",
+  "work_packages": [
+    {
+      "adapter": "fixture",
+      "id": "workpackage:fixture:ae99ca6ff0f68bd10e9c4750ece60922",
+      "privacy": {
+        "exclusions": 0,
+        "redactions": 0,
+        "truncations": 0
+      },
+      "project_id": "project:fixture:63f44b4a67929a9f0ffb4514c4c1bdc6",
+      "provenance": "source",
+      "record_kind": "work_package",
+      "session_id": "sess-cancelled-001",
+      "source_id": "wp-2",
+      "title": "Retire an obsolete path"
+    }
+  ]
+}
