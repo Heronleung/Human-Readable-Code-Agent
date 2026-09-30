@@ -730,6 +730,86 @@ QToolButton#profileDeleteButton:focus { border: 1px solid $focus; }
 
 /* ---- splitter handles are painted by HairlineSplitterHandle ---- */
 QSplitter::handle { background: transparent; }
+
+/* ==== chat-first workspace components ==== */
+
+/* ---- context bar (repository / branch / baseline) ---- */
+QWidget#contextBar { background: $window; border-bottom: 1px solid $border; }
+QLabel#contextPrimary { color: $text; font-weight: bold; }
+QFrame#divider { background: $border; border: none; }
+
+/* ---- containers ---- */
+QFrame#card, QFrame#planCard {
+    background: $surface;
+    border: 1px solid $border;
+    border-radius: $radius;
+}
+QFrame#planCard { border-left: 2px solid $accent; }
+QFrame#detailsDrawer {
+    background: $surface;
+    border-left: 1px solid $border;
+}
+QFrame#stateView {
+    background: $sunken;
+    border: 1px solid $border;
+    border-radius: $radius;
+}
+QLabel#stateTitle { color: $text; font-weight: bold; background: transparent; }
+QLabel#sectionLabel {
+    color: $text_secondary;
+    font-size: 11px;
+    background: transparent;
+}
+
+/* ---- state chip: tinted, but never colour-only (a glyph + word ride along) ---- */
+QLabel#statusChip {
+    border: 1px solid $border;
+    border-radius: $chip_radius;
+    padding: 1px 6px;
+    background: $sunken;
+}
+
+/* ---- list rows ---- */
+QFrame#listRow {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid $border;
+}
+QFrame#listRow:hover { background: $sunken; }
+
+/* ---- message bubbles in Agent Chat ---- */
+QWidget#messageBubble { background: transparent; }
+QLabel#messageAuthor { color: $text_secondary; font-weight: bold; background: transparent; }
+
+/* ---- thin rail ---- */
+QPushButton#railButton {
+    background: transparent;
+    color: $text_secondary;
+    border: none;
+    border-left: 2px solid transparent;
+    border-radius: 0;
+    padding: 8px 12px;
+    text-align: left;
+}
+QPushButton#railButton:hover { background: $sunken; color: $text; }
+QPushButton#railButton:checked {
+    background: $selection;
+    color: $text;
+    border-left: 2px solid $accent;
+    font-weight: bold;
+}
+QPushButton#railButton:focus { border: $focus_ring solid $focus; }
+
+/* ---- composer ---- */
+QTextEdit#workspaceComposer {
+    background: $surface;
+    color: $text;
+    border: 1px solid $border;
+    border-radius: $interactive_radius;
+    padding: 6px 8px;
+}
+QTextEdit#workspaceComposer:focus { border: 1px solid $focus; }
+QTextEdit#workspaceComposer:disabled { color: $text_disabled; background: $sunken; }
 """
 
     # Replace longer placeholders first so a prefix token (``$text``) never

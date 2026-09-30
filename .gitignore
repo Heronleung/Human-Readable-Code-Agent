@@ -37,3 +37,8 @@ Thumbs.db
 
 # Claude Code local session state
 .claude/settings.local.json
+
+# Generated workspace renders. The durable evidence is the capture script that
+# reproduces them byte-for-byte; regenerate with
+#   uv run python evidence/ui-transition-2/capture.py
+evidence/ui-transition-2/*.png

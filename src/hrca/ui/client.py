@@ -1,40 +1,42 @@
-"""PySide6 desktop client for PrimaAgent — the document-first product surface.
+"""PySide6 desktop client for PrimaAgent — the chat-first workspace.
 
 The client is a *client only*: it supervises a headless backend process through
-the versioned NDJSON boundary, submits bounded read-only workspace actions
-(``open_project``) plus the read-only scan pipeline, and renders the results in
-a document-first layout. It never
-imports the scanner, planner, report builder, provider protocol, Git tooling or
-any command-execution code, never enumerates or reads project files directly
-(all filesystem access is mediated by the boundary), and never decides that an
-action is permitted — that decision belongs to the boundary.
+the versioned NDJSON boundary, submits bounded workspace actions, and renders
+the results. It never imports the scanner, planner, report builder, provider
+protocol, Git tooling or any command-execution code, never enumerates or reads
+project files directly (all filesystem access is mediated by the boundary), and
+never decides that an action is permitted — that decision belongs to the
+boundary.
 
-Layout (presentation only, no semantics invented):
+Layout (presentation only, no semantics invented). The frame is
+:class:`hrca.ui.shell.Shell`; this module builds it, registers the destinations
+and hosts the surfaces that survived the redesign:
 
-* **Command bar** — ``Open Project`` and ``Run read-only scan`` as named
-  secondary actions (the scan stays disabled until a project is open),
-  ``Settings`` as a quiet ghost action, and the provider's readiness as a chip;
-* **Navigation rail** — a compact labelled column with **Document** and
-  **Preview** as the only always-visible primary destinations, then a divider,
-  **Versions** (the accepted-version drawer) and a collapsed **Advanced**
-  disclosure grouping the retained technical surfaces as
-  **Change Review** / **Validation Evidence**;
-* **Document workspace** — the primary full-height Working Document editor with
-  a document header carrying a dynamic title and the saved/unsaved state, and a
-  footer where Save and the single contextual preview action live. With no
-  document open the editor gives way to a bounded empty state offering
-  ``New document`` and ``Open project``, and a hint names the next action;
-* **Preview workspace** — a read-only, version-bound candidate review surface
-  (bound document revision, Candidate vs Accepted Version and its bounded state,
-  deterministic-fixture provenance, fixed quotation inputs/results, and a
-  validation-evidence summary); it never executes a package;
-* **Advanced** (collapsed by default) — **Change Review** keeps Agent Chat,
-  Plan, Diff and the raw Candidate metadata; **Validation Evidence** keeps
-  Problems, Tests and Evidence. Diff is explicitly unavailable in this slice;
-  nothing is ever written to disk;
-* **Status bar** — one row with a transient message and four right-aligned
-  persistent fields (root, repository, provider, validation state), plus a
-  ``Details`` toggle that reveals the diagnostic row (hidden by default).
+* **Thin rail** — the seven destinations, each with a glyph and a word:
+  **Resume**, **Agent Chat**, **Jobs**, **Agents**, **Review**, **Documents**
+  and **Settings**. Nothing is hidden and there is no collapsed group;
+* **Context bar** — the repository, its reported state, the accepted baseline
+  and the open document, plus the single safest next action and the provider's
+  readiness chip;
+* **Composer** — one goal field whose summary line states the bound context,
+  the action and the authority *before* anything is dispatched;
+* **Details drawer** — a temporary pane for detail that does not deserve
+  permanent space;
+* **Status bar** — mounted beneath the composer: one transient message, the
+  four persistent diagnostic fields (hidden until **Details** is toggled) and
+  the toggle itself.
+
+The destinations are built by :mod:`hrca.ui.destinations`; this module mounts
+into them the surfaces the redesign rehomed rather than deleted — the document
+library, editor and accepted versions in **Documents**; the candidate preview,
+the scan evidence and the retained plan/diff projection in **Review**; the
+Developer Memory reader in **Resume**; and the settings pages in **Settings**.
+
+The orchestration model behind Agent Chat, Jobs, Agents and Resume is
+:mod:`hrca.ui.appmodel`: pure local presentation state that adds no boundary
+action, store, schema or migration, and that can never advance an accepted
+baseline. This module performs every backend request; the model only decides
+what may be offered and records what is observed.
 
 Every visual value is owned by :mod:`hrca.ui.style`; no widget hard-codes an
 ad-hoc colour, radius or padding. Supervision constraints honoured here:
@@ -110,6 +112,25 @@ from PySide6.QtWidgets import (
 
 from ..core import contract
 from . import style
+from .widgets import (
+    CodeView,
+    ElidedLabel,
+    HairlineSplitter,
+    _DocumentTreeView,
+    _ProjectTreeView,
+    _json_text,
+)
+from .appmodel import authority as app_authority
+from .appmodel.context import ProjectContext
+from .appmodel.session import Workspace
+from .shell import Shell
+from .destinations.agents_page import AgentsDestination
+from .destinations.chat_page import AgentChatDestination
+from .destinations.documents_page import DocumentsDestination
+from .destinations.jobs_page import JobsDestination
+from .destinations.resume_page import ResumeDestination
+from .destinations.review_page import ReviewDestination
+from .destinations.settings_page import SettingsDestination
 from ..boundary.client_core import PROVIDER_STATUS_CONFIGURED, PROVIDER_STATUS_FAILED, PROVIDER_STATUS_MISSING_CREDENTIAL, PROVIDER_STATUS_PENDING, PROVIDER_STATUS_UNAVAILABLE, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, STATE_BLOCKED, STATE_FAILED, STATE_IDLE, STATE_RUNNING, STATE_SUCCESS, STATE_UNAVAILABLE, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, LineBuffer, ResponseRouter, credential_action_message, profile_failure_message, build_add_profile_request, build_delete_profile_request, build_get_profiles_request, build_manage_credential_request, build_open_project_request, build_remove_credential_request, build_rename_profile_request, build_request, build_scan_request, build_set_active_profile_request, default_fixture_root, operation_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, build_create_document_request, build_open_document_request, build_save_document_request, build_create_candidate_request, build_adopt_candidate_request, build_list_versions_request, build_restore_version_request, document_failure_message, document_kind_label, format_document_state, format_version_list, build_preview_request, format_preview, preview_badge, preview_state_label, preview_state_message, build_get_library_request, build_create_folder_request, build_rename_item_request, build_move_item_request, build_trash_item_request, build_restore_item_request, build_prepare_rule_delta_request, build_interpret_rule_delta_request, format_delta_disclosure, format_delta_interpret_result, delta_interpret_state_label, build_get_memory_documents_request, build_get_memory_record_request, memory_run_rows, claim_rows, record_detail_rows, memory_record_kind_label, memory_state_label, memory_origin_label, MEMORY_QUERY_FACETS, MEMORY_QUERY_ORDERS, MEMORY_ORDER_RELEVANCE, MEMORY_ORDER_RECORDED_TIME, MEMORY_MAX_FILTERS, MEMORY_UNSUPPORTED_FACETS, MEMORY_FACET_LABELS, MEMORY_ORDER_LABELS, memory_facet_label, build_search_memory_request, build_memory_resume_request, memory_hit_rows, memory_resume_view, MEMORY_REVIEW_OPERATIONS, MEMORY_OPERATION_LABELS, memory_operation_label, memory_correction_state_label, memory_correction_source_id, memory_review_view, build_memory_history_request, build_memory_effective_request, build_memory_correction_request
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -188,18 +209,6 @@ MEMORY_SCOPE_NOTE = (
 )
 
 
-# Fixed, honest unavailable messages for the document surface. Each ``reason``
-# is one of the workspace's bounded unavailable reasons; the banner never echoes
-# a requested path or file content.
-_UNAVAILABLE_TEXT = {
-    "binary": "Binary file — preview unavailable.",
-    "unsupported_type": "Unsupported file type — preview unavailable.",
-    "file_too_large": "File too large to preview.",
-    "path_not_found": "File not found.",
-    "path_not_readable": "File is not readable.",
-}
-_UNAVAILABLE_FALLBACK = "This file cannot be previewed."
-
 # Fixed, redacted credential-profile vocabulary for the Settings surface
 # (P4.2a). Only credential *presence* is reported, through a constant mask; the
 # key value is never held, logged, rendered or serialized by the desktop client.
@@ -234,65 +243,40 @@ _SETTINGS_SECTION_LABELS = {
     "about": "About",
 }
 
-# The five content destinations the labelled navigation rail pages. Document and
-# Preview are the only always-visible primary destinations; Versions opens the
-# accepted-version drawer; the Advanced group exposes the two secondary views
-# (Change Review / Validation Evidence) collapsed by default.
+# The seven destinations of the workspace rail, in order. The rail itself is
+# built by :class:`hrca.ui.shell.Shell`; these names are the keys the client
+# routes by. There is no collapsed group and no hidden destination: every
+# surface the product keeps is reachable from one of these seven.
 _NAV_DESTINATIONS = (
-    "document",
-    "preview",
-    "versions",
-    "memory",
-    "change_review",
-    "validation_evidence",
+    "resume",
+    "chat",
+    "jobs",
+    "agents",
+    "review",
+    "documents",
+    "settings",
 )
 
-# Content-stack page index for each destination; the pages are added in exactly
-# this order in ``_build_content_stack``.
-_NAV_DESTINATION_INDEX = {
-    key: index for index, key in enumerate(_NAV_DESTINATIONS)
-}
-
-# The two destinations grouped under the collapsed Advanced disclosure.
-_ADVANCED_DESTINATIONS = ("change_review", "validation_evidence")
-
-# Human-readable rail labels (one per destination, same order as _NAV_DESTINATIONS).
+# Human-readable rail label per destination, in rail order. The shell renders
+# these; keeping the map here lets the client and its tests agree on one
+# spelling of each destination's name. It is written as a literal so the
+# architecture guard can read it, and a test pins it to RAIL_DESTINATIONS so
+# the two cannot drift apart.
 _NAV_LABELS = {
-    "document": "Document",
-    "preview": "Preview",
-    "versions": "Versions",
-    "memory": "Memory",
-    "change_review": "Change Review",
-    "validation_evidence": "Validation Evidence",
+    "resume": "Resume",
+    "chat": "Agent Chat",
+    "jobs": "Jobs",
+    "agents": "Agents",
+    "review": "Review",
+    "documents": "Documents",
+    "settings": "Settings",
 }
 
-# The Advanced disclosure label and its accessible expand/collapse names.
-_NAV_ADVANCED_LABEL = "Advanced"
-
-# The secondary sub-tabs inside the two Advanced groups. These are grouped views
-# under the Advanced disclosure, never permanent bottom tabs. The Candidate tab
-# holds the raw candidate/version metadata (never shown in the primary
-# Document/Preview workspaces).
-_CHANGE_REVIEW_TABS = (
-    ("chat", "Agent Chat"),
-    ("plan", "Plan"),
-    ("diff", "Diff"),
-    ("candidate", "Candidate"),
-)
 _VALIDATION_EVIDENCE_TABS = (
     ("problems", "Problems"),
     ("tests", "Tests"),
     ("evidence", "Evidence"),
 )
-
-_PY_KEYWORDS = (
-    "and", "as", "assert", "async", "await", "break", "class", "continue",
-    "def", "del", "elif", "else", "except", "finally", "for", "from",
-    "global", "if", "import", "in", "is", "lambda", "nonlocal", "not",
-    "or", "pass", "raise", "return", "try", "while", "with", "yield",
-    "None", "True", "False",
-)
-
 
 class _WeakCallback:
     """A weak reference to a request callback's bound instance.
@@ -326,251 +310,6 @@ class _WeakCallback:
         return self._func.__get__(obj, type(obj))(*self._args, *call_args)
 
 
-class PythonHighlighter(QSyntaxHighlighter):
-    """A minimal Python syntax highlighter whose colours come from the palette."""
-
-    def __init__(self, document, palette: style.Palette) -> None:
-        super().__init__(document)
-        self._rules: List[tuple] = []
-
-        keyword_fmt = QTextCharFormat()
-        keyword_fmt.setForeground(QColor(palette.syntax_keyword))
-        keyword_fmt.setFontWeight(QFont.Bold)
-
-        string_fmt = QTextCharFormat()
-        string_fmt.setForeground(QColor(palette.syntax_string))
-
-        comment_fmt = QTextCharFormat()
-        comment_fmt.setForeground(QColor(palette.syntax_comment))
-
-        number_fmt = QTextCharFormat()
-        number_fmt.setForeground(QColor(palette.syntax_number))
-
-        self._rules = [
-            (r"\b(?:" + "|".join(_PY_KEYWORDS) + r")\b", keyword_fmt),
-            (r"\".*?\"|'.*?'", string_fmt),
-            (r"#[^\n]*", comment_fmt),
-            (r"\b\d+(?:\.\d+)?\b", number_fmt),
-        ]
-
-    def highlightBlock(self, text: str) -> None:
-        for pattern, fmt in self._rules:
-            for match in re.finditer(pattern, text):
-                self.setFormat(match.start(), match.end() - match.start(), fmt)
-
-
-class CodeView(QPlainTextEdit):
-    """A read-only, monospaced, syntax-highlighted code/JSON view."""
-
-    def __init__(
-        self,
-        parent: Optional[QWidget] = None,
-        palette: Optional[style.Palette] = None,
-    ) -> None:
-        super().__init__(parent)
-        self._palette = palette or style.palette_for()
-        self.setReadOnly(True)
-        self.setLineWrapMode(QPlainTextEdit.NoWrap)
-        self.setFont(style.code_font())
-        self._highlighter = PythonHighlighter(self.document(), self._palette)
-        self._apply_line_height()
-
-    def setPlainText(self, text: str) -> None:
-        super().setPlainText(text)
-        self._apply_line_height()
-
-    def _apply_line_height(self) -> None:
-        """Set about 1.45 proportional line spacing across the document."""
-        fmt = QTextBlockFormat()
-        fmt.setLineHeight(
-            style.CODE_LINE_HEIGHT_PERCENT,
-            QTextBlockFormat.ProportionalHeight.value,
-        )
-        cursor = QTextCursor(self.document())
-        cursor.select(QTextCursor.Document)
-        cursor.mergeBlockFormat(fmt)
-
-    def reveal_line(self, lineno: int) -> None:
-        """Move the cursor to ``lineno`` (1-based), select the line, and scroll it into view.
-
-        Selecting the whole line gives a brief visible highlight of the anchored
-        source after a behavior-node navigation, without leaving an edit cursor
-        (the view stays read-only).
-        """
-        block = self.document().findBlockByNumber(max(0, int(lineno) - 1))
-        cursor = QTextCursor(block)
-        cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
-        self.setTextCursor(cursor)
-        self.centerCursor()
-
-
-class ElidedLabel(QLabel):
-    """A :class:`QLabel` that elides its full text to fit its width.
-
-    ``text()`` returns the full text when the widget has no width yet (so
-    offscreen tests read the un-elided value); once laid out, the text is
-    elided in the middle (or the given mode) rather than wrapping or growing.
-    The complete text is always preserved un-elided in ``fullText()`` and, for
-    long paths, in the widget tooltip so it is never lost when it elides.
-    """
-
-    def __init__(
-        self,
-        text: str = "",
-        elide_mode: Qt.TextElideMode = Qt.ElideMiddle,
-        parent: Optional[QWidget] = None,
-    ) -> None:
-        super().__init__(text, parent)
-        self._full_text = text
-        self._elide_mode = elide_mode
-        self.setToolTip(text)
-        self._refresh()
-
-    def setText(self, text: str) -> None:
-        self._full_text = text
-        self.setToolTip(text)
-        self._refresh()
-
-    def fullText(self) -> str:
-        return self._full_text
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._refresh()
-
-    def _refresh(self) -> None:
-        if self.width() <= 0:
-            super().setText(self._full_text)
-        else:
-            super().setText(
-                self.fontMetrics().elidedText(
-                    self._full_text, self._elide_mode, self.width()
-                )
-            )
-
-
-class _HairlineHandle(QSplitterHandle):
-    """A 1 px hairline splitter handle inside a 6 px interactive hit area."""
-
-    def __init__(
-        self,
-        orientation: Qt.Orientation,
-        parent: QSplitter,
-        palette: style.Palette,
-    ) -> None:
-        super().__init__(orientation, parent)
-        self._palette = palette
-        self._hovered = False
-        self.setAttribute(Qt.WA_Hover, True)
-
-    def enterEvent(self, event) -> None:
-        self._hovered = True
-        self.update()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        self._hovered = False
-        self.update()
-        super().leaveEvent(event)
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), Qt.transparent)
-        color = QColor(self._palette.accent if self._hovered else self._palette.border)
-        painter.setPen(QPen(color, style.SPLITTER_HAIRLINE_WIDTH))
-        if self.orientation() == Qt.Horizontal:
-            x = self.width() // 2
-            painter.drawLine(x, 0, x, self.height())
-        else:
-            y = self.height() // 2
-            painter.drawLine(0, y, self.width(), y)
-        painter.end()
-
-
-class HairlineSplitter(QSplitter):
-    """A :class:`QSplitter` whose handles are 1 px hairlines with a 6 px hit area."""
-
-    def __init__(
-        self,
-        orientation: Qt.Orientation,
-        palette: style.Palette,
-        parent: Optional[QWidget] = None,
-    ) -> None:
-        super().__init__(orientation, parent)
-        self._palette = palette
-        self.setHandleWidth(style.SPLITTER_HANDLE_WIDTH)
-
-    def createHandle(self) -> QSplitterHandle:
-        return _HairlineHandle(self.orientation(), self, self._palette)
-
-
-def _json_text(value: Any) -> str:
-    """Pretty-print ``value`` for display (non-ASCII rendered readably)."""
-    return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
-
-
-class _ProjectTreeView(QTreeView):
-    """A :class:`QTreeView` that toggles a folder on the *first* click.
-
-    Qt delivers a rapid second click as a ``MouseButtonDblClick`` and routes it
-    to :meth:`mouseDoubleClickEvent`, which neither emits ``clicked`` /
-    ``doubleClicked`` for the branch indicator nor toggles it. The visible
-    result is a folder that will not close until the double-click interval has
-    elapsed. Toggling on both the press and the double-click makes every click a
-    single, immediate toggle, and routing the branch press through
-    :class:`QAbstractItemView` (instead of QTreeView's native branch handler)
-    prevents a double toggle.
-    """
-
-    def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton and self._toggle_dir_at(event):
-            QAbstractItemView.mousePressEvent(self, event)
-            return
-        super().mousePressEvent(event)
-
-    def mouseDoubleClickEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton and self._toggle_dir_at(event):
-            QAbstractItemView.mouseDoubleClickEvent(self, event)
-            return
-        super().mouseDoubleClickEvent(event)
-
-    def _toggle_dir_at(self, event) -> bool:
-        index = self.indexAt(event.position().toPoint())
-        if not index.isValid():
-            return False
-        item = self.model().itemFromIndex(index)
-        if item is None or item.data(Qt.UserRole + 1) != "dir":
-            return False
-        if self.isExpanded(index):
-            self.collapse(index)
-        else:
-            self.expand(index)
-        return True
-
-
-class _DocumentTreeView(_ProjectTreeView):
-    """A document-library tree that toggles a folder on the *first* click.
-
-    Mirrors :class:`_ProjectTreeView` but recognises the library's ``folder``
-    node kind (the project tree uses ``dir``). Clicking a folder toggles its
-    expansion; clicking a document emits ``clicked`` so the explorer can open it
-    with a single click.
-    """
-
-    def _toggle_dir_at(self, event) -> bool:
-        index = self.indexAt(event.position().toPoint())
-        if not index.isValid():
-            return False
-        item = self.model().itemFromIndex(index)
-        if item is None or item.data(Qt.UserRole + 1) != "folder":
-            return False
-        if self.isExpanded(index):
-            self.collapse(index)
-        else:
-            self.expand(index)
-        return True
-
-
 class MainWindow(QMainWindow):
     """Render the desktop client (presentation-only product surface)."""
 
@@ -588,12 +327,11 @@ class MainWindow(QMainWindow):
         self._repository_state: str = REPOSITORY_UNVERIFIED
         self._provider_state: str = PROVIDER_UNAVAILABLE
         # P4.2a provider presentation state: the allowlisted model and redacted
-        # credential presence reported by the boundary, plus the fixed-height
-        # provider status region and the lazily-built Settings dialog.
+        # credential presence reported by the boundary, plus the provider
+        # readiness chip mounted in the shell's context bar.
         self._provider_model: Optional[str] = None
         self._provider_credential_present: bool = False
         self._provider_status_label: Optional[QLabel] = None
-        self._settings_dialog: Optional[QDialog] = None
         # P4.2a modern Settings surface: left navigation, stacked content pages,
         # the in-surface action status line, the workspace/About value labels,
         # and a pending flag that disables profile actions while one is in
@@ -711,7 +449,6 @@ class MainWindow(QMainWindow):
         self._document_result: Optional[QPlainTextEdit] = None
         self._document_save_button: Optional[QPushButton] = None
         self._document_candidate_button: Optional[QPushButton] = None
-        self._document_review_button: Optional[QPushButton] = None
         self._document_adopt_button: Optional[QPushButton] = None
         self._versions_list: Optional[QWidget] = None
         self._versions_layout: Optional[QVBoxLayout] = None
@@ -728,15 +465,10 @@ class MainWindow(QMainWindow):
         # Deferred exit intents resolved after a save completes: "edit" returns
         # to the read-only projection; "close" closes the window.
         self._leave_after_save: bool = False
-        # Primary navigation state (replaces the old bottom-panel tab model): the
-        # labelled rail's destination buttons keyed by destination, the current
-        # destination, the Advanced disclosure and its collapsed group, and the
-        # single content stack the destinations page.
-        self._nav_buttons: Dict[str, QPushButton] = {}
-        self._nav_destination: str = "document"
-        self._advanced_button: Optional[QPushButton] = None
-        self._nav_group_container: Optional[QWidget] = None
-        self._content_stack: Optional[QStackedWidget] = None
+        # Navigation state. The rail and the content stack now belong to
+        # :class:`hrca.ui.shell.Shell`; the client keeps only which destination
+        # is current, so a late response can be routed to the right surface.
+        self._nav_destination: str = "resume"
         # P4.6 app-owned document library (explorer) state: the joined tree, the
         # currently selected item (a folder or document id), a monotonic open
         # generation that discards late open responses, a deferred target for the
@@ -789,6 +521,7 @@ class MainWindow(QMainWindow):
     # -- UI construction -------------------------------------------------
 
     def _build_ui(self) -> None:
+        """Build the chat-first workspace shell and its seven destinations."""
         self.setWindowTitle("PrimaAgent")
         self.resize(style.WINDOW_DEFAULT_WIDTH, style.WINDOW_DEFAULT_HEIGHT)
         self.setMinimumSize(style.WINDOW_MIN_WIDTH, style.WINDOW_MIN_HEIGHT)
@@ -800,24 +533,77 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
         root.setSpacing(style.SPACE_0)
 
-        root.addWidget(self._build_command_bar())
+        self._shell = Shell(self._palette)
+        self._shell.goal_submitted.connect(self._on_goal_submitted)
+        self._shell.context_bar.primary_clicked.connect(self._on_primary_action)
+        self._shell.destination_changed.connect(self._on_destination_changed)
+        self._build_destinations()
+        self._build_context_controls()
+        root.addWidget(self._shell, stretch=1)
 
-        # Main row: the compact labelled navigation rail, then the narrow
-        # resizable/collapsible document library explorer, then the one content
-        # stack that pages Document, Preview, Versions and the Advanced group.
-        main_row = QWidget()
-        main_row.setObjectName("mainRow")
-        main_layout = QHBoxLayout(main_row)
-        main_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        self._shell.add_footer(self._build_status_bar())
+        self._shell.select("resume")
+        self._refresh_destinations()
+
+    def _build_context_controls(self) -> None:
+        """Mount the workspace actions and the provider chip into the context bar.
+
+        The context bar's own primary button is the **safest next action** — on
+        first run that is opening a project; afterwards it follows the resume
+        recommendation. ``open_project_button`` remains an alias for it so the
+        existing scan-enable wiring keeps pointing at a real control.
+        """
+        self.open_project_button = self._shell.context_bar.primary_button
+        self.open_project_button.setFixedHeight(style.COMMAND_BAR_BUTTON_HEIGHT)
+
+        self.scan_button = QPushButton("Run read-only scan")
+        self.scan_button.setObjectName("secondaryButton")
+        self.scan_button.setAccessibleName("Run read-only scan")
+        self.scan_button.setEnabled(False)
+        self.scan_button.setToolTip("Open a project to run a local read-only scan.")
+        self.scan_button.clicked.connect(self._on_run_scan)
+        self.scan_button.setFixedHeight(style.COMMAND_BAR_BUTTON_HEIGHT)
+
+        self._provider_status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
+        self._provider_status_label.setObjectName("providerStatusChip")
+        self._provider_status_label.setAccessibleName("Provider status")
+        self._provider_status_label.setStyleSheet(
+            style.state_chip_style(self._palette, style.STATE_NEUTRAL)
         )
-        main_layout.setSpacing(style.SPACE_0)
-        main_layout.addWidget(self._build_nav_rail())
+        self._provider_status_label.setMaximumWidth(style.STATUS_ROOT_MAX_WIDTH)
+
+        self._shell.context_bar.add_widget(self._provider_status_label)
+        self._shell.context_bar.add_widget(self.scan_button)
+
+    def _build_destinations(self) -> None:
+        """Build the destinations and mount every rehomed surface into one."""
+        self._workspace = Workspace(ProjectContext())
+        self._views = {}
+
+        self._resume_destination = ResumeDestination(self._workspace, self)
+        self._chat_destination = AgentChatDestination(self._workspace, self)
+        self._jobs_destination = JobsDestination(self._workspace, self)
+        self._agents_destination = AgentsDestination(self._workspace, self)
+        self._review_destination = ReviewDestination(self._workspace, self)
+        self._documents_destination = DocumentsDestination(self._workspace, self)
+        self._settings_destination = SettingsDestination(self._workspace, self)
+
+        # Documents: the library explorer beside the editor and its versions.
+        self._library_explorer_panel = self._build_library_explorer()
+        self._document_page = self._build_document_workspace()
+        self._versions_page = self._build_versions_page()
+
+        workspace_column = QWidget()
+        column = QVBoxLayout(workspace_column)
+        column.setContentsMargins(style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0)
+        column.setSpacing(style.SPACE_0)
+        column.addWidget(self._document_page, stretch=1)
+        column.addWidget(self._versions_page)
+
         self._library_splitter = HairlineSplitter(Qt.Horizontal, self._palette)
         self._library_splitter.setObjectName("libraryWorkspace")
-        self._library_explorer_panel = self._build_library_explorer()
         self._library_splitter.addWidget(self._library_explorer_panel)
-        self._library_splitter.addWidget(self._build_content_stack())
+        self._library_splitter.addWidget(workspace_column)
         self._library_splitter.setCollapsible(0, True)
         self._library_splitter.setCollapsible(1, False)
         self._library_splitter.setStretchFactor(0, style.LIBRARY_EXPLORER_STRETCH)
@@ -828,176 +614,33 @@ class MainWindow(QMainWindow):
                 style.PRIMARY_SOURCE_INITIAL_WIDTH,
             ]
         )
-        main_layout.addWidget(self._library_splitter, stretch=1)
-        root.addWidget(main_row, stretch=1)
+        self._documents_destination.mount(self._library_splitter)
 
-        root.addWidget(self._build_status_bar())
+        # Review: the document-bound candidate preview, the project's scan
+        # evidence, and the retained plan/diff projection.
+        self._preview_page = self._build_preview_workspace()
+        self._review_destination.mount(self._preview_page)
+        self._review_destination.mount(self._build_validation_evidence_page())
+        self._review_destination.mount(self._build_change_review_page())
 
+        # Resume: the Developer Memory reader is the record set behind the
+        # resume, reached from the same destination rather than a parallel one.
+        self._resume_destination.mount(self._build_memory_page())
 
-    def _build_command_bar(self) -> QWidget:
-        bar = QWidget()
-        bar.setObjectName("commandBar")
-        bar.setFixedHeight(style.COMMAND_BAR_HEIGHT)
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
-        layout.setSpacing(style.GAP_TIGHT)
+        # Settings: the provider, appearance, workspace and privacy surface.
+        self._settings_surface = self._build_settings_surface()
+        self._settings_destination.mount(self._settings_surface)
 
-        self.settings_button = QPushButton("Settings")
-        self.settings_button.setObjectName("ghostButton")
-        self.settings_button.setAccessibleName("Settings")
-        self.settings_button.setToolTip("Settings")
-        self.settings_button.clicked.connect(self._open_settings)
-
-        self.open_project_button = QPushButton("Open Project")
-        self.open_project_button.setObjectName("secondaryButton")
-        self.open_project_button.setAccessibleName("Open Project")
-        self.open_project_button.clicked.connect(self._on_open_project)
-
-        self.scan_button = QPushButton("Run read-only scan")
-        self.scan_button.setObjectName("secondaryButton")
-        self.scan_button.setAccessibleName("Run read-only scan")
-        self.scan_button.setEnabled(False)
-        self.scan_button.setToolTip("Open a project to run a local read-only scan.")
-        self.scan_button.clicked.connect(self._on_run_scan)
-
-        # Settings / Open Project / Run read-only scan are compact peer
-        # controls: one shared height token, no per-widget sizing. There is no
-        # separate Provider status command — local readiness is refreshed
-        # automatically (startup, Settings open, credential/profile changes).
-        for button in (
-            self.settings_button,
-            self.open_project_button,
-            self.scan_button,
+        for key, destination in (
+            ("resume", self._resume_destination),
+            ("chat", self._chat_destination),
+            ("jobs", self._jobs_destination),
+            ("agents", self._agents_destination),
+            ("review", self._review_destination),
+            ("documents", self._documents_destination),
+            ("settings", self._settings_destination),
         ):
-            button.setFixedHeight(style.COMMAND_BAR_BUTTON_HEIGHT)
-
-        layout.addWidget(self.open_project_button)
-        layout.addWidget(self.scan_button)
-        layout.addStretch(1)
-
-        self._provider_status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
-        self._provider_status_label.setObjectName("providerStatusChip")
-        self._provider_status_label.setAccessibleName("Provider status")
-        self._provider_status_label.setStyleSheet(
-            style.state_chip_style(self._palette, style.STATE_NEUTRAL)
-        )
-        self._provider_status_label.setMaximumWidth(style.STATUS_ROOT_MAX_WIDTH)
-        layout.addWidget(self._provider_status_label)
-        layout.addWidget(self.settings_button)
-        return bar
-
-    def _build_provider_status_region(self) -> QWidget:
-        """Build the permanently-reserved provider status strip (P4.2a).
-
-        The region is a fixed-height, single-line label mounted below the top
-        toolbar. It is always present so that writing the local provider state
-        ("Checking…" / "configured" / "not configured" / …) never reflows the
-        splitter, panels or scroll position, and never depends on the truncated
-        footer field.
-        """
-        region = QWidget()
-        region.setObjectName("providerStatus")
-        region.setFixedHeight(style.PROVIDER_STATUS_HEIGHT)
-        layout = QHBoxLayout(region)
-        layout.setContentsMargins(style.INSET, style.SPACE_0, style.INSET, style.SPACE_0)
-        layout.setSpacing(style.SPACE_0)
-        self._provider_status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
-        self._provider_status_label.setStyleSheet(style.status_label_style(self._palette))
-        self._provider_status_label.setAccessibleName("Provider status")
-        layout.addWidget(self._provider_status_label, stretch=1)
-        return region
-
-
-    def _build_nav_rail(self) -> QWidget:
-        """Build the compact labelled navigation rail.
-
-        Document and Preview are the only always-visible primary destinations;
-        a divider separates Versions (which opens the accepted-version drawer)
-        and the collapsed Advanced disclosure, whose three grouped destinations
-        (Source & Code Map / Change Review / Validation Evidence) stay hidden
-        until it is opened. Every destination is a keyboard-focusable labelled
-        button; no emoji or icon-pack glyphs are used.
-        """
-        rail = QWidget()
-        rail.setObjectName("navRail")
-        rail.setFixedWidth(style.NAV_RAIL_WIDTH)
-        layout = QVBoxLayout(rail)
-        layout.setContentsMargins(
-            style.SPACE_0, style.GAP_TIGHT, style.SPACE_0, style.GAP_TIGHT
-        )
-        layout.setSpacing(style.SPACE_4)
-
-        for key in ("document", "preview"):
-            layout.addWidget(self._nav_button(_NAV_LABELS[key], key))
-
-        divider = QFrame()
-        divider.setObjectName("navRailDivider")
-        divider.setFrameShape(QFrame.HLine)
-        divider.setFixedHeight(style.BORDER_WIDTH)
-        layout.addWidget(divider)
-
-        layout.addWidget(self._nav_button(_NAV_LABELS["versions"], "versions"))
-        layout.addWidget(self._nav_button(_NAV_LABELS["memory"], "memory"))
-
-        self._advanced_button = QPushButton(_NAV_ADVANCED_LABEL + " ▸")
-        self._advanced_button.setObjectName("navRailAdvancedButton")
-        self._advanced_button.setCheckable(True)
-        self._advanced_button.setAccessibleName("Show Advanced")
-        self._advanced_button.toggled.connect(self._on_advanced_toggled)
-        layout.addWidget(self._advanced_button)
-
-        self._nav_group_container = QWidget()
-        self._nav_group_container.setObjectName("navRailGroup")
-        group_layout = QVBoxLayout(self._nav_group_container)
-        group_layout.setContentsMargins(
-            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
-        )
-        group_layout.setSpacing(style.SPACE_4)
-        for key in _ADVANCED_DESTINATIONS:
-            group_layout.addWidget(self._nav_button(_NAV_LABELS[key], key, group=True))
-        self._nav_group_container.setVisible(False)
-        layout.addWidget(self._nav_group_container)
-
-        layout.addStretch(1)
-
-        # Initial state: Document is the selected primary destination.
-        self._nav_buttons["document"].setChecked(True)
-        return rail
-
-    def _nav_button(self, label: str, key: str, group: bool = False) -> QPushButton:
-        """Return one checkable rail button and register it by destination."""
-        button = QPushButton(label)
-        button.setObjectName("navRailGroupButton" if group else "navRailButton")
-        button.setCheckable(True)
-        button.setAccessibleName(label)
-        button.setToolTip(label)
-        button.clicked.connect(partial(self._select_destination, key))
-        self._nav_buttons[key] = button
-        return button
-
-    def _build_content_stack(self) -> QWidget:
-        """Build the single content stack that pages every destination.
-
-        Document and Preview are primary full-height workspaces; Versions is the
-        accepted-version drawer; the two Advanced pages group the retained
-        technical surfaces. Every page is built once and kept alive for the
-        window's lifetime, so no surface output is silently discarded.
-        """
-        stack = QStackedWidget()
-        stack.setObjectName("contentStack")
-
-        self._views: Dict[str, CodeView] = {}
-        self._document_page = self._build_document_workspace()
-        stack.addWidget(self._document_page)
-        stack.addWidget(self._build_preview_workspace())
-        stack.addWidget(self._build_versions_page())
-        stack.addWidget(self._build_memory_page())
-        stack.addWidget(self._build_change_review_page())
-        stack.addWidget(self._build_validation_evidence_page())
-
-        self._content_stack = stack
-        stack.setCurrentIndex(_NAV_DESTINATION_INDEX["document"])
-        return stack
+            self._shell.register(key, destination)
 
     def _build_library_explorer(self) -> QWidget:
         """Build the app-owned document library explorer (P4.6).
@@ -1121,12 +764,12 @@ class MainWindow(QMainWindow):
         return panel
 
     def _build_change_review_page(self) -> QWidget:
-        """Build the Change Review group: Agent Chat, Plan and Diff.
+        """Build the retained plan/diff projection and raw candidate metadata.
 
-        These are grouped secondary views under the Advanced disclosure, never
-        permanent bottom tabs. The shared read-only CodeViews keep the P3.1
-        plan/diff output; Agent Chat keeps its disabled provider-unavailable
-        composer (no provider, credential, network or inference call).
+        Review keeps these technical outputs reachable: the P3.1 plan and diff
+        projection on the shared read-only CodeViews, and the raw
+        candidate/version metadata. Agent Chat and its Plan card are now their
+        own destination, so no chat composer lives here.
         """
         page = QWidget()
         page.setObjectName("changeReviewPage")
@@ -1137,21 +780,18 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.setObjectName("secondaryTabs")
         tabs.setDocumentMode(True)
-        tabs.addTab(self._build_chat_page(), _CHANGE_REVIEW_TABS[0][1])
         self._views["plan"] = CodeView(tabs, palette=self._palette)
         self._views["diff"] = CodeView(tabs, palette=self._palette)
         self._views["diff"].setPlainText(_DIFF_UNAVAILABLE)
         self._views["diff"].setStyleSheet(style.secondary_text_style(self._palette))
-        tabs.addTab(self._views["plan"], _CHANGE_REVIEW_TABS[1][1])
-        tabs.addTab(self._views["diff"], _CHANGE_REVIEW_TABS[2][1])
+        tabs.addTab(self._views["plan"], "Plan output")
+        tabs.addTab(self._views["diff"], "Diff")
 
-        # Raw candidate/version metadata lives here, behind Advanced, never in
-        # the primary Document/Preview workspaces.
         self._document_result = QPlainTextEdit()
         self._document_result.setObjectName("documentResult")
         self._document_result.setReadOnly(True)
-        self._document_result.setAccessibleName("Document state")
-        tabs.addTab(self._document_result, _CHANGE_REVIEW_TABS[3][1])
+        self._document_result.setAccessibleName("Candidate metadata")
+        tabs.addTab(self._document_result, "Candidate metadata")
         layout.addWidget(tabs)
         return page
 
@@ -1174,51 +814,6 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._views["evidence"], _VALIDATION_EVIDENCE_TABS[2][1])
         layout.addWidget(tabs)
         return page
-
-    def _build_chat_page(self) -> QWidget:
-        body = QWidget()
-        body.setObjectName("chatPanel")
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(
-            style.INSET, style.GAP_TIGHT, style.INSET, style.INSET
-        )
-        layout.setSpacing(style.GAP_TIGHT)
-
-        # Message area (empty state until a provider-backed chat exists).
-        self._chat_messages = QWidget()
-        messages_layout = QVBoxLayout(self._chat_messages)
-        messages_layout.addStretch(1)
-        messages_layout.addWidget(
-            self._empty_label("No messages — provider-backed chat is unavailable.")
-        )
-        messages_layout.addStretch(1)
-        layout.addWidget(self._chat_messages, stretch=1)
-
-        # Composer + send (both disabled; no provider/credential/network call).
-        composer_row = QHBoxLayout()
-        composer_row.setSpacing(style.GAP_TIGHT)
-        self._chat_composer = QTextEdit()
-        self._chat_composer.setObjectName("chatComposer")
-        self._chat_composer.setPlaceholderText("Chat input is disabled.")
-        self._chat_composer.setEnabled(False)
-        self._chat_composer.setAccessibleName("Chat input")
-        self._chat_composer.setFixedHeight(style.CHAT_COMPOSER_HEIGHT)
-        composer_row.addWidget(self._chat_composer, stretch=1)
-
-        self._chat_send = QPushButton("Send")
-        self._chat_send.setAccessibleName("Send message")
-        self._chat_send.setEnabled(False)
-        composer_row.addWidget(self._chat_send)
-        layout.addLayout(composer_row)
-
-        notice = QLabel("Provider-backed chat is unavailable in this read-only slice.")
-        notice.setObjectName("secondary")
-        notice.setStyleSheet(style.secondary_text_style(self._palette))
-        notice.setWordWrap(True)
-        notice.setAccessibleName("Chat availability")
-        layout.addWidget(notice)
-
-        return body
 
     def _build_preview_workspace(self) -> QWidget:
         """Build the read-only Preview workspace (P4.5).
@@ -3612,15 +3207,14 @@ class MainWindow(QMainWindow):
             self._memory_resume_layout.addWidget(row)
 
     def _build_document_workspace(self) -> QWidget:
-        """Build the document-first Working Document workspace (P4.4a).
+        """Build the working-document workspace, hosted by the Documents page.
 
-        Promoted to the primary full-height workspace: a compact document header
-        (file selector, New, Open and saved/unsaved state), a large readable
-        editor, and an unobtrusive footer where Save is the primary action and
-        the candidate actions (Create candidate / Review candidate / Adopt) are
-        contextual rather than four equal buttons. Accepted versions and raw
-        candidate metadata live in the Versions drawer and the Advanced Change
-        Review group respectively, not here.
+        A compact document header (title and saved/unsaved state), a large
+        readable editor, and an unobtrusive footer where Save is the primary
+        action and the candidate action is contextual rather than one of four
+        equal buttons. Adoption lives with the candidate preview in Review, and
+        the accepted versions and raw candidate metadata are mounted beside this
+        workspace in the same destination.
         """
         body = QWidget()
         body.setObjectName("documentPanel")
@@ -3714,7 +3308,6 @@ class MainWindow(QMainWindow):
         self._document_save_button.setObjectName("primaryButton")
         self._document_candidate_button = QPushButton("Build preview")
         self._document_candidate_button.setObjectName("primaryButton")
-        self._document_review_button = QPushButton("Review candidate")
         self._document_adopt_button = QPushButton("Use this version")
         self._document_save_button.setAccessibleName("Save document")
         self._document_candidate_button.setAccessibleName("Build preview")
@@ -3724,7 +3317,6 @@ class MainWindow(QMainWindow):
             "provider request that becomes a reviewable — never auto-adopted — "
             "candidate."
         )
-        self._document_review_button.setAccessibleName("Review candidate")
         self._document_adopt_button.setAccessibleName("Use this version")
         self._document_adopt_button.setToolTip(
             "Make this candidate the Accepted Version. This is a separate, "
@@ -3732,7 +3324,6 @@ class MainWindow(QMainWindow):
         )
         self._document_save_button.clicked.connect(self._save_document)
         self._document_candidate_button.clicked.connect(self._build_preview)
-        self._document_review_button.clicked.connect(self._review_candidate)
         self._document_adopt_button.clicked.connect(self._adopt_candidate)
         self._document_action_hint = QLabel("")
         self._document_action_hint.setObjectName("secondary")
@@ -3820,47 +3411,236 @@ class MainWindow(QMainWindow):
             "Hide diagnostics" if checked else "Show diagnostics"
         )
 
-    # -- navigation rail destination selection --------------------------
+    # -- rail destination selection -------------------------------------
 
     def _select_destination(self, key: str) -> None:
-        """Switch the content stack to ``key`` and sync the rail's checked state.
+        """Show the rail destination ``key`` in the workspace shell.
 
-        Document and Preview are the two always-visible primary destinations;
-        Versions and the three Advanced destinations are secondary. Entering
-        Document refreshes the document list (cheap and selection-preserving);
-        entering Preview loads the reference package on first visit.
-
-        Entering a destination is navigation, not an operation, so the global
-        strip is re-derived from the current truth afterwards: the exact typed
-        outcome of a completed Build-preview attempt bound to the open
-        document/revision, or the neutral baseline. Navigation therefore can
-        neither fabricate a completed provider operation nor erase evidence.
+        Entering a destination is navigation, not an operation. Documents
+        refreshes the library (cheap and selection-preserving) and Review
+        re-reads the bound preview; every destination re-renders from the
+        current truth. Navigation therefore can neither fabricate a completed
+        provider operation nor erase recorded evidence.
         """
         if key not in _NAV_DESTINATIONS:
             return
-        self._nav_destination = key
-        for k, button in self._nav_buttons.items():
-            button.setChecked(k == key)
-        if key in _ADVANCED_DESTINATIONS and not self._advanced_button.isChecked():
-            self._advanced_button.setChecked(True)
-        self._content_stack.setCurrentIndex(_NAV_DESTINATION_INDEX[key])
-        if key == "document":
+        self._shell.select(key)
+        if key == "documents":
             self._refresh_library()
-        elif key == "preview":
+        elif key == "review":
             self._refresh_preview()
-        self._restore_operation_status()
+        elif key == "settings":
+            self._refresh_profiles()
 
-    def _on_advanced_toggled(self, checked: bool) -> None:
-        """Show or hide the collapsed Advanced group."""
-        self._nav_group_container.setVisible(checked)
-        self._advanced_button.setText(
-            _NAV_ADVANCED_LABEL + (" ▾" if checked else " ▸")
-        )
-        self._advanced_button.setAccessibleName(
-            "Hide Advanced" if checked else "Show Advanced"
+    def _on_destination_changed(self, key: str) -> None:
+        """Track the rail's current destination for response routing."""
+        self._nav_destination = key
+
+    def _refresh_destinations(self) -> None:
+        """Re-render every workspace destination from the current state."""
+        for destination in (
+            self._resume_destination,
+            self._chat_destination,
+            self._jobs_destination,
+            self._agents_destination,
+            self._review_destination,
+        ):
+            destination.refresh()
+        self._sync_shell_context()
+
+    def _sync_shell_context(self) -> None:
+        """Push the bound context, and the safest next action, into the shell."""
+        self._shell.set_context(self._workspace.context)
+        recommendation = self._workspace.resume().recommendation
+        self._shell.context_bar.set_primary_action(
+            recommendation.action if self._workspace.context.has_project else "Open Project",
+            recommendation.reason or "Choose the repository this workspace is bound to.",
         )
 
-    # -- status helpers --------------------------------------------------
+    def _sync_workspace_context(self) -> None:
+        """Push the recorded root, document and accepted baseline into the workspace.
+
+        Everything here is a fact the boundary already reported. The accepted
+        baseline is the *current accepted version id* — empty until an accepted
+        version actually exists, so the workspace says it has no baseline rather
+        than inventing one.
+        """
+        context = ProjectContext(
+            root=self._root,
+            repository_state=self._repository_state,
+        )
+        if self._document_id:
+            revision = int((self._document_head or {}).get("revision_number") or 0)
+            context = context.with_document(
+                self._document_id,
+                self._document_name or "Untitled",
+                revision,
+                self._document_dirty,
+            )
+        if self._current_accepted_version_id:
+            label = ""
+            for version in self._document_versions:
+                if version.get("version_id") == self._current_accepted_version_id:
+                    label = str(
+                        version.get("label")
+                        or version.get("accepted_version_number")
+                        or self._current_accepted_version_id
+                    )
+                    break
+            context = context.with_baseline(self._current_accepted_version_id, label)
+        self._workspace.set_context(context)
+        self._sync_shell_context()
+
+    def _on_primary_action(self) -> None:
+        """Run the context bar's single, current safest action."""
+        if not self._workspace.context.has_project:
+            self._on_open_project()
+            return
+        recommendation = self._workspace.resume().recommendation
+        action = recommendation.action.lower()
+        if "goal" in action or "plan" in action or "confirm" in action:
+            self._select_destination("chat")
+        elif "review" in action or "adopt" in action or "decide" in action:
+            self._select_destination("review")
+        elif "blocker" in action or "dispatch" in action or "baseline" in action:
+            self._select_destination("jobs")
+        else:
+            self._select_destination("resume")
+
+    def _on_goal_submitted(self, goal: str) -> None:
+        """Record a stated goal, propose a plan, and show Agent Chat."""
+        outcome = self._workspace.state_goal(goal)
+        if outcome.refused:
+            self._set_status("blocked", outcome.reason)
+            return
+        self._shell.composer.clear()
+        self._select_destination("chat")
+        self._refresh_destinations()
+        self._set_status("ok", "plan proposed — review it before confirming")
+
+    # -- host protocol used by the destinations -------------------------
+
+    def open_project(self) -> None:
+        """Destination hook: open the project picker."""
+        self._on_open_project()
+
+    def focus_destination(self, key: str) -> None:
+        """Destination hook: move the rail to another destination."""
+        self._select_destination(key)
+
+    def show_details(self, heading: str, rows) -> None:
+        """Destination hook: show the temporary details drawer."""
+        self._shell.show_details(heading, rows)
+
+    def confirm_plan(self) -> None:
+        """Destination hook: confirm the current plan."""
+        outcome = self._workspace.confirm_plan()
+        if outcome.refused:
+            self._set_status("blocked", outcome.reason)
+        else:
+            self._set_status("ok", "plan confirmed — jobs can now be dispatched")
+        self._refresh_destinations()
+
+    def dispatch_job(self, key: str) -> None:
+        """Destination hook: dispatch a job, confirming a protected effect first.
+
+        A protected job asks for one explicit confirmation naming the exact
+        effect and the authority it needs. Nothing is dispatched while the
+        developer declines.
+        """
+        job = self._workspace.job(key)
+        if job is None:
+            return
+        effects = ()
+        if job.is_protected:
+            required = app_authority.effects_for(job.authority)
+            named = ", ".join(
+                app_authority.effect_label(effect).lower() for effect in required
+            )
+            confirm = QMessageBox(self)
+            confirm.setWindowTitle(f"Confirm {app_authority.effect_label(required[0]).lower()}")
+            confirm.setText(f"Dispatch “{job.title}”?")
+            confirm.setInformativeText(
+                f"This job needs {named}.\n\n"
+                f"{app_authority.describe_authority(job.authority)}.\n"
+                "Cancelling dispatches nothing."
+            )
+            confirm.setIcon(QMessageBox.Icon.Warning)
+            confirm.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            if confirm.exec() != QMessageBox.StandardButton.Ok:
+                self._set_status("idle", f"{job.title} was not dispatched")
+                return
+            effects = required
+
+        outcome = self._workspace.dispatch(key, effects)
+        if outcome.refused:
+            self._set_status("blocked", outcome.reason)
+        else:
+            self._set_status("running", f"{job.title} dispatched")
+            self._drive_job(job)
+        self._refresh_destinations()
+
+    def _drive_job(self, job) -> None:
+        """Hand a dispatched job to the real backend path it maps to.
+
+        Only capabilities the desktop genuinely reaches are driven here. A job
+        whose capability the product cannot perform is never dispatched, so it
+        can never arrive at this method.
+        """
+        if job.capability_key == "project.open":
+            self._on_open_project()
+        elif job.capability_key == "source.scan":
+            self._on_run_scan()
+        else:
+            # The capability is available but has no dispatch path wired from a
+            # plan yet. Record that honestly instead of claiming it ran.
+            self._workspace.report_job(
+                job.key,
+                "unknown",
+                detail="No dispatch path is wired from the plan for this capability yet.",
+            )
+
+    def pause_job(self, key: str) -> None:
+        """Destination hook: pause a job whose capability supports it."""
+        outcome = self._workspace.pause(key)
+        self._set_status("ok" if outcome.ok else "blocked", outcome.reason or "job paused")
+        self._refresh_destinations()
+
+    def resume_job(self, key: str) -> None:
+        """Destination hook: resume a paused job."""
+        outcome = self._workspace.resume_job(key)
+        self._set_status("ok" if outcome.ok else "blocked", outcome.reason or "job resumed")
+        self._refresh_destinations()
+
+    def cancel_job(self, key: str) -> None:
+        """Destination hook: cancel a job whose capability supports it."""
+        outcome = self._workspace.cancel(key)
+        self._set_status("ok" if outcome.ok else "blocked", outcome.reason or "job cancelled")
+        self._refresh_destinations()
+
+    def record_decision(self, decision: str) -> None:
+        """Destination hook: record a named human review decision."""
+        from PySide6.QtWidgets import QInputDialog
+
+        actor, accepted = QInputDialog.getText(
+            self,
+            "Record decision",
+            "Your name (recorded with the decision):",
+        )
+        if not accepted or not actor.strip():
+            return
+        note, _ = QInputDialog.getText(
+            self,
+            "Record decision",
+            "Note (optional):",
+        )
+        outcome = self._workspace.record_decision(decision, actor, note or "")
+        if outcome.refused:
+            self._set_status("blocked", outcome.reason)
+        else:
+            self._set_status("ok", "decision recorded")
+        self._refresh_destinations()
 
     def _set_status(self, state: str, detail: str = "") -> None:
         self._status = state
@@ -4037,29 +3817,23 @@ class MainWindow(QMainWindow):
     # -- Settings surface (P4.2a) ----------------------------------------
 
     def _open_settings(self) -> None:
-        self._build_settings_dialog()
-        self._refresh_settings_dialog()
-        self._settings_dialog.show()
-        # Refresh the saved profiles (and run any pending legacy migration),
-        # the allowlisted model and the redacted credential presence through the
-        # local boundary so the Provider page is never stale. This is a local
-        # metadata read only — it never contacts DeepSeek.
-        self._refresh_profiles()
+        """Show the Settings destination.
 
-    def _build_settings_dialog(self) -> None:
-        if self._settings_dialog is not None:
-            return
-        dialog = QDialog(self)
-        dialog.setObjectName("settingsDialog")
-        dialog.setWindowTitle("Settings")
-        dialog.setMinimumSize(
-            style.SETTINGS_DIALOG_MIN_WIDTH, style.SETTINGS_DIALOG_MIN_HEIGHT
-        )
-        dialog.resize(
-            style.SETTINGS_DIALOG_DEFAULT_WIDTH, style.SETTINGS_DIALOG_DEFAULT_HEIGHT
-        )
+        Settings is a rail destination now, not a modal dialog, so it sits in
+        the same navigation model as every other surface. Opening it refreshes
+        the saved profiles (and runs any pending legacy migration), the
+        allowlisted model and the redacted credential presence through the local
+        boundary. That is a local metadata read only — it never contacts
+        DeepSeek.
+        """
+        self._select_destination("settings")
 
-        root = QHBoxLayout(dialog)
+    def _build_settings_surface(self) -> QWidget:
+        """Build the Settings page: a section list beside a stacked page set."""
+        surface = QWidget()
+        surface.setObjectName("settingsDialog")
+
+        root = QHBoxLayout(surface)
         root.setContentsMargins(
             style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
         )
@@ -4086,7 +3860,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self._settings_stack, stretch=1)
 
         self._settings_nav.setCurrentRow(0)
-        self._settings_dialog = dialog
+        return surface
 
     def _on_settings_nav_changed(self, row: int) -> None:
         if 0 <= row < self._settings_stack.count():
@@ -4272,7 +4046,7 @@ class MainWindow(QMainWindow):
         return page
 
     def _refresh_settings_dialog(self) -> None:
-        if self._settings_dialog is None:
+        if getattr(self, "_settings_stack", None) is None:
             return
         self._settings_model_value.setText(self._provider_model or "—")
         self._settings_workspace_value.setText(self._root or "No project open")
@@ -4281,7 +4055,7 @@ class MainWindow(QMainWindow):
         self._set_settings_actions_enabled(not self._profile_action_pending)
 
     def _set_settings_actions_enabled(self, enabled: bool) -> None:
-        if self._settings_dialog is None:
+        if getattr(self, "_settings_stack", None) is None:
             return
         if self._add_profile_button is not None:
             self._add_profile_button.setEnabled(enabled)
@@ -4442,7 +4216,7 @@ class MainWindow(QMainWindow):
     def _prompt_profile_name(self, title: str, label: str, initial: str):
         """Collect one display name; returns ``(name, ok)`` (Qt dialog)."""
         return QInputDialog.getText(
-            self._settings_dialog or self, title, label, text=initial
+            self, title, label, text=initial
         )
 
     def _name_is_in_use(self, name: str, exclude_id: Optional[str] = None) -> bool:
@@ -4637,7 +4411,7 @@ class MainWindow(QMainWindow):
             )
 
     def _confirm_delete_profile(self, profile: Dict[str, Any]) -> bool:
-        box = QMessageBox(self._settings_dialog or self)
+        box = QMessageBox(self)
         box.setWindowTitle("Delete profile")
         box.setText(f'Delete the "{profile.get("display_name")}" profile?')
         box.setInformativeText(
@@ -4662,7 +4436,7 @@ class MainWindow(QMainWindow):
         items = [p.get("display_name") for p in candidates]
         items.append("No active credential")
         choice, ok = QInputDialog.getItem(
-            self._settings_dialog or self,
+            self,
             "Choose active credential",
             "The profile you are deleting is active. Choose a new active credential:",
             items,
@@ -4719,6 +4493,8 @@ class MainWindow(QMainWindow):
         self._repository_state = result.get("repository_state", REPOSITORY_UNVERIFIED)
         self._update_status()
         self._update_scan_enabled()
+        self._sync_workspace_context()
+        self._refresh_destinations()
         self._set_status(STATE_SUCCESS, "project open")
 
 
@@ -4984,9 +4760,7 @@ class MainWindow(QMainWindow):
             self._document_candidate_button.setEnabled(
                 not self._document_candidate_pending and not self._rule_delta_pending
             )
-        # Review and adoption live in Preview, not beside Save.
-        if self._document_review_button is not None:
-            self._document_review_button.setVisible(False)
+        # Adoption lives with the candidate preview in Review, not beside Save.
         if self._document_adopt_button is not None:
             self._document_adopt_button.setVisible(self._candidate_is_current())
         if self._document_action_hint is not None:
@@ -5002,10 +4776,6 @@ class MainWindow(QMainWindow):
                 hint = "Preview uses the last saved revision."
             self._document_action_hint.setText(hint)
         self._update_preview_actions()
-
-    def _review_candidate(self) -> None:
-        """Open the Preview surface to review the current candidate."""
-        self._select_destination("preview")
 
     def _update_document_status(self) -> None:
         if self._document_status_label is None:
@@ -5518,6 +5288,7 @@ class MainWindow(QMainWindow):
             self._document_editor.setPlainText("")
         finally:
             self._document_loading = False
+        self._sync_workspace_context()
         self._document_dirty = False
         self._document_result.setPlainText(
             "The open document was removed or is no longer available.\n\n"
@@ -5547,6 +5318,7 @@ class MainWindow(QMainWindow):
         self._update_document_status()
         self._update_document_actions()
         self._refresh_preview()
+        self._sync_workspace_context()
 
     def _populate_versions_list(self) -> None:
         """Rebuild the Versions drawer: revision-aware accepted-app rows.

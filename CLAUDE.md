@@ -17,7 +17,17 @@ the ``twin`` test route.
   intent, impact, candidate edit and diff, the document and version authority,
   validation, and the controlled-change reconciliation record), `execution/` (the
   accepted runner and its packages), `integrations/` (the provider and credential
-  seam), `memory/`, `twin/`, `boundary/`, `cli/` and `ui/`. A few modules stay at
+  seam), `memory/`, `twin/`, `boundary/`, `cli/` and `ui/`. **UI-TRANSITION-2**
+  replaced the document-first shell with a chat-first workspace: `ui/appmodel/`
+  is the pure, Qt-free orchestration model (goal, editable plan, jobs, bounded
+  agent roles, review and resume) and the only place the honest-state rules are
+  enforced; `ui/components.py`, `ui/widgets.py` and `ui/shell.py` are the
+  component system and the seven-destination frame; `ui/destinations/` holds one
+  module per rail destination (Resume, Agent Chat, Jobs, Agents, Review,
+  Documents, Settings); and `ui/client.py` keeps the single boundary request
+  path and hosts the rehomed surfaces. The model adds no boundary action, store,
+  schema or migration — it is local presentation state, reachable only through
+  the desktop, and nothing in it can advance an accepted baseline. A few modules stay at
   the package root: `source_evidence.py`, `__main__.py`, and the compatibility
   shims that keep the documented `python -m hrca.X` entrypoints and the console
   scripts resolving after the reorganisation. **A module name mentioned below is

@@ -133,12 +133,55 @@ semantics are invented):
   readiness is carried as a chip in the command bar rather than a separate
   strip.
 
-As of **P4.4a** the shell is document-first. A compact labelled navigation rail
-presents **Document** and **Preview** as the only always-visible primary
+## UI-TRANSITION-2 — the chat-first workspace
+
+The desktop is now a chat-first agent workspace. A thin rail carries exactly
+seven destinations — **Resume**, **Agent Chat**, **Jobs**, **Agents**,
+**Review**, **Documents** and **Settings** — with a compact context bar
+(repository, state, accepted baseline, open document, and the single safest
+next action), a dominant content workspace, a temporary details drawer and a
+composer whose summary line states the bound context, the action and the
+authority **before** anything is dispatched.
+
+The workflow is local and explicit: state a goal → get an **editable Plan
+card** (jobs, subtasks, dependencies, acceptance, risk, assigned role and
+requested authority) → confirm it → dispatch jobs individually → review the
+evidence → record a decision → return to Resume, which reconstructs where the
+work stands and names one next action.
+
+The orchestration model is **local presentation state** and is deliberately
+not a persisted product record: it adds no boundary action, store, schema or
+migration, and the accepted backend keeps sole ownership of every durable
+record. Capabilities are bound to real boundary actions; the two the desktop
+genuinely cannot perform — running validation and writing into the repository
+— are shown unavailable **with a stated reason** rather than hidden or faked.
+No job is dispatched until the developer confirms the plan, and a job whose
+authority is protected (provider dispatch, credential use, repository write,
+destructive action) asks for that specific effect again, per job.
+
+The honest-state rules are enforced in the model, not in the widgets: a
+completion reported by a job is a **claim** that changes no accepted state; an
+outcome that could not be observed is `unknown` and is never rounded up; a job
+planned against a baseline that later moved becomes `stale` rather than being
+silently re-bound; and recording a decision never adopts a version, writes a
+repository or moves a baseline. Pause, resume, cancel and reassign are offered
+**only** where the job's capability can actually honour them.
+
+The `Advanced` disclosure, the `Document`/`Preview`/`Versions` rail and the
+`Memory` rail destination are gone. Their surfaces were rehomed rather than
+deleted: the library, editor and accepted versions live in **Documents**; the
+candidate preview and the project's scan evidence live in **Review**; and the
+Developer Memory reader lives in **Resume** as the record set behind the
+resume. See `docs/interface.md` for the user guide and
+`docs/interface-developer.md` for the module map.
+
+As of **P4.4a** the shell was document-first. A compact labelled navigation rail
+presented **Document** and **Preview** as the only always-visible primary
 destinations, then **Versions** (the accepted-version history with per-version
-Restore) and a collapsed **Advanced** disclosure that groups the retained
+Restore) and a collapsed **Advanced** disclosure that grouped the retained
 technical surfaces as **Change Review** (Agent Chat, Plan, Diff and the raw
 candidate metadata) and **Validation Evidence** (Problems, Tests, Evidence).
+**UI-TRANSITION-2 supersedes this layout.**
 
 As of **UI-TRANSITION-1** the desktop no longer presents a code-twin surface.
 The Project Explorer, the read-only Source Code tabs and the right-hand Code Map

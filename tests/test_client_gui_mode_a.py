@@ -94,10 +94,10 @@ class ModeAUiTests(unittest.TestCase):
         self.assertEqual(self.window._document_action_hint.text(), "Save changes to continue.")
         self.assertTrue(self.window._document_candidate_button.isHidden())
 
-    def test_provider_readiness_is_a_toolbar_chip(self):
+    def test_provider_readiness_is_a_context_bar_chip(self):
         self.assertEqual(
             self.window._provider_status_label.parentWidget().objectName(),
-            "commandBar",
+            "contextBar",
         )
 
     def test_diagnostics_are_collapsed_by_default(self):

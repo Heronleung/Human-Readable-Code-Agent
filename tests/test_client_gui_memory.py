@@ -27,7 +27,7 @@ try:
     from hrca import boundary, memory
     from hrca.core import contract
     from hrca.memory import memory_store
-    from hrca.ui.client import MainWindow, _NAV_LABELS
+    from hrca.ui.client import MainWindow
 
     _QT_AVAILABLE = True
 except ImportError:  # pragma: no cover - exercised only without PySide6
@@ -93,7 +93,7 @@ class MemorySurfaceTestCase(unittest.TestCase):
         self.window = MainWindow()
         self.window.show()
         self._app.processEvents()
-        self.window._select_destination("memory")
+        self.window._select_destination("resume")
         self.sent = []
         self.wire_backend()
 
@@ -227,14 +227,16 @@ class MemorySurfaceTestCase(unittest.TestCase):
 
 
 class NavigationTests(MemorySurfaceTestCase):
-    def test_the_destination_is_labelled_and_reachable(self):
-        self.assertEqual("Memory", _NAV_LABELS["memory"])
-        self.assertIn("memory", self.window._nav_buttons)
-        self.assertEqual(
-            _NAV_LABELS["memory"], self.window._nav_buttons["memory"].accessibleName()
+    def test_the_memory_reader_is_rehomed_into_resume(self):
+        # UI-TRANSITION-2 removed the Memory rail destination: the recorded runs
+        # are the record set behind the resume, so the reader now lives inside
+        # the Resume destination rather than a parallel one.
+        self.assertNotIn("memory", self.window._shell._buttons)
+        self.window._select_destination("resume")
+        self.assertEqual("resume", self.window._nav_destination)
+        self.assertTrue(
+            self.window._shell.page("resume").isAncestorOf(self.window._memory_run_selector)
         )
-        self.window._select_destination("memory")
-        self.assertEqual("memory", self.window._nav_destination)
 
     def test_load_requests_documents_through_the_protocol(self):
         self.seed(COMPLETED_EVENTS)
@@ -614,8 +616,13 @@ class PrivacyTests(MemorySurfaceTestCase):
         texts = self._texts() + self._detail_texts()
         blob = "\n".join(texts)
         self.assertTrue(blob)
+        # Canaries are values that must never reach a surface: the secret, the
+        # caller's path fragments and raw record keys. The word "privacy" used
+        # to be safe only because Settings was built lazily; now that every
+        # destination is built eagerly it is ordinary copy, not a leak, so it is
+        # not a canary.
         for forbidden in (_SECRET, _PERSONAL, "someone", ".ssh",
-                          '"payload"', "content_fingerprint", "privacy"):
+                          '"payload"', "content_fingerprint"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, blob)
 

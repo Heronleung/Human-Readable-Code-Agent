@@ -35,7 +35,8 @@ try:
 
     from hrca.core import contract
     from hrca.ui import style
-    from hrca.ui.client import BackendSupervisor, CodeView, MainWindow, PythonHighlighter, _NAV_LABELS, _SETTINGS_ACTIVE_LABEL, _SETTINGS_ADD_PROFILE, _SETTINGS_NO_PROFILES, _SETTINGS_RENAME, _SETTINGS_REPLACE
+    from hrca.ui.widgets import PythonHighlighter
+    from hrca.ui.client import BackendSupervisor, CodeView, MainWindow, _NAV_LABELS, _SETTINGS_ACTIVE_LABEL, _SETTINGS_ADD_PROFILE, _SETTINGS_NO_PROFILES, _SETTINGS_RENAME, _SETTINGS_REPLACE
     from hrca.boundary.client_core import CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, PROVIDER_STATUS_PENDING, VALIDATION_OK, build_open_project_request, build_request, resolve_credential_host_command
 
     HAS_PYSIDE6 = True
@@ -193,7 +194,7 @@ class MainWindowLayoutTests(unittest.TestCase):
                     window.show()
                     QApplication.processEvents()
                     self.assertIs(window._palette, palette)
-                    self.assertEqual(window._content_stack.count(), 6)
+                    self.assertEqual(window._shell.stack.count(), 7)
 
     def test_main_window_uses_supplied_palette(self):
         for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
@@ -201,10 +202,14 @@ class MainWindowLayoutTests(unittest.TestCase):
                 window = MainWindow(palette=palette)
                 self.assertIs(window._palette, palette)
 
-    def test_chat_composer_and_send_disabled(self):
+    def test_the_shell_composer_is_the_single_chat_input(self):
         window = MainWindow()
-        self.assertFalse(window._chat_composer.isEnabled())
-        self.assertFalse(window._chat_send.isEnabled())
+        # The legacy disabled chat placeholder is gone; the shell composer is
+        # the one chat input, and it is enabled because it only proposes a plan.
+        self.assertFalse(hasattr(window, "_chat_composer"))
+        self.assertFalse(hasattr(window, "_chat_send"))
+        self.assertTrue(window._shell.composer.send_button.isEnabled())
+        self.assertIn("nothing is sent", window._shell.composer.summary.text())
 
     def test_secondary_surfaces_present(self):
         window = MainWindow()
@@ -236,32 +241,25 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertEqual(window._validation_state, VALIDATION_OK)
 
 
-    def test_nav_rail_is_primary_navigation(self):
+    def test_the_rail_is_the_primary_navigation(self):
         window = MainWindow()
-        self.assertIsInstance(window._content_stack, QStackedWidget)
-        self.assertEqual(window._content_stack.count(), 6)
-        # Document is the default primary destination.
-        self.assertEqual(window._nav_destination, "document")
-        self.assertEqual(window._content_stack.currentIndex(), 0)
-        self.assertTrue(window._nav_buttons["document"].isChecked())
+        self.assertIsInstance(window._shell.stack, QStackedWidget)
+        self.assertEqual(window._shell.stack.count(), 7)
+        # Resume is the landing destination.
+        self.assertEqual(window._nav_destination, "resume")
+        self.assertTrue(window._shell._buttons["resume"].isChecked())
 
-    def test_nav_rail_defaults_to_document_with_advanced_collapsed(self):
+    def test_the_workspace_opens_on_resume_with_every_destination_visible(self):
         window = MainWindow()
-        self.assertEqual(window._nav_destination, "document")
-        self.assertEqual(window._content_stack.currentIndex(), 0)
-        # Advanced is collapsed by default: its grouped destinations are hidden.
-        self.assertTrue(window._nav_group_container.isHidden())
+        self.assertEqual(window._nav_destination, "resume")
+        # There is no collapsed group: every destination is always visible.
+        for key in window._shell._buttons:
+            self.assertFalse(window._shell._buttons[key].isHidden())
 
-    def test_advanced_disclosure_toggles_group(self):
+    def test_there_is_no_advanced_disclosure(self):
         window = MainWindow()
-        self.assertTrue(window._nav_group_container.isHidden())
-        self.assertIn("▸", window._advanced_button.text())
-        window._advanced_button.setChecked(True)
-        self.assertFalse(window._nav_group_container.isHidden())
-        self.assertIn("▾", window._advanced_button.text())
-        window._advanced_button.setChecked(False)
-        self.assertTrue(window._nav_group_container.isHidden())
-        self.assertIn("▸", window._advanced_button.text())
+        self.assertFalse(hasattr(window, "_advanced_button"))
+        self.assertFalse(hasattr(window, "_nav_group_container"))
 
 
     def test_scan_button_disabled_until_project_open(self):
@@ -326,25 +324,29 @@ class MainWindowLayoutTests(unittest.TestCase):
     def _assert_geometry(self, palette, width, height):
         window = self._laid_out_window(palette, width, height)
 
-        # Primary Document workspace: a full-height, usable editor at each size.
-        self.assertEqual(window._content_stack.currentIndex(), 0)
+        # The workspace opens on Resume, which is laid out at every size.
+        self.assertEqual(window._shell.stack.currentIndex(), 0)
+
+        # The Documents destination holds a full-height, usable editor.
+        window._select_destination("documents")
+        QApplication.processEvents()
         self.assertGreater(window._document_editor.width(), 0)
         self.assertGreater(window._document_editor.height(), 0)
 
-        # The nav rail's Document destination is laid out (a labelled column).
-        self.assertGreater(window._nav_buttons["document"].width(), 0)
+        # The rail's Resume destination is laid out (a labelled column).
+        self.assertGreater(window._shell._buttons["resume"].width(), 0)
 
         # The status bar remains one fixed-height row at the bottom.
         status_bar = window.findChild(QWidget, "statusBar")
         self.assertIsNotNone(status_bar)
         self.assertEqual(status_bar.height(), style.STATUS_BAR_HEIGHT)
 
-        # Every remaining destination still pages to a laid-out, non-empty
-        # surface at each size: the rail never selects a page it cannot show.
-        for key in window._nav_buttons:
+        # Every destination still pages to a laid-out, non-empty surface at
+        # each size: the rail never selects a page it cannot show.
+        for key in window._shell._buttons:
             window._select_destination(key)
             QApplication.processEvents()
-            page = window._content_stack.currentWidget()
+            page = window._shell.stack.currentWidget()
             self.assertGreater(page.width(), 0)
             self.assertGreater(page.height(), 0)
 
@@ -618,15 +620,15 @@ class NavigationRailTests(unittest.TestCase):
 
     def test_nav_rail_hierarchy(self):
         window = MainWindow()
-        self.assertIsInstance(window._content_stack, QStackedWidget)
-        self.assertEqual(window._content_stack.count(), 6)
+        self.assertIsInstance(window._shell.stack, QStackedWidget)
+        self.assertEqual(window._shell.stack.count(), 7)
         self.assertEqual(
-            set(window._nav_buttons),
-            {"document", "preview", "versions", "memory",
-             "change_review", "validation_evidence"},
+            set(window._shell._buttons),
+            {"resume", "chat", "jobs", "agents", "review", "documents", "settings"},
         )
-        self.assertIsInstance(window._advanced_button, QPushButton)
-        self.assertIsNotNone(window._nav_group_container)
+        # The Advanced disclosure and its collapsed group are gone.
+        self.assertFalse(hasattr(window, "_advanced_button"))
+        self.assertFalse(hasattr(window, "_nav_group_container"))
 
     def test_legacy_bottom_panel_removed(self):
         window = MainWindow()
@@ -647,29 +649,24 @@ class NavigationRailTests(unittest.TestCase):
         ):
             self.assertFalse(hasattr(window, method), f"legacy method {method} remains")
 
-    def test_only_document_and_preview_always_visible(self):
+    def test_all_seven_destinations_are_always_visible(self):
         window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
-        self.assertFalse(window._nav_buttons["document"].isHidden())
-        self.assertFalse(window._nav_buttons["preview"].isHidden())
-        self.assertTrue(window._nav_group_container.isHidden())
+        for key in ("resume", "chat", "jobs", "agents", "review", "documents", "settings"):
+            with self.subTest(key=key):
+                self.assertFalse(window._shell._buttons[key].isHidden())
 
     # -- destination selection -------------------------------------------
 
     def test_destination_selection_switches_stack_and_checks_button(self):
         window = MainWindow()
-        for key, index in (
-            ("document", 0),
-            ("preview", 1),
-            ("versions", 2),
-            ("memory", 3),
-            ("change_review", 4),
-            ("validation_evidence", 5),
+        for index, key in enumerate(
+            ("resume", "chat", "jobs", "agents", "review", "documents", "settings")
         ):
             with self.subTest(key=key):
                 window._select_destination(key)
                 self.assertEqual(window._nav_destination, key)
-                self.assertEqual(window._content_stack.currentIndex(), index)
-                self.assertTrue(window._nav_buttons[key].isChecked())
+                self.assertEqual(window._shell.stack.currentIndex(), index)
+                self.assertTrue(window._shell._buttons[key].isChecked())
 
     def test_document_selection_refreshes_documents(self):
         window = MainWindow()
@@ -680,7 +677,7 @@ class NavigationRailTests(unittest.TestCase):
             return True
 
         window._send = fake_send
-        window._select_destination("document")
+        window._select_destination("documents")
         self.assertEqual(sent[-1]["action"], contract.ACTION_LIBRARY_GET)
 
     def test_preview_selection_refreshes_preview(self):
@@ -693,29 +690,25 @@ class NavigationRailTests(unittest.TestCase):
             return True
 
         window._send = fake_send
-        window._select_destination("preview")
+        window._select_destination("review")
         preview_requests = [
             r for r in sent if r["action"] == contract.ACTION_DOCUMENT_PREVIEW
         ]
         self.assertEqual(len(preview_requests), 1)
 
-    def test_advanced_group_selection_expands_disclosure(self):
+    def test_review_rehomes_the_retained_technical_surfaces(self):
         window = MainWindow()
-        self.assertTrue(window._nav_group_container.isHidden())
-        window._select_destination("change_review")
-        self.assertFalse(window._nav_group_container.isHidden())
-        self.assertTrue(window._advanced_button.isChecked())
-
-    # -- Advanced grouping ------------------------------------------------
-
-    def test_advanced_groups_expose_retained_surfaces(self):
-        window = MainWindow()
-        # Change Review keeps Agent Chat (chat composer), Plan, Diff and the raw
-        # Candidate tab; Validation Evidence keeps Problems, Tests, Evidence.
+        # The plan/diff projection, the raw candidate metadata and the scan
+        # evidence are all reachable from the Review destination now.
         for key in ("plan", "diff", "problems", "tests", "evidence"):
             self.assertIn(key, window._views)
-        self.assertIsNotNone(window._chat_composer)
         self.assertIsNotNone(window._document_result)
+        review = window._shell.page("review")
+        for view in window._views.values():
+            with self.subTest(view=id(view)):
+                self.assertTrue(review.isAncestorOf(view))
+
+    # -- accessibility ----------------------------------------------------
 
     def test_scan_output_still_reaches_secondary_views(self):
         window = MainWindow()
@@ -727,16 +720,10 @@ class NavigationRailTests(unittest.TestCase):
 
     def test_nav_buttons_are_labelled_and_focusable(self):
         window = MainWindow()
-        for key, button in window._nav_buttons.items():
+        for key, button in window._shell._buttons.items():
             self.assertEqual(button.accessibleName(), _NAV_LABELS[key])
             self.assertTrue(button.isCheckable())
             self.assertNotEqual(button.focusPolicy(), Qt.NoFocus)
-
-    def test_advanced_disclosure_accessible_names(self):
-        window = MainWindow()
-        self.assertEqual(window._advanced_button.accessibleName(), "Show Advanced")
-        window._advanced_button.setChecked(True)
-        self.assertEqual(window._advanced_button.accessibleName(), "Hide Advanced")
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
@@ -939,20 +926,22 @@ class ProviderReadinessGuiTests(unittest.TestCase):
         window = MainWindow()
         self.assertFalse(hasattr(window, "provider_button"))
 
-    def test_settings_button_is_present_before_open_project(self):
+    def test_settings_is_a_rail_destination_before_any_project_opens(self):
         window = MainWindow()
-        self.assertEqual(window.settings_button.text(), "Settings")
-        self.assertEqual(window.settings_button.accessibleName(), "Settings")
-        # Mode A: the provider readiness chip sits between the primary actions
-        # and the Settings ghost action, which closes the command bar.
-        bar = window.settings_button.parentWidget().layout()
+        # Settings moved from a command-bar ghost action to its own rail entry.
+        self.assertFalse(hasattr(window, "settings_button"))
+        settings = window._shell._buttons["settings"]
+        self.assertEqual(settings.accessibleName(), "Settings")
+        # The context bar carries the workspace actions and the readiness chip,
+        # in one right-aligned row: primary action, then the chip, then scan.
+        bar = window._shell.context_bar.layout()
         self.assertLess(
-            bar.indexOf(window.open_project_button),
+            bar.indexOf(window._shell.context_bar.primary_button),
             bar.indexOf(window._provider_status_label),
         )
         self.assertLess(
             bar.indexOf(window._provider_status_label),
-            bar.indexOf(window.settings_button),
+            bar.indexOf(window.scan_button),
         )
 
     def test_provider_status_region_is_reserved(self):
@@ -1047,13 +1036,13 @@ class ProviderReadinessGuiTests(unittest.TestCase):
 
     def test_show_credential_result_stored_updates_status(self):
         window = MainWindow()
-        window._build_settings_dialog()
+        self.assertIsNotNone(window._settings_surface)
         window._show_credential_result({"state": "stored", "credential_present": True})
         self.assertEqual(window._settings_action_status.text(), "API key stored securely.")
 
     def test_show_credential_result_cancelled_is_bounded(self):
         window = MainWindow()
-        window._build_settings_dialog()
+        self.assertIsNotNone(window._settings_surface)
         window._show_credential_result({"state": "cancelled", "credential_present": False})
         self.assertEqual(
             window._settings_action_status.text(),
@@ -1077,8 +1066,8 @@ class SettingsDialogTests(unittest.TestCase):
         _app()
 
     def _dialog(self, window):
-        window._build_settings_dialog()
-        return window._settings_dialog
+        self.assertIsNotNone(window._settings_surface)
+        return window._settings_surface
 
     def _fake_send(self, window):
         sent = []
@@ -1108,46 +1097,37 @@ class SettingsDialogTests(unittest.TestCase):
             "credential_present": present,
         }
 
-    def test_settings_button_is_text_only_without_icon(self):
+    def test_the_settings_rail_entry_is_text_only_without_icon(self):
         window = MainWindow()
-        self.assertEqual(window.settings_button.text(), "Settings")
-        self.assertTrue(window.settings_button.icon().isNull())
-        self.assertEqual(window.settings_button.accessibleName(), "Settings")
-        self.assertEqual(window.settings_button.toolTip(), "Settings")
+        button = window._shell._buttons["settings"]
+        self.assertIn("Settings", button.text())
+        self.assertTrue(button.icon().isNull())
+        self.assertEqual(button.accessibleName(), "Settings")
 
-    def test_toolbar_peer_controls_share_compact_height(self):
+    def test_context_bar_controls_share_one_compact_height(self):
         window = MainWindow()
-        for button in (
-            window.settings_button,
-            window.open_project_button,
-            window.scan_button,
-        ):
+        for button in (window.scan_button, window._shell.context_bar.primary_button):
             with self.subTest(button=button.text()):
                 self.assertEqual(button.minimumHeight(), style.COMMAND_BAR_BUTTON_HEIGHT)
                 self.assertEqual(button.maximumHeight(), style.COMMAND_BAR_BUTTON_HEIGHT)
 
-    def test_command_bar_uses_the_named_action_vocabulary(self):
-        # Mode A: the command bar carries explicit roles rather than one
-        # undifferentiated button class. Open Project and Scan are named
-        # secondary actions; Settings is a quiet ghost action.
+    def test_context_bar_uses_the_named_action_vocabulary(self):
+        # The context bar carries explicit roles rather than one undifferentiated
+        # button class: the safest next action and the scan are secondary peers.
         window = MainWindow()
-        self.assertEqual(window.open_project_button.objectName(), "secondaryButton")
+        self.assertEqual(
+            window._shell.context_bar.primary_button.objectName(), "secondaryButton"
+        )
         self.assertEqual(window.scan_button.objectName(), "secondaryButton")
-        self.assertEqual(window.settings_button.objectName(), "ghostButton")
 
-    def test_dialog_minimum_geometry(self):
+    def test_settings_surface_is_a_destination_page(self):
+        # Settings is a rail destination now, not a modal dialog: its surface
+        # lives inside the settings page and keeps all five sections.
         window = MainWindow()
-        dialog = self._dialog(window)
-        self.assertEqual(dialog.minimumWidth(), style.SETTINGS_DIALOG_MIN_WIDTH)
-        self.assertEqual(dialog.minimumHeight(), style.SETTINGS_DIALOG_MIN_HEIGHT)
-
-    def test_dialog_default_size_at_least_minimum(self):
-        window = MainWindow()
-        dialog = self._dialog(window)
-        dialog.show()
-        QApplication.processEvents()
-        self.assertGreaterEqual(dialog.width(), style.SETTINGS_DIALOG_MIN_WIDTH)
-        self.assertGreaterEqual(dialog.height(), style.SETTINGS_DIALOG_MIN_HEIGHT)
+        surface = self._dialog(window)
+        self.assertIsNotNone(surface)
+        self.assertEqual(window._settings_stack.count(), 5)
+        self.assertTrue(window._shell.page("settings").isAncestorOf(surface))
 
     def test_navigation_lists_five_sections_in_order(self):
         window = MainWindow()
@@ -1338,7 +1318,9 @@ class SettingsDialogTests(unittest.TestCase):
         # centred, and stack downward with identical fixed gaps.
         window = MainWindow()
         self._dialog(window)
-        window._settings_dialog.show()
+        window._select_destination("settings")
+        window.show()
+        window._settings_surface.show()
         window._profiles = [self._profile(f"{i:032x}", f"P{i}") for i in range(6)]
         window._refresh_settings_dialog()
         QApplication.processEvents()
@@ -1430,14 +1412,14 @@ class SettingsDialogTests(unittest.TestCase):
         window = MainWindow()
         window.show()
         QApplication.processEvents()
-        stack_geom = window._content_stack.geometry()
+        stack_geom = window._shell.stack.geometry()
         region_height = window._provider_status_label.parentWidget().height()
         window._set_provider_status(PROVIDER_STATUS_PENDING)
         QApplication.processEvents()
         self.assertEqual(
             window._provider_status_label.parentWidget().height(), region_height
         )
-        self.assertEqual(window._content_stack.geometry(), stack_geom)
+        self.assertEqual(window._shell.stack.geometry(), stack_geom)
 
     def test_navigation_rows_are_compact_and_do_not_touch(self):
         # The left-nav rows share one centrally-owned compact height; the
@@ -1445,7 +1427,7 @@ class SettingsDialogTests(unittest.TestCase):
         # row, so the five sections stay visually separated.
         window = MainWindow()
         self._dialog(window)
-        dialog = window._settings_dialog
+        dialog = window._settings_surface
         dialog.show()
         QApplication.processEvents()
         nav = window._settings_nav

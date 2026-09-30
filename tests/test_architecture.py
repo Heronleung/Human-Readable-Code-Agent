@@ -2983,18 +2983,24 @@ class TwinSurfaceRemovalTests(unittest.TestCase):
         self.assertNotIn("twin", text)
 
     def test_navigation_exposes_no_source_tree_or_code_map_destination(self):
+        # UI-TRANSITION-2 replaced the document-first rail with the seven
+        # chat-first destinations. The invariant this guard exists for is
+        # unchanged: no source-tree, code-map or twin destination is reachable.
         self.assertEqual(
             self._module_literal("_NAV_DESTINATIONS"),
-            ("document", "preview", "versions", "memory", "change_review",
-             "validation_evidence"),
+            ("resume", "chat", "jobs", "agents", "review", "documents", "settings"),
         )
-        self.assertEqual(
-            self._module_literal("_ADVANCED_DESTINATIONS"),
-            ("change_review", "validation_evidence"),
-        )
+        # The collapsed Advanced disclosure that used to group the retained
+        # technical views is gone; every destination is always visible.
+        from hrca.ui import client as client_module
+
+        self.assertFalse(hasattr(client_module, "_ADVANCED_DESTINATIONS"))
         labels = self._module_literal("_NAV_LABELS")
         self.assertNotIn("source_code_map", labels)
         self.assertNotIn("Source & Code Map", labels.values())
+        for forbidden in ("Twin", "Code Map", "Source", "Explorer"):
+            for label in labels.values():
+                self.assertNotIn(forbidden, label)
 
     def test_the_removal_changed_no_store_schema(self):
         # The compatibility path is that there is nothing to migrate: the code
