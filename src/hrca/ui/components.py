@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -33,6 +34,31 @@ from PySide6.QtWidgets import (
 from hrca.core import visual_tokens
 
 from . import style
+
+# ---------------------------------------------------------------------------
+# The one layout rule every surface follows.
+#
+# A surface is a card or a state view. It is *natural height*: it takes the
+# height its content needs and never grows to fill the page. Surplus vertical
+# space belongs to the page canvas, not to the inside of a card — that is what
+# keeps a heading, its explanation and its action one visually coherent group
+# instead of three items flung apart by stretch.
+#
+# The failure this replaces: a QFrame's default vertical size policy is
+# Preferred, so a card in a scroll area grew to the viewport and its labels
+# absorbed the slack. A one-line heading measured 93 px tall and its action sat
+# 200 px below it.
+# ---------------------------------------------------------------------------
+SURFACE_PADDING = visual_tokens.SPACE_24          # padding inside a surface
+SURFACE_GAP = visual_tokens.INSET                 # heading -> text -> action
+SURFACE_SPACING = visual_tokens.GAP_GROUP         # between surfaces on a page
+
+
+def natural_height(widget: QWidget) -> None:
+    """Pin ``widget`` to its natural height so it never stretches."""
+    widget.setSizePolicy(
+        QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+    )
 
 # Object names the stylesheet knows. New names are added to style.build_stylesheet.
 CARD = "card"
@@ -164,14 +190,15 @@ class Card(QFrame):
         super().__init__(parent)
         self.setObjectName(CARD)
         self.setFrameShape(QFrame.Shape.NoFrame)
+        natural_height(self)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(
-            visual_tokens.INSET,
-            visual_tokens.INSET,
-            visual_tokens.INSET,
-            visual_tokens.INSET,
+            SURFACE_PADDING,
+            SURFACE_PADDING,
+            SURFACE_PADDING,
+            SURFACE_PADDING,
         )
-        outer.setSpacing(visual_tokens.GAP_TIGHT)
+        outer.setSpacing(SURFACE_GAP)
 
         self._heading = QLabel(title, self)
         self._heading.setObjectName("panelHeader")
@@ -187,8 +214,13 @@ class Card(QFrame):
 
         self.body = QVBoxLayout()
         self.body.setContentsMargins(0, 0, 0, 0)
-        self.body.setSpacing(visual_tokens.GAP_TIGHT)
+        self.body.setSpacing(SURFACE_GAP)
         outer.addLayout(self.body)
+        # Surplus goes below the content, never between the heading, its text
+        # and its action. A container that forces a larger rect on this card —
+        # a stacked layout does — would otherwise spread that surplus across
+        # the three of them.
+        outer.addStretch(1)
 
     def set_heading(self, title: str, subtitle: str = "") -> None:
         """Update the card's heading and subtitle."""
@@ -219,19 +251,20 @@ class StateView(QFrame):
         if kind not in self.KINDS:
             raise ValueError(f"unknown state view kind: {kind!r}")
         self.setObjectName(STATE_VIEW)
+        natural_height(self)
         self._kind = kind
         self._actions = QHBoxLayout()
         self._actions.setContentsMargins(0, 0, 0, 0)
-        self._actions.setSpacing(visual_tokens.GAP_TIGHT)
+        self._actions.setSpacing(SURFACE_GAP)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
-            visual_tokens.GAP_GROUP,
-            visual_tokens.GAP_GROUP,
-            visual_tokens.GAP_GROUP,
-            visual_tokens.GAP_GROUP,
+            SURFACE_PADDING,
+            SURFACE_PADDING,
+            SURFACE_PADDING,
+            SURFACE_PADDING,
         )
-        layout.setSpacing(visual_tokens.GAP_TIGHT)
+        layout.setSpacing(SURFACE_GAP)
 
         self._heading = QLabel(title, self)
         self._heading.setObjectName("stateTitle")
@@ -244,6 +277,7 @@ class StateView(QFrame):
         layout.addWidget(self._message)
 
         layout.addLayout(self._actions)
+        # After the action, so the group stays top-aligned as one unit.
         layout.addStretch(1)
         self.set_state(kind, title, message)
 
@@ -474,8 +508,12 @@ __all__ = [
     "LIST_ROW",
     "DETAILS_DRAWER",
     "SECTION_LABEL",
+    "SURFACE_PADDING",
+    "SURFACE_GAP",
+    "SURFACE_SPACING",
     "state_cue",
     "state_token",
+    "natural_height",
     "make_button",
     "StatusChip",
     "Card",

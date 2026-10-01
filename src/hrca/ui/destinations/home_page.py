@@ -163,22 +163,26 @@ class HomeDestination(Destination):
         self.body.addWidget(card)
 
     def _render_history_entry(self) -> None:
-        card = Card(
+        # A compact secondary row, not a second panel: the recorded runs are
+        # reference material, and giving them a full surface next to Continue
+        # reads as a second, emptier call to action.
+        row = ListRow(
             "Project history",
             "The recorded runs behind this resume: their documents, search, "
-            "resume and human corrections. Read-only.",
-            self,
+            "resume and human corrections.",
+            "neutral",
+            "Read-only",
         )
-        card.body.addWidget(
+        row.add_action(
             make_button(
-                "Open Project history",
+                "Open",
                 "secondary",
                 accessible="Open Project history",
                 tooltip="Read the recorded runs and their human corrections.",
                 on_click=lambda: self.host.focus_destination("history"),
             )
         )
-        self.body.addWidget(card)
+        self.body.addWidget(row)
 
     # -- helpers ------------------------------------------------------------
     @staticmethod

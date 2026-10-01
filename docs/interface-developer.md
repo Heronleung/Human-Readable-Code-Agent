@@ -97,6 +97,29 @@ does the same for the rail. The one thing that is never hidden is safety state
 — `HomeDestination` always renders its **Needs attention** section when a job is
 blocked or failed, a decision is pending or a claim is unverified.
 
+**Surfaces are natural height; surplus belongs to the canvas.** Every card and
+state view follows one rule, defined in `components.py` as `SURFACE_PADDING`
+(24 px), `SURFACE_GAP` (12 px) and `natural_height()`:
+
+* a surface is pinned to `QSizePolicy.Maximum` vertically, so a layout that
+  respects size policy gives it exactly the height its content needs;
+* it also carries a trailing stretch *after* its content, because a
+  `QStackedLayout` — which is what a destination inside Work uses — sets its
+  page's geometry to the full rect regardless of size policy. That stretch is
+  what keeps a heading, its explanation and its action one group instead of
+  three items flung apart.
+
+The regression this prevents: a `QFrame`'s default vertical policy is
+`Preferred`, so in a scroll area the card grew to the viewport and its labels
+absorbed the slack — a one-line heading measured 93 px and its action sat
+200 px below it. `tests/test_ui_layout.py` pins the rule by measuring geometry.
+
+Two shells needed an explicit surplus consumer rather than a bare stretch,
+because their two states have different owners of the page height:
+`WorkDestination._tail` (visible with the empty panel, hidden with the stack)
+and `MainWindow._document_tail` (visible with the empty panel, hidden with the
+editor). Both greedy at once would split the page in half.
+
 The host protocol a destination may call is documented at the top of
 `destinations/base.py`. A destination never imports the request builders and
 never sends anything itself — that keeps exactly one module talking to the

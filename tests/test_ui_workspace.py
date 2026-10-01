@@ -45,6 +45,29 @@ EXPECTED_RAIL = EXPECTED_PRIMARY + ("settings",)
 WORK_VIEW_KEYS = ("jobs", "agents", "review")
 
 
+def _document_state(document_id="doc:d1", revision_id="rev:1", name="requirements.md"):
+    """A bounded ``open_document`` result the window can apply."""
+    return {
+        "document": {
+            "document_id": document_id,
+            "name": name,
+            "kind": "md",
+            "head_revision_number": 1,
+            "revision_count": 1,
+        },
+        "head_revision": {
+            "revision_id": revision_id,
+            "revision_number": 1,
+            "content": "Members receive a 10% discount on quotations.",
+            "content_fingerprint": "f" * 64,
+        },
+        "candidate": None,
+        "accepted": None,
+        "current_accepted_version_id": None,
+        "versions": [],
+    }
+
+
 def _app():
     app = QApplication.instance()
     return app if app is not None else QApplication([])
@@ -341,6 +364,38 @@ class HomeDisclosureTests(_WindowCase):
         # Nothing planned, nothing blocked: no safety banner to show.
         self.assertNotIn("Needs attention", self._home_text())
 
+    def test_home_with_no_plan_has_exactly_one_primary_action(self):
+        page = self.window._shell.page("home")
+        page.refresh()
+        primaries = [
+            button
+            for button in self.visible_buttons(page)
+            if button.objectName() == "primaryButton"
+        ]
+        self.assertEqual(len(primaries), 1)
+        self.assertEqual(primaries[0].accessibleName(), "State a goal in Agent Chat")
+
+    def test_home_continue_card_is_one_compact_group(self):
+        from hrca.ui.components import Card
+
+        page = self.window._shell.page("home")
+        page.refresh()
+        self.window.resize(1024, 640)
+        self.window.show()
+        QApplication.processEvents()
+        QApplication.processEvents()
+        cards = [c for c in page.findChildren(Card) if not c.isHidden()]
+        self.assertTrue(cards)
+        for card in cards:
+            with self.subTest(card=card._heading.text()):
+                # Natural height, and the action not flung away from the title.
+                self.assertLessEqual(card.height(), card.sizeHint().height() + 40)
+                action = card.body.itemAt(0).widget()
+                gap = action.mapTo(card, action.rect().topLeft()).y() - card._heading.mapTo(
+                    card, card._heading.rect().topLeft()
+                ).y()
+                self.assertLess(gap, 120)
+
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
 class DocumentsDisclosureTests(_WindowCase):
@@ -371,6 +426,43 @@ class DocumentsDisclosureTests(_WindowCase):
         ]
         self.assertNotIn("Go to Document", labels)
         self.assertNotIn("Build preview", labels)
+
+    def _show_empty_state(self) -> None:
+        self.window._clear_open_document()
+        self.window._update_document_actions()
+        self.window._select_destination("documents")
+        # The window must be laid out for geometry to mean anything; without
+        # show() the widgets still carry the geometry of the previous state.
+        self.window.resize(1024, 640)
+        self.window.show()
+        QApplication.processEvents()
+        QApplication.processEvents()
+
+    def test_the_library_create_row_is_hidden_while_the_empty_state_shows(self):
+        self._show_empty_state()
+        self.assertFalse(self.window._document_empty_state.isHidden())
+        self.assertTrue(self.window._library_create_row.isHidden())
+
+    def test_the_library_create_row_returns_with_a_document(self):
+        self.window._apply_document_state(_document_state())
+        self.window._select_destination("documents")
+        QApplication.processEvents()
+        self.assertFalse(self.window._library_create_row.isHidden())
+
+    def test_exactly_one_create_document_action_while_empty(self):
+        self._show_empty_state()
+        page = self.window._shell.page("documents")
+        names = [
+            button.accessibleName()
+            for button in self.visible_buttons(page)
+            if "create" in button.accessibleName().lower()
+        ]
+        self.assertEqual(names, ["Create document"])
+
+    def test_the_document_empty_state_is_natural_height(self):
+        self._show_empty_state()
+        empty = self.window._document_empty_state
+        self.assertLessEqual(empty.height(), empty.sizeHint().height() + 4)
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")

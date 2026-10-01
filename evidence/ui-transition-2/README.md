@@ -44,13 +44,19 @@ relevant, at **1024×640** and **1920×1080**.
   Review once a job has produced evidence. Empty Work is one *Start in Agent
   Chat* action.
 * **Home** shows Continue, Needs attention (never hidden) and Recent changes,
-  with the raw Developer Memory reader behind one **Project history** entry.
+  with the raw Developer Memory reader behind one compact **Project history**
+  row.
 * Only **Agent Chat** carries a composer; every other page offers one *New
   task* action.
 * **Documents** shows one primary action per state and never the same action
-  twice.
+  twice; the sidebar create row is hidden while the empty state shows.
 * The status footer appears only for a warning, failure or refusal; a
   successful operation does not leave a permanent message.
+* **Every empty state is one compact group.** The heading, its explanation and
+  its action sit together at the top of the content area — 24 px surface
+  padding, 12 px internal gaps, natural height — and unused space is page
+  canvas, not an outlined panel. The `project-open-*` renders are the evidence
+  for this: the same states used to be drawn as full-height stretched cards.
 
 ## Known limitation
 

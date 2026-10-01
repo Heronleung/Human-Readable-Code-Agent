@@ -115,10 +115,18 @@ irrelevant controls, never safety information.
 
 One primary action per state, and never the same action twice:
 
-* no document selected → **Create document**;
-* a document selected → Save, and its one contextual preview action;
+* no document selected → **Create document**. While that empty state is
+  showing, the sidebar's create row is hidden, so exactly one create action is
+  on screen;
+* a document selected → Save, and its one contextual preview action. The
+  sidebar's create row returns with the document, where it is an organiser
+  control rather than the page's primary action;
 * the versions list carries no action of its own — the editor's footer already
   owns it, and opening a project belongs to the context bar.
+
+Every empty state is one compact group: the heading, its explanation and its
+action sit together at the top of the content area, and unused space is page
+canvas rather than an outlined panel.
 
 ## Accessibility
 

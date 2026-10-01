@@ -134,10 +134,11 @@ class Destination(QWidget):
         content = QWidget(self)
         self.body = QVBoxLayout(content)
         # An embedded page sits inside its container's padding, so it adds none
-        # of its own horizontally.
-        side = visual_tokens.SPACE_0 if self.embedded else visual_tokens.GAP_GROUP
-        top = visual_tokens.SPACE_0 if (not self.hosted and not self.embedded) else visual_tokens.GAP_GROUP
-        self.body.setContentsMargins(side, top, side, visual_tokens.GAP_GROUP)
+        # of its own horizontally. Otherwise the page surface carries the one
+        # 24 px padding every screen shares; the gap between surfaces is 16 px.
+        side = visual_tokens.SPACE_0 if self.embedded else visual_tokens.SPACE_24
+        top = visual_tokens.SPACE_0 if self.embedded else visual_tokens.SPACE_24
+        self.body.setContentsMargins(side, top, side, visual_tokens.SPACE_24)
         self.body.setSpacing(visual_tokens.GAP_GROUP)
 
         # The persistent region. It is a child widget so a refresh can lift it
@@ -198,11 +199,19 @@ class Destination(QWidget):
                 widget.deleteLater()
 
     def refresh(self) -> None:
-        """Re-render the body, then keep the hosted region at the foot."""
+        """Re-render the body, keep the hosted region at the foot, fill below.
+
+        The trailing stretch is what makes every card *natural height*: surplus
+        vertical space belongs to the page canvas, below the content, so a
+        heading, its explanation and its action stay one compact group at the
+        top instead of being flung apart by stretch.
+        """
         self.clear_body()
         self.render()
         if self._hosted_mounted and self.body.indexOf(self.hosted_widget) == -1:
             self.body.addWidget(self.hosted_widget)
+        if not self.hosted:
+            self.body.addStretch(1)
 
     def render(self) -> None:
         """Render this destination's refreshed body.

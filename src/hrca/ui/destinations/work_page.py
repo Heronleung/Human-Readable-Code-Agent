@@ -21,6 +21,7 @@ from typing import List, Optional, Tuple
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -52,14 +53,26 @@ class WorkDestination(Destination):
         nav_layout.setSpacing(visual_tokens.SPACE_4)
         self._nav_layout = nav_layout
 
+        # The empty state sits beside the stack, not inside it: a stacked
+        # layout forces its page to fill, which would draw an oversized
+        # outlined panel around three compact lines. Here its surface is
+        # natural height and the surplus is page canvas.
         self._empty = self._build_empty_state()
-        self._stack.addWidget(self._empty)
 
         container = QWidget(self)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(visual_tokens.GAP_TIGHT)
         layout.addWidget(self._nav)
+        layout.addWidget(self._empty)
+        # Exactly one of these two consumes the surplus, and which one it is
+        # depends on the state: the spacer below the empty panel, or the stack
+        # when there is work to show. Both greedy at once would split the page.
+        self._tail = QWidget(container)
+        self._tail.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
+        layout.addWidget(self._tail, 1)
         layout.addWidget(self._stack, 1)
         self.mount(container)
 
@@ -130,11 +143,16 @@ class WorkDestination(Destination):
                 page.refresh()
 
         if not has_plan:
-            self._stack.setCurrentWidget(self._empty)
+            self._empty.setVisible(True)
+            self._tail.setVisible(True)
+            self._stack.setVisible(False)
             self._nav.setVisible(False)
             self._subtitle_for(None)
             return
 
+        self._empty.setVisible(False)
+        self._tail.setVisible(False)
+        self._stack.setVisible(True)
         self._nav.setVisible(True)
         current = self._current_key()
         if current is None or not relevant.get(current, False):

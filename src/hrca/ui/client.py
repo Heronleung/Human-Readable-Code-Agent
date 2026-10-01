@@ -87,6 +87,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTabWidget,
     QToolButton,
@@ -664,8 +665,11 @@ class MainWindow(QMainWindow):
         header, _header_layout = self._header_row("Documents")
         layout.addWidget(header)
 
-        # Compact create controls (always available).
+        # Compact create controls. The row is hidden while the workspace shows
+        # its empty state, because that state already carries the one
+        # "Create document" primary action — one region, one primary action.
         create_row = QWidget()
+        self._library_create_row = create_row
         create_layout = QHBoxLayout(create_row)
         create_layout.setContentsMargins(
             style.INSET, style.GAP_TIGHT, style.INSET, style.SPACE_0
@@ -3252,17 +3256,21 @@ class MainWindow(QMainWindow):
 
         self._document_empty_state = QFrame()
         self._document_empty_state.setObjectName("documentEmptyState")
+        # The one empty-state layout rule: 24 px surface padding, 12 px gaps,
+        # natural height, content aligned top, surplus below the group — so the
+        # heading, the explanation and the action read as one coherent unit.
+        self._document_empty_state.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
         empty_layout = QVBoxLayout(self._document_empty_state)
         empty_layout.setContentsMargins(
             style.SPACE_24, style.SPACE_24, style.SPACE_24, style.SPACE_24
         )
-        empty_layout.setSpacing(style.GAP_TIGHT)
-        empty_layout.addStretch(1)
+        empty_layout.setSpacing(style.INSET)
         empty_title = QLabel("Create your first document")
         empty_title_font = style.ui_font()
         empty_title_font.setBold(True)
         empty_title.setFont(empty_title_font)
-        empty_title.setAlignment(Qt.AlignCenter)
         empty_layout.addWidget(empty_title)
         empty_copy = QLabel(
             "Write requirements in plain language, save them, then build and "
@@ -3270,13 +3278,15 @@ class MainWindow(QMainWindow):
         )
         empty_copy.setObjectName("secondary")
         empty_copy.setWordWrap(True)
-        empty_copy.setAlignment(Qt.AlignCenter)
         empty_copy.setAccessibleName("Document workflow")
         empty_layout.addWidget(empty_copy)
         # One primary action for the empty state. Opening a project is the
-        # context bar's job, so it is not repeated here.
+        # context bar's job, and the library's create row is hidden while this
+        # state shows, so exactly one create affordance is on screen.
         empty_actions = QHBoxLayout()
-        empty_actions.addStretch(1)
+        empty_actions.setContentsMargins(
+            style.SPACE_0, style.SPACE_0, style.SPACE_0, style.SPACE_0
+        )
         empty_new = QPushButton("Create document")
         empty_new.setObjectName("primaryButton")
         empty_new.setAccessibleName("Create document")
@@ -3285,7 +3295,15 @@ class MainWindow(QMainWindow):
         empty_actions.addStretch(1)
         empty_layout.addLayout(empty_actions)
         empty_layout.addStretch(1)
-        layout.addWidget(self._document_empty_state, stretch=1)
+        layout.addWidget(self._document_empty_state, stretch=0)
+        # The surplus consumer: visible only while the empty state shows, so
+        # the panel stays natural height at the top and the rest is canvas.
+        # When a document is open the editor below takes the space instead.
+        self._document_tail = QWidget()
+        self._document_tail.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
+        )
+        layout.addWidget(self._document_tail, stretch=1)
 
         self._document_editor = QPlainTextEdit()
         self._document_editor.setObjectName("documentEditor")
@@ -4837,6 +4855,15 @@ class MainWindow(QMainWindow):
 
         if self._document_empty_state is not None:
             self._document_empty_state.setVisible(not has_doc)
+        # Exactly one of the empty panel and the editor owns the page height.
+        tail = getattr(self, "_document_tail", None)
+        if tail is not None:
+            tail.setVisible(not has_doc)
+        # While the empty state is showing, its "Create document" is the only
+        # create affordance: the sidebar row would be a second one.
+        create_row = getattr(self, "_library_create_row", None)
+        if create_row is not None:
+            create_row.setVisible(has_doc)
         if self._document_editor is not None:
             self._document_editor.setVisible(has_doc)
         if self._document_save_button is not None:
