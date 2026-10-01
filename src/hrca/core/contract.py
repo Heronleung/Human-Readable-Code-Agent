@@ -31,11 +31,17 @@ from typing import Any, Dict, Optional
 # whose ``contract_version`` differs from this constant with a bounded
 # ``unknown_contract_version`` error.
 #
-# 3.9.0 is additive over 3.8.0: it adds the M4.5/v2b Memory Code Twin link pair
-# below and removes or alters nothing. Every 3.8.0 action keeps its name, its
-# request shape and its response shape, so a client that sends no link request
-# cannot observe the increment.
-CONTRACT_VERSION = "3.9.0"
+# 3.10.0 is additive over 3.9.0: it adds the ORCH-BACKBONE-1 orchestration
+# family below and removes or alters nothing. Every 3.9.0 action keeps its name,
+# its request shape and its response shape — including the scan family's `plan`
+# synonym and `memory_resume`, neither of which is repurposed — so a client that
+# sends no orchestration request cannot observe the increment, and a client that
+# still sends 3.9.0 is refused by the existing exact-version rule rather than
+# silently negotiated with.
+#
+# 3.9.0 was additive over 3.8.0: it added the M4.5/v2b Memory Code Twin link
+# pair and removed or altered nothing.
+CONTRACT_VERSION = "3.10.0"
 
 # Correlation identifier: a client-generated opaque string that the boundary
 # echoes verbatim so a client can match each response to its in-flight request.
@@ -347,6 +353,28 @@ MEMORY_REVISION_ACTIONS = frozenset(
 MEMORY_CODE_LINK_ACTIONS = frozenset(
     {ACTION_MEMORY_CODE_LINK, ACTION_MEMORY_CODE_FRESHNESS}
 )
+# The ORCH-BACKBONE-1 persisted orchestration slice. These are *not* scan
+# synonyms and they do not touch the existing ``plan`` action, which stays the
+# scan pipeline's task-intake name. Each one reads or writes only the
+# orchestration store the boundary roots at the session store base, outside the
+# selected project. The single execution this family can reach is the existing
+# deterministic scanner; no provider, credential, command, container or
+# repository write is reachable through it.
+ACTION_ORCHESTRATION_SAVE_PLAN = "orchestration_save_plan"
+ACTION_ORCHESTRATION_CONFIRM_PLAN = "orchestration_confirm_plan"
+ACTION_ORCHESTRATION_RUN_SCAN = "orchestration_run_scan"
+ACTION_ORCHESTRATION_READ = "orchestration_read"
+ACTION_ORCHESTRATION_DECIDE = "orchestration_decide"
+ORCHESTRATION_ACTIONS = frozenset(
+    {
+        ACTION_ORCHESTRATION_SAVE_PLAN,
+        ACTION_ORCHESTRATION_CONFIRM_PLAN,
+        ACTION_ORCHESTRATION_RUN_SCAN,
+        ACTION_ORCHESTRATION_READ,
+        ACTION_ORCHESTRATION_DECIDE,
+    }
+)
+
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
     | WORKSPACE_ACTIONS
@@ -367,6 +395,7 @@ ALLOWED_ACTIONS = (
     | MEMORY_QUERY_ACTIONS
     | MEMORY_REVISION_ACTIONS
     | MEMORY_CODE_LINK_ACTIONS
+    | ORCHESTRATION_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -527,6 +556,15 @@ _ERROR_MESSAGES = {
     "memory_code_link_invalid": "the Memory Code Twin link request is not valid",
     "twin_entity_not_found": "the Code Twin entity does not exist in that workspace",
     "twin_entity_not_current": "the Code Twin entity is not a current projection of source",
+    # ORCH-BACKBONE-1. Only genuine infrastructure faults are errors here; a
+    # domain refusal (an unconfirmed plan, a stale binding, an active run) is a
+    # successful response carrying ``state: "refused"`` and one of the
+    # orchestration module's fixed reason sentences, which is how the product
+    # already reports a bounded negative outcome. No message interpolates caller
+    # text, a path, an id or any stored content.
+    "orchestration_store_unavailable": "the orchestration store is unavailable",
+    "orchestration_schema_unsupported": "the orchestration schema is not supported",
+    "orchestration_request_invalid": "the orchestration request is not valid",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)

@@ -1179,9 +1179,11 @@ class BoundaryTests(unittest.TestCase):
 
     def test_no_protocol_action_was_added(self):
         # The four candidate-named actions all predate this work, none carries
-        # an edit grammar, and none is reachable from this contract.
-        self.assertEqual("3.9.0", contract.CONTRACT_VERSION)
-        self.assertEqual(61, len(contract.ALLOWED_ACTIONS))
+        # an edit grammar, and none is reachable from this contract. The count
+        # grew by ORCH-BACKBONE-1's five-action family, which is a separate
+        # increment that adds no candidate-named action.
+        self.assertEqual("3.10.0", contract.CONTRACT_VERSION)
+        self.assertEqual(66, len(contract.ALLOWED_ACTIONS))
         self.assertEqual(
             {
                 "create_candidate",

@@ -205,6 +205,10 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_workspace",
         "test_planning",
         "test_report",
+        # ORCH-BACKBONE-1: the persisted one-scan workflow. It reaches the
+        # scanner in-process and writes only to a temp app-data store, so it
+        # spawns nothing and belongs on the guarded core route.
+        "test_orchestration",
         # packages, documents and accepted-version identity
         "test_app_package",
         "test_candidate_package",
@@ -362,6 +366,7 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_memory_revisions",
         "test_memory_store",
         "test_mode_a_visual_contract",
+        "test_orchestration",
         "test_planning",
         "test_proposal",
         "test_provider",
@@ -389,6 +394,11 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_test_routes",
         "test_twin",
         "test_twin_store",
+        # the desktop workspace: model, components, layout rule and shell
+        "test_ui_appmodel",
+        "test_ui_components",
+        "test_ui_layout",
+        "test_ui_workspace",
         "test_validation",
         "test_validation_plan",
         "test_validation_policy",

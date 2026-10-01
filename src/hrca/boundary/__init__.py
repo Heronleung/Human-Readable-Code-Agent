@@ -332,10 +332,157 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
     # otherwise.
     elif action == contract.ACTION_MEMORY_CORRECTION:
         result = _append_memory_correction_result(request, session)
+    # ORCH-BACKBONE-1: the persisted one-scan workflow. Like ``open_project``
+    # these read the session root and the session store base, so they live on
+    # the chain rather than in the registry — and, also like ``open_project``,
+    # the registry's authority ledger therefore stays exactly as it was.
+    elif action in contract.ORCHESTRATION_ACTIONS:
+        result = _orchestration_result(action, request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
     return contract.build_success(correlation_id, result)
+
+
+def _orchestration_result(
+    action: str, request: Dict[str, Any], session: "WorkspaceSession"
+) -> Dict[str, Any]:
+    """Dispatch the ORCH-BACKBONE-1 family (contract 3.10.0).
+
+    Two kinds of negative outcome, deliberately separated:
+
+    * a **domain refusal** — an unconfirmed plan, a stale binding, an already
+      claimed execution — is a *successful* response carrying
+      ``state: "refused"`` and one of the orchestration module's fixed reason
+      sentences. This is the product's existing shape for a bounded negative
+      outcome, and the sentence is code-owned, so no caller text, path, id or
+      stored content can reach the client through it;
+    * an **infrastructure fault** — an unusable store, an unsupported schema —
+      is a contract error with a fixed catalogue message.
+    """
+    from ..orchestration import service as orchestration
+    from ..orchestration import store as orchestration_store
+
+    try:
+        return _orchestration_dispatch(action, request, session)
+    except orchestration.Refused as error:
+        return {"state": "refused", "reason": error.reason}
+    except orchestration_store.StoreError as error:
+        if error.reason in (
+            orchestration_store.REASON_SCHEMA_NEWER,
+            orchestration_store.REASON_SCHEMA_MALFORMED,
+        ):
+            raise contract.ContractError("orchestration_schema_unsupported") from error
+        if error.reason == orchestration_store.REASON_STORE_UNAVAILABLE:
+            raise contract.ContractError("orchestration_store_unavailable") from error
+        # A location, corruption or conflict refusal is a bounded domain
+        # outcome, not a protocol fault.
+        return {"state": "refused", "reason": error.reason}
+
+
+def _orchestration_dispatch(
+    action: str, request: Dict[str, Any], session: "WorkspaceSession"
+) -> Dict[str, Any]:
+    """Validate one orchestration request and run its operation."""
+    from ..orchestration import service as orchestration
+    from ..orchestration import store as orchestration_store
+
+    task = request.get("task") or {}
+    if not isinstance(task, dict):
+        raise contract.ContractError("orchestration_request_invalid")
+    if not session.root:
+        raise contract.ContractError("orchestration_request_invalid")
+    root = session.root
+    store_base = session.store_base
+
+    def _key() -> str:
+        key = task.get("idempotency_key")
+        if not isinstance(key, str) or not key.strip():
+            raise contract.ContractError("orchestration_request_invalid")
+        return key.strip()
+
+    def _text(name: str, *, required: bool = False) -> str:
+        value = task.get(name)
+        if value is None:
+            if required:
+                raise contract.ContractError("orchestration_request_invalid")
+            return ""
+        if not isinstance(value, str):
+            raise contract.ContractError("orchestration_request_invalid")
+        if required and not value.strip():
+            raise contract.ContractError("orchestration_request_invalid")
+        return value
+
+    from ..orchestration import domain as orchestration_domain
+
+    if action == contract.ACTION_ORCHESTRATION_READ:
+        return {
+            "state": "ok",
+            "workflow": orchestration.read_workflow(store_base=store_base, root=root),
+        }
+
+    if action == contract.ACTION_ORCHESTRATION_SAVE_PLAN:
+        raw_scope = task.get("scope")
+        scope = orchestration_domain.Scope.from_payload(raw_scope if isinstance(raw_scope, dict) else {})
+        extras = task.get("extra_requirements") or []
+        if not isinstance(extras, (list, tuple)) or not all(isinstance(x, str) for x in extras):
+            raise contract.ContractError("orchestration_request_invalid")
+        expected = task.get("expected_revision", 0)
+        if not isinstance(expected, int) or isinstance(expected, bool) or expected < 0:
+            raise contract.ContractError("orchestration_request_invalid")
+        baseline = task.get("accepted_baseline_ref")
+        if baseline is not None and not isinstance(baseline, str):
+            raise contract.ContractError("orchestration_request_invalid")
+        return {
+            "state": "ok",
+            "workflow": orchestration.save_plan(
+                store_base=store_base,
+                root=root,
+                goal=_text("goal", required=True),
+                scope=scope,
+                accepted_baseline_ref=baseline or None,
+                expected_revision=expected,
+                idempotency_key=_key(),
+                extra_requirements=tuple(extras),
+            ),
+        }
+
+    if action == contract.ACTION_ORCHESTRATION_CONFIRM_PLAN:
+        return {
+            "state": "ok",
+            "workflow": orchestration.confirm_plan(
+                store_base=store_base,
+                root=root,
+                plan_id=_text("plan_id", required=True),
+                expected_digest=_text("expected_digest", required=True),
+                idempotency_key=_key(),
+            ),
+        }
+
+    if action == contract.ACTION_ORCHESTRATION_RUN_SCAN:
+        return {
+            "state": "ok",
+            "workflow": orchestration.run_scan(
+                store_base=store_base,
+                root=root,
+                plan_id=_text("plan_id", required=True),
+                idempotency_key=_key(),
+            ),
+        }
+
+    # ACTION_ORCHESTRATION_DECIDE
+    return {
+        "state": "ok",
+        "workflow": orchestration.append_decision(
+            store_base=store_base,
+            root=root,
+            run_id=_text("run_id", required=True),
+            outcome=_text("outcome", required=True),
+            actor=_text("actor", required=True),
+            reason=_text("reason"),
+            idempotency_key=_key(),
+        ),
+    }
 
 
 def _scan_result(request: Dict[str, Any]) -> Dict[str, Any]:

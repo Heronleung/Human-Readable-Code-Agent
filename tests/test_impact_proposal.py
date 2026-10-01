@@ -764,8 +764,8 @@ class BoundaryTests(unittest.TestCase):
     def test_no_protocol_action_was_added(self):
         # P5.3 adds no desktop route at all: no existing read-only action takes a
         # developer intent, so nothing was widened and nothing was invented.
-        self.assertEqual("3.9.0", contract.CONTRACT_VERSION)
-        self.assertEqual(61, len(contract.ALLOWED_ACTIONS))
+        self.assertEqual("3.10.0", contract.CONTRACT_VERSION)
+        self.assertEqual(66, len(contract.ALLOWED_ACTIONS))
         self.assertFalse([a for a in contract.ALLOWED_ACTIONS if "impact" in a])
 
     def test_the_evidence_schemas_are_unchanged(self):

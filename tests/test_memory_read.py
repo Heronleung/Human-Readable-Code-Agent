@@ -144,15 +144,19 @@ class ContractSurfaceTests(MemoryReadTestCase):
                 self.assertTrue(prior.isdisjoint(contract.MEMORY_QUERY_ACTIONS))
                 self.assertTrue(prior.isdisjoint(contract.MEMORY_REVISION_ACTIONS))
                 self.assertTrue(prior.isdisjoint(contract.MEMORY_CODE_LINK_ACTIONS))
+                self.assertTrue(prior.isdisjoint(contract.ORCHESTRATION_ACTIONS))
             union |= prior
         # The allowlist stays exactly the union of the declared sets, so nothing
-        # can be added to the public surface outside a named set.
+        # can be added to the public surface outside a named set. ORCH-BACKBONE-1
+        # joined through its own set, so it appears here as one more named set
+        # rather than as a widening of any prior one.
         self.assertEqual(
             union
             | contract.MEMORY_ACTIONS
             | contract.MEMORY_QUERY_ACTIONS
             | contract.MEMORY_REVISION_ACTIONS
-            | contract.MEMORY_CODE_LINK_ACTIONS,
+            | contract.MEMORY_CODE_LINK_ACTIONS
+            | contract.ORCHESTRATION_ACTIONS,
             contract.ALLOWED_ACTIONS,
         )
         for action in ("scan", "open_project", "get_tree", "get_document",
