@@ -175,6 +175,46 @@ Developer Memory reader lives in **Resume** as the record set behind the
 resume. See `docs/interface.md` for the user guide and
 `docs/interface-developer.md` for the module map.
 
+## UI-TRANSITION-2R — progressive disclosure
+
+The Form 2 interface was structurally right but too dense: seven equal
+top-level destinations, a global composer, and scan and provider state shown
+before a project existed. Form 2R keeps every capability and re-groups it
+around the next useful decision.
+
+**First use offers one path.** With no project bound, the rail shows only
+**Home** and **Settings**; the composer, the scan action, the authority chip,
+the provider warning, the status footer and the project-dependent destinations
+are all absent — unless a blocking error needs attention, which is never
+hidden.
+
+**After a project opens, four groups replace seven choices:** **Home**, **Agent
+Chat**, **Work** and **Documents**, with **Settings** anchored separately. Jobs,
+Agents and Review become **Work's contextual views**, revealed by relevance —
+Agents once a plan assigns a role, Review once a job has produced evidence — so
+no surface shows empty internals. Every functional destination stays within two
+intentional interactions.
+
+**Only Agent Chat carries a composer.** Every other page offers one compact
+*New task* action that returns there. Full authority appears only at the Plan
+confirmation step; elsewhere a single concise authority indicator sits in the
+context bar.
+
+**Home shows Continue, Needs attention and Recent changes.** The raw Developer
+Memory reader moved to a secondary **Project history** page reached from Home.
+**Needs attention** is never hidden: a blocking risk, a failed job, a pending
+approval or an unverified claim always appears there, because progressive
+disclosure reduces irrelevant controls, never safety information.
+
+**One region, one primary action.** Documents shows exactly one primary action
+per state and no longer repeats *New document*, *Open project* or *Go to
+Document*; the status footer appears only for a warning, failure or refusal;
+the provider chip appears only when a dispatch needs a provider that is not
+configured.
+
+No capability, evidence record or authority control was removed, and no schema,
+contract, storage, credential or provider behaviour changed.
+
 As of **P4.4a** the shell was document-first. A compact labelled navigation rail
 presented **Document** and **Preview** as the only always-visible primary
 destinations, then **Versions** (the accepted-version history with per-version

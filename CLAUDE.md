@@ -23,9 +23,19 @@ the ``twin`` test route.
   agent roles, review and resume) and the only place the honest-state rules are
   enforced; `ui/components.py`, `ui/widgets.py` and `ui/shell.py` are the
   component system and the seven-destination frame; `ui/destinations/` holds one
-  module per rail destination (Resume, Agent Chat, Jobs, Agents, Review,
-  Documents, Settings); and `ui/client.py` keeps the single boundary request
-  path and hosts the rehomed surfaces. The model adds no boundary action, store,
+  module per rail destination; and `ui/client.py` keeps the single boundary request
+  path and hosts the rehomed surfaces. **Form 2R** re-grouped that rail into four
+  primary destinations — **Home**, **Agent Chat**, **Work** and **Documents** —
+  with **Settings** anchored separately, so Jobs, Agents and Review are Work's
+  *contextual views* (`work_page.py`) rather than top-level choices, revealed
+  only when a plan or evidence exists. The composer lives only in Agent Chat;
+  the Developer Memory reader lives in the off-rail `history_page.py` reached
+  from Home; and `base.Destination` carries `embedded` (no header of its own)
+  and `show_new_task` (owns the composer) flags. Progressive disclosure is a
+  rule enforced in `work_page.refresh` and `Shell.set_started`, and the one
+  thing never hidden is safety state: Home always renders its Needs-attention
+  section for a blocked or failed job, a pending decision or an unverified
+  claim. The model adds no boundary action, store,
   schema or migration — it is local presentation state, reachable only through
   the desktop, and nothing in it can advance an accepted baseline. A few modules stay at
   the package root: `source_evidence.py`, `__main__.py`, and the compatibility

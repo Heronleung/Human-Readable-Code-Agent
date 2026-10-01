@@ -10,13 +10,24 @@ stays owned by the boundary.
 ```
 src/hrca/ui/
   appmodel/       pure Python, Qt-free, no I/O — the whole orchestration model
-  components.py   reusable widgets built from the token contract
+  components.py   reusable widgets built from the token contract (incl. Composer)
   widgets.py      low-level Qt primitives (CodeView, ElidedLabel, splitters, trees)
-  shell.py        the frame: rail, context bar, composer, drawer
-  destinations/   the seven pages
+  shell.py        the frame: four rail groups, context bar, drawer, conditional footer
+  destinations/   base + home_page, chat_page, work_page, documents_page,
+                  settings_page, history_page, and the embedded views
+                  jobs_page / agents_page / review_page
   client.py       MainWindow: backend routing + the destinations' host
   style.py        the stylesheet and palette
 ```
+
+`Destination` has two class flags that shape the frame:
+
+* `embedded = True` — the page is shown *inside* another page (Jobs, Agents and
+  Review live inside Work), so it renders no header of its own. Its container
+  supplies the title and the one "New task" action; repeating them would
+  duplicate both.
+* `show_new_task = False` — the page owns the composer (Agent Chat), so it must
+  not also offer a shortcut to itself.
 
 `appmodel` must stay importable without PySide6 and without the boundary. It
 imports only the standard library and, for its constants, nothing at all —
@@ -70,11 +81,21 @@ it this way keeps the rule identical to the product's own approval boundaries.
 
 ## Adding a destination
 
-Subclass `destinations.base.Destination`. A *rendered* destination rebuilds its
-body from `self.workspace` on every `refresh()`. A *hosted* destination
-(`hosted = True`) is a container for widgets the client builds and keeps; a
-refresh never clears its `hosted_body`. `client._build_destinations` mounts the
-host-owned surfaces and registers each page with the shell.
+Subclass `destinations.base.Destination`. A *rendered* destination implements
+`render()` and rebuilds its body from `self.workspace` on every `refresh()`. A
+*hosted* destination (`hosted = True`) is a container for widgets the client
+builds and keeps; a refresh never clears its `hosted_body`.
+`client._build_destinations` mounts the host-owned surfaces and registers each
+page with the shell.
+
+**Progressive disclosure is a rule, not a style.** A destination reveals a
+section only when it has data, and never presents the same action twice in one
+region. `WorkDestination.refresh` is the reference implementation: it computes
+relevance from the workspace (`has_plan`, `assigns_roles`, `has_evidence`) and
+hides the views that would otherwise show empty internals. `Shell.set_started`
+does the same for the rail. The one thing that is never hidden is safety state
+— `HomeDestination` always renders its **Needs attention** section when a job is
+blocked or failed, a decision is pending or a claim is unverified.
 
 The host protocol a destination may call is documented at the top of
 `destinations/base.py`. A destination never imports the request builders and

@@ -43,7 +43,9 @@ from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -52,7 +54,7 @@ from PySide6.QtWidgets import (
 from hrca.core import visual_tokens
 
 from ..appmodel.session import Workspace
-from ..components import StateView
+from ..components import StateView, make_button
 
 
 class Destination(QWidget):
@@ -62,6 +64,13 @@ class Destination(QWidget):
     subtitle = ""
     #: When true the page is entirely host-built; the refreshed body stays empty.
     hosted = False
+    #: When true the header carries the compact "New task" action. Agent Chat,
+    #: which owns the composer, sets this to ``False``.
+    show_new_task = True
+    #: When true the page is shown *inside* another destination, so it renders
+    #: no header of its own — its container already supplies the title and the
+    #: one "New task" action, and repeating them would duplicate both.
+    embedded = False
 
     def __init__(
         self,
@@ -78,34 +87,57 @@ class Destination(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        header = QWidget(self)
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(
-            visual_tokens.GAP_GROUP,
-            visual_tokens.INSET,
-            visual_tokens.GAP_GROUP,
-            visual_tokens.SPACE_4,
-        )
-        header_layout.setSpacing(visual_tokens.SPACE_4)
-        self.heading = QLabel(self.title, header)
-        self.heading.setObjectName("destinationTitle")
-        self.heading.setWordWrap(True)
-        header_layout.addWidget(self.heading)
-        self.subheading = QLabel(self.subtitle, header)
-        self.subheading.setObjectName("secondary")
-        self.subheading.setWordWrap(True)
-        self.subheading.setVisible(bool(self.subtitle))
-        header_layout.addWidget(self.subheading)
-        outer.addWidget(header)
+        self.new_task_button: Optional[QPushButton] = None
+        self.heading: Optional[QLabel] = None
+        self.subheading: Optional[QLabel] = None
+
+        if not self.embedded:
+            header = QWidget(self)
+            header_row = QHBoxLayout(header)
+            header_row.setContentsMargins(
+                visual_tokens.GAP_GROUP,
+                visual_tokens.INSET,
+                visual_tokens.GAP_GROUP,
+                visual_tokens.SPACE_4,
+            )
+            header_row.setSpacing(visual_tokens.GAP_TIGHT)
+
+            titles = QWidget(header)
+            header_layout = QVBoxLayout(titles)
+            header_layout.setContentsMargins(0, 0, 0, 0)
+            header_layout.setSpacing(visual_tokens.SPACE_4)
+            self.heading = QLabel(self.title, titles)
+            self.heading.setObjectName("destinationTitle")
+            self.heading.setWordWrap(True)
+            header_layout.addWidget(self.heading)
+            self.subheading = QLabel(self.subtitle, titles)
+            self.subheading.setObjectName("secondary")
+            self.subheading.setWordWrap(True)
+            self.subheading.setVisible(bool(self.subtitle))
+            header_layout.addWidget(self.subheading)
+            header_row.addWidget(titles, 1)
+
+            # Only Agent Chat carries a composer. Every other page offers one
+            # compact action that returns there, so a goal field is never shown
+            # twice and never before there is a project to act on.
+            if type(self).show_new_task:
+                self.new_task_button = make_button(
+                    "New task",
+                    "ghost",
+                    accessible="Start a new task in Agent Chat",
+                    tooltip="Go to Agent Chat to state a goal.",
+                    on_click=lambda: self.host.focus_destination("chat"),
+                )
+                header_row.addWidget(self.new_task_button, 0, Qt.AlignmentFlag.AlignTop)
+            outer.addWidget(header)
 
         content = QWidget(self)
         self.body = QVBoxLayout(content)
-        self.body.setContentsMargins(
-            visual_tokens.GAP_GROUP,
-            visual_tokens.SPACE_0 if not self.hosted else visual_tokens.GAP_GROUP,
-            visual_tokens.GAP_GROUP,
-            visual_tokens.GAP_GROUP,
-        )
+        # An embedded page sits inside its container's padding, so it adds none
+        # of its own horizontally.
+        side = visual_tokens.SPACE_0 if self.embedded else visual_tokens.GAP_GROUP
+        top = visual_tokens.SPACE_0 if (not self.hosted and not self.embedded) else visual_tokens.GAP_GROUP
+        self.body.setContentsMargins(side, top, side, visual_tokens.GAP_GROUP)
         self.body.setSpacing(visual_tokens.GAP_GROUP)
 
         # The persistent region. It is a child widget so a refresh can lift it

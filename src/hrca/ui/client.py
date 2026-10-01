@@ -60,7 +60,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import weakref
 from functools import partial
@@ -68,22 +67,12 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, QProcess, QTimer, Qt, Signal
 from PySide6.QtGui import (
-    QColor,
-    QFont,
-    QPainter,
-    QPen,
     QStandardItem,
     QStandardItemModel,
-    QSyntaxHighlighter,
-    QTextBlockFormat,
-    QTextCharFormat,
-    QTextCursor,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
     QComboBox,
-    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -98,16 +87,11 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSplitter,
-    QSplitterHandle,
     QStackedWidget,
     QTabWidget,
-    QTextEdit,
     QToolButton,
-    QTreeView,
     QVBoxLayout,
     QWidget,
-    QSizePolicy,
 )
 
 from ..core import contract
@@ -117,20 +101,21 @@ from .widgets import (
     ElidedLabel,
     HairlineSplitter,
     _DocumentTreeView,
-    _ProjectTreeView,
     _json_text,
 )
 from .appmodel import authority as app_authority
 from .appmodel.context import ProjectContext
 from .appmodel.session import Workspace
-from .shell import Shell
+from .shell import WORK_VIEWS, Shell
 from .destinations.agents_page import AgentsDestination
 from .destinations.chat_page import AgentChatDestination
 from .destinations.documents_page import DocumentsDestination
+from .destinations.history_page import HistoryDestination
+from .destinations.home_page import HomeDestination
 from .destinations.jobs_page import JobsDestination
-from .destinations.resume_page import ResumeDestination
 from .destinations.review_page import ReviewDestination
 from .destinations.settings_page import SettingsDestination
+from .destinations.work_page import WorkDestination
 from ..boundary.client_core import PROVIDER_STATUS_CONFIGURED, PROVIDER_STATUS_FAILED, PROVIDER_STATUS_MISSING_CREDENTIAL, PROVIDER_STATUS_PENDING, PROVIDER_STATUS_UNAVAILABLE, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, STATE_BLOCKED, STATE_FAILED, STATE_IDLE, STATE_RUNNING, STATE_SUCCESS, STATE_UNAVAILABLE, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, LineBuffer, ResponseRouter, credential_action_message, profile_failure_message, build_add_profile_request, build_delete_profile_request, build_get_profiles_request, build_manage_credential_request, build_open_project_request, build_remove_credential_request, build_rename_profile_request, build_request, build_scan_request, build_set_active_profile_request, default_fixture_root, operation_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, build_create_document_request, build_open_document_request, build_save_document_request, build_create_candidate_request, build_adopt_candidate_request, build_list_versions_request, build_restore_version_request, document_failure_message, document_kind_label, format_document_state, format_version_list, build_preview_request, format_preview, preview_badge, preview_state_label, preview_state_message, build_get_library_request, build_create_folder_request, build_rename_item_request, build_move_item_request, build_trash_item_request, build_restore_item_request, build_prepare_rule_delta_request, build_interpret_rule_delta_request, format_delta_disclosure, format_delta_interpret_result, delta_interpret_state_label, build_get_memory_documents_request, build_get_memory_record_request, memory_run_rows, claim_rows, record_detail_rows, memory_record_kind_label, memory_state_label, memory_origin_label, MEMORY_QUERY_FACETS, MEMORY_QUERY_ORDERS, MEMORY_ORDER_RELEVANCE, MEMORY_ORDER_RECORDED_TIME, MEMORY_MAX_FILTERS, MEMORY_UNSUPPORTED_FACETS, MEMORY_FACET_LABELS, MEMORY_ORDER_LABELS, memory_facet_label, build_search_memory_request, build_memory_resume_request, memory_hit_rows, memory_resume_view, MEMORY_REVIEW_OPERATIONS, MEMORY_OPERATION_LABELS, memory_operation_label, memory_correction_state_label, memory_correction_source_id, memory_review_view, build_memory_history_request, build_memory_effective_request, build_memory_correction_request
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
@@ -243,31 +228,33 @@ _SETTINGS_SECTION_LABELS = {
     "about": "About",
 }
 
-# The seven destinations of the workspace rail, in order. The rail itself is
-# built by :class:`hrca.ui.shell.Shell`; these names are the keys the client
-# routes by. There is no collapsed group and no hidden destination: every
-# surface the product keeps is reachable from one of these seven.
+# The five rail entries, in order: four primary groups plus anchored Settings.
+# The rail itself is built by :class:`hrca.ui.shell.Shell`. Jobs, Agents and
+# Review are still reachable — as the contextual views Work groups — and
+# Project history is reachable from Home, so every surface the product keeps
+# stays within two intentional interactions.
 _NAV_DESTINATIONS = (
-    "resume",
+    "home",
     "chat",
-    "jobs",
-    "agents",
-    "review",
+    "work",
     "documents",
     "settings",
 )
 
-# Human-readable rail label per destination, in rail order. The shell renders
-# these; keeping the map here lets the client and its tests agree on one
-# spelling of each destination's name. It is written as a literal so the
-# architecture guard can read it, and a test pins it to RAIL_DESTINATIONS so
-# the two cannot drift apart.
+#: The contextual views Work groups, reachable from the Work destination.
+_NAV_WORK_VIEWS = ("jobs", "agents", "review")
+
+#: Pages reachable off the rail, from a destination that owns them.
+_NAV_SECONDARY = ("history",)
+
+# Human-readable label per destination. The shell renders the rail labels
+#; keeping the map here lets the client and its tests agree on one spelling of
+# each destination's name. It is written as a literal so the architecture guard
+# can read it, and a test pins it to RAIL_DESTINATIONS so the two cannot drift.
 _NAV_LABELS = {
-    "resume": "Resume",
+    "home": "Home",
     "chat": "Agent Chat",
-    "jobs": "Jobs",
-    "agents": "Agents",
-    "review": "Review",
+    "work": "Work",
     "documents": "Documents",
     "settings": "Settings",
 }
@@ -521,7 +508,7 @@ class MainWindow(QMainWindow):
     # -- UI construction -------------------------------------------------
 
     def _build_ui(self) -> None:
-        """Build the chat-first workspace shell and its seven destinations."""
+        """Build the workspace shell: four primary groups plus anchored Settings."""
         self.setWindowTitle("PrimaAgent")
         self.resize(style.WINDOW_DEFAULT_WIDTH, style.WINDOW_DEFAULT_HEIGHT)
         self.setMinimumSize(style.WINDOW_MIN_WIDTH, style.WINDOW_MIN_HEIGHT)
@@ -534,7 +521,6 @@ class MainWindow(QMainWindow):
         root.setSpacing(style.SPACE_0)
 
         self._shell = Shell(self._palette)
-        self._shell.goal_submitted.connect(self._on_goal_submitted)
         self._shell.context_bar.primary_clicked.connect(self._on_primary_action)
         self._shell.destination_changed.connect(self._on_destination_changed)
         self._build_destinations()
@@ -542,16 +528,17 @@ class MainWindow(QMainWindow):
         root.addWidget(self._shell, stretch=1)
 
         self._shell.add_footer(self._build_status_bar())
-        self._shell.select("resume")
+        self._shell.set_started(False)
+        self._shell.select("home")
         self._refresh_destinations()
 
     def _build_context_controls(self) -> None:
         """Mount the workspace actions and the provider chip into the context bar.
 
         The context bar's own primary button is the **safest next action** — on
-        first run that is opening a project; afterwards it follows the resume
-        recommendation. ``open_project_button`` remains an alias for it so the
-        existing scan-enable wiring keeps pointing at a real control.
+        first run that is opening a project; afterwards it follows the Home
+        recommendation. The scan action is mounted here but stays hidden until
+        a project is bound, so first use presents one action, not three.
         """
         self.open_project_button = self._shell.context_bar.primary_button
         self.open_project_button.setFixedHeight(style.COMMAND_BAR_BUTTON_HEIGHT)
@@ -559,11 +546,14 @@ class MainWindow(QMainWindow):
         self.scan_button = QPushButton("Run read-only scan")
         self.scan_button.setObjectName("secondaryButton")
         self.scan_button.setAccessibleName("Run read-only scan")
-        self.scan_button.setEnabled(False)
-        self.scan_button.setToolTip("Open a project to run a local read-only scan.")
+        self.scan_button.setToolTip("Run a local read-only scan of the open project.")
         self.scan_button.clicked.connect(self._on_run_scan)
         self.scan_button.setFixedHeight(style.COMMAND_BAR_BUTTON_HEIGHT)
+        self.scan_button.setVisible(False)
 
+        # The provider chip is an *actionable warning*, not a permanent badge:
+        # it appears only when a dispatch actually needs a provider that is not
+        # configured, and it is empty (and therefore hidden) otherwise.
         self._provider_status_label = ElidedLabel("", elide_mode=Qt.ElideRight)
         self._provider_status_label.setObjectName("providerStatusChip")
         self._provider_status_label.setAccessibleName("Provider status")
@@ -571,6 +561,7 @@ class MainWindow(QMainWindow):
             style.state_chip_style(self._palette, style.STATE_NEUTRAL)
         )
         self._provider_status_label.setMaximumWidth(style.STATUS_ROOT_MAX_WIDTH)
+        self._provider_status_label.setVisible(False)
 
         self._shell.context_bar.add_widget(self._provider_status_label)
         self._shell.context_bar.add_widget(self.scan_button)
@@ -580,13 +571,22 @@ class MainWindow(QMainWindow):
         self._workspace = Workspace(ProjectContext())
         self._views = {}
 
-        self._resume_destination = ResumeDestination(self._workspace, self)
+        self._home_destination = HomeDestination(self._workspace, self)
         self._chat_destination = AgentChatDestination(self._workspace, self)
+        self._work_destination = WorkDestination(self._workspace, self)
+        self._documents_destination = DocumentsDestination(self._workspace, self)
+        self._settings_destination = SettingsDestination(self._workspace, self)
+        self._history_destination = HistoryDestination(self._workspace, self)
+
+        # Jobs, Agents and Review are the contextual views Work groups, so they
+        # are embedded there rather than registered as three more rail entries.
         self._jobs_destination = JobsDestination(self._workspace, self)
         self._agents_destination = AgentsDestination(self._workspace, self)
         self._review_destination = ReviewDestination(self._workspace, self)
-        self._documents_destination = DocumentsDestination(self._workspace, self)
-        self._settings_destination = SettingsDestination(self._workspace, self)
+        for key, label in WORK_VIEWS:
+            self._work_destination.register_view(
+                key, label, getattr(self, f"_{key}_destination")
+            )
 
         # Documents: the library explorer beside the editor and its versions.
         self._library_explorer_panel = self._build_library_explorer()
@@ -616,31 +616,31 @@ class MainWindow(QMainWindow):
         )
         self._documents_destination.mount(self._library_splitter)
 
-        # Review: the document-bound candidate preview, the project's scan
-        # evidence, and the retained plan/diff projection.
+        # Review keeps the document-bound candidate preview, the project's scan
+        # evidence and the retained plan/diff projection as its deeper detail.
         self._preview_page = self._build_preview_workspace()
         self._review_destination.mount(self._preview_page)
         self._review_destination.mount(self._build_validation_evidence_page())
         self._review_destination.mount(self._build_change_review_page())
 
-        # Resume: the Developer Memory reader is the record set behind the
-        # resume, reached from the same destination rather than a parallel one.
-        self._resume_destination.mount(self._build_memory_page())
+        # Project history holds the Developer Memory reader, one deliberate step
+        # behind Home's "Project history" entry rather than on the landing page.
+        self._history_destination.mount(self._build_memory_page())
 
         # Settings: the provider, appearance, workspace and privacy surface.
         self._settings_surface = self._build_settings_surface()
         self._settings_destination.mount(self._settings_surface)
 
         for key, destination in (
-            ("resume", self._resume_destination),
+            ("home", self._home_destination),
             ("chat", self._chat_destination),
-            ("jobs", self._jobs_destination),
-            ("agents", self._agents_destination),
-            ("review", self._review_destination),
+            ("work", self._work_destination),
             ("documents", self._documents_destination),
             ("settings", self._settings_destination),
         ):
             self._shell.register(key, destination)
+        # History is reachable from Home, not from the rail.
+        self._shell.register("history", self._history_destination)
 
     def _build_library_explorer(self) -> QWidget:
         """Build the app-owned document library explorer (P4.6).
@@ -671,8 +671,10 @@ class MainWindow(QMainWindow):
             style.INSET, style.GAP_TIGHT, style.INSET, style.SPACE_0
         )
         create_layout.setSpacing(style.GAP_TIGHT)
+        # Organiser control, not the page's primary action: creating a document
+        # is the empty state's single primary action, so this stays quiet.
         self._library_new_doc_button = QPushButton("New document")
-        self._library_new_doc_button.setObjectName("primaryButton")
+        self._library_new_doc_button.setObjectName("ghostButton")
         self._library_new_doc_button.setAccessibleName("New document")
         self._library_new_doc_button.clicked.connect(self._new_document)
         self._library_new_folder_button = QPushButton("New folder")
@@ -3271,18 +3273,15 @@ class MainWindow(QMainWindow):
         empty_copy.setAlignment(Qt.AlignCenter)
         empty_copy.setAccessibleName("Document workflow")
         empty_layout.addWidget(empty_copy)
+        # One primary action for the empty state. Opening a project is the
+        # context bar's job, so it is not repeated here.
         empty_actions = QHBoxLayout()
         empty_actions.addStretch(1)
-        empty_new = QPushButton("New document")
+        empty_new = QPushButton("Create document")
         empty_new.setObjectName("primaryButton")
-        empty_new.setAccessibleName("Create your first document")
+        empty_new.setAccessibleName("Create document")
         empty_new.clicked.connect(self._new_document)
-        empty_open = QPushButton("Open project")
-        empty_open.setObjectName("secondaryButton")
-        empty_open.setAccessibleName("Open project")
-        empty_open.clicked.connect(self._on_open_project)
         empty_actions.addWidget(empty_new)
-        empty_actions.addWidget(empty_open)
         empty_actions.addStretch(1)
         empty_layout.addLayout(empty_actions)
         empty_layout.addStretch(1)
@@ -3414,7 +3413,11 @@ class MainWindow(QMainWindow):
     # -- rail destination selection -------------------------------------
 
     def _select_destination(self, key: str) -> None:
-        """Show the rail destination ``key`` in the workspace shell.
+        """Show the destination ``key``.
+
+        ``jobs``, ``agents`` and ``review`` are contextual views of Work, so
+        naming one moves to Work and selects that view — that is what keeps all
+        seven functional surfaces within two intentional interactions.
 
         Entering a destination is navigation, not an operation. Documents
         refreshes the library (cheap and selection-preserving) and Review
@@ -3422,12 +3425,17 @@ class MainWindow(QMainWindow):
         current truth. Navigation therefore can neither fabricate a completed
         provider operation nor erase recorded evidence.
         """
-        if key not in _NAV_DESTINATIONS:
+        if key in _NAV_WORK_VIEWS:
+            self._shell.select("work")
+            self._work_destination.select_view(key)
+        elif key in _NAV_DESTINATIONS or key in _NAV_SECONDARY:
+            self._shell.select(key)
+        else:
             return
-        self._shell.select(key)
+
         if key == "documents":
             self._refresh_library()
-        elif key == "review":
+        elif key in ("review", "work"):
             self._refresh_preview()
         elif key == "settings":
             self._refresh_profiles()
@@ -3439,23 +3447,72 @@ class MainWindow(QMainWindow):
     def _refresh_destinations(self) -> None:
         """Re-render every workspace destination from the current state."""
         for destination in (
-            self._resume_destination,
+            self._home_destination,
             self._chat_destination,
-            self._jobs_destination,
-            self._agents_destination,
-            self._review_destination,
+            self._work_destination,
         ):
             destination.refresh()
         self._sync_shell_context()
 
     def _sync_shell_context(self) -> None:
-        """Push the bound context, and the safest next action, into the shell."""
-        self._shell.set_context(self._workspace.context)
-        recommendation = self._workspace.resume().recommendation
-        self._shell.context_bar.set_primary_action(
-            recommendation.action if self._workspace.context.has_project else "Open Project",
-            recommendation.reason or "Choose the repository this workspace is bound to.",
+        """Push the bound context, authority and safest next action to the shell.
+
+        This is also where relevance is decided: the first-use frame, the
+        project-dependent rail entries, the scan action, the provider warning
+        and the status footer are each turned on only when they have something
+        to say. A warning or a failure always turns the footer on, so safety
+        state is never hidden by the simplification.
+        """
+        context = self._workspace.context
+        started = context.has_project
+        self._shell.set_context(context)
+        self._shell.set_started(started)
+        self._shell.show_activity(started)
+
+        plan = self._workspace.plan
+        ceiling = plan.authority_ceiling if plan is not None else "read_only"
+        self._shell.set_authority(
+            app_authority.authority_label(ceiling),
+            "The widest authority the current plan requests. Full detail is shown "
+            "when you confirm a plan in Agent Chat.",
         )
+
+        # First use presents exactly one primary action, and it lives on Home
+        # beside the product's purpose. The context bar, the authority chip, the
+        # scan action, the "New task" shortcuts and the footer all stay out of
+        # the way until there is a project to act on.
+        self._shell.context_bar.primary_button.setVisible(started)
+        self._shell.context_bar.authority_chip.setVisible(started)
+        self.scan_button.setVisible(started)
+        for destination in (
+            self._home_destination,
+            self._work_destination,
+            self._documents_destination,
+            self._settings_destination,
+            self._history_destination,
+        ):
+            button = getattr(destination, "new_task_button", None)
+            if button is not None:
+                button.setVisible(started)
+
+        self._update_provider_warning()
+
+        recommendation = self._workspace.resume().recommendation
+        if started:
+            self._shell.context_bar.set_primary_action(
+                recommendation.action, recommendation.reason
+            )
+        self._update_footer_relevance()
+
+    #: The statuses worth a permanent strip: a warning, a failure or a refusal.
+    #: Idle, running and success are all transient — a passive read is
+    #: navigation, not an operation, and a completed one needs no lasting
+    #: message. The full record stays available through the Activity drawer.
+    FOOTER_STATES = frozenset({STATE_BLOCKED, STATE_FAILED, STATE_UNAVAILABLE})
+
+    def _update_footer_relevance(self) -> None:
+        """Show the status footer only for a warning, a failure or a refusal."""
+        self._shell.set_footer(str(getattr(self, "_status", "") or "") in self.FOOTER_STATES)
 
     def _sync_workspace_context(self) -> None:
         """Push the recorded root, document and accepted baseline into the workspace.
@@ -3505,18 +3562,18 @@ class MainWindow(QMainWindow):
         elif "blocker" in action or "dispatch" in action or "baseline" in action:
             self._select_destination("jobs")
         else:
-            self._select_destination("resume")
+            self._select_destination("home")
 
-    def _on_goal_submitted(self, goal: str) -> None:
-        """Record a stated goal, propose a plan, and show Agent Chat."""
+    def submit_goal(self, goal: str) -> None:
+        """Record a stated goal, propose a plan, and show the plan card."""
         outcome = self._workspace.state_goal(goal)
         if outcome.refused:
-            self._set_status("blocked", outcome.reason)
+            self._set_status(STATE_BLOCKED, outcome.reason)
             return
-        self._shell.composer.clear()
+        self._chat_destination.composer.clear()
         self._select_destination("chat")
         self._refresh_destinations()
-        self._set_status("ok", "plan proposed — review it before confirming")
+        self._set_status(STATE_SUCCESS, "plan proposed — review it before confirming")
 
     # -- host protocol used by the destinations -------------------------
 
@@ -3524,8 +3581,12 @@ class MainWindow(QMainWindow):
         """Destination hook: open the project picker."""
         self._on_open_project()
 
+    def open_recent_project(self, root: str) -> None:
+        """Destination hook: bind the workspace to a project opened earlier."""
+        self._open_project_root(root)
+
     def focus_destination(self, key: str) -> None:
-        """Destination hook: move the rail to another destination."""
+        """Destination hook: move to another destination or Work view."""
         self._select_destination(key)
 
     def show_details(self, heading: str, rows) -> None:
@@ -3536,9 +3597,9 @@ class MainWindow(QMainWindow):
         """Destination hook: confirm the current plan."""
         outcome = self._workspace.confirm_plan()
         if outcome.refused:
-            self._set_status("blocked", outcome.reason)
+            self._set_status(STATE_BLOCKED, outcome.reason)
         else:
-            self._set_status("ok", "plan confirmed — jobs can now be dispatched")
+            self._set_status(STATE_SUCCESS, "plan confirmed — jobs can now be dispatched")
         self._refresh_destinations()
 
     def dispatch_job(self, key: str) -> None:
@@ -3569,15 +3630,15 @@ class MainWindow(QMainWindow):
             confirm.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
             confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
             if confirm.exec() != QMessageBox.StandardButton.Ok:
-                self._set_status("idle", f"{job.title} was not dispatched")
+                self._set_status(STATE_IDLE, f"{job.title} was not dispatched")
                 return
             effects = required
 
         outcome = self._workspace.dispatch(key, effects)
         if outcome.refused:
-            self._set_status("blocked", outcome.reason)
+            self._set_status(STATE_BLOCKED, outcome.reason)
         else:
-            self._set_status("running", f"{job.title} dispatched")
+            self._set_status(STATE_RUNNING, f"{job.title} dispatched")
             self._drive_job(job)
         self._refresh_destinations()
 
@@ -3604,19 +3665,19 @@ class MainWindow(QMainWindow):
     def pause_job(self, key: str) -> None:
         """Destination hook: pause a job whose capability supports it."""
         outcome = self._workspace.pause(key)
-        self._set_status("ok" if outcome.ok else "blocked", outcome.reason or "job paused")
+        self._set_status(STATE_SUCCESS if outcome.ok else STATE_BLOCKED, outcome.reason or "job paused")
         self._refresh_destinations()
 
     def resume_job(self, key: str) -> None:
         """Destination hook: resume a paused job."""
         outcome = self._workspace.resume_job(key)
-        self._set_status("ok" if outcome.ok else "blocked", outcome.reason or "job resumed")
+        self._set_status(STATE_SUCCESS if outcome.ok else STATE_BLOCKED, outcome.reason or "job resumed")
         self._refresh_destinations()
 
     def cancel_job(self, key: str) -> None:
         """Destination hook: cancel a job whose capability supports it."""
         outcome = self._workspace.cancel(key)
-        self._set_status("ok" if outcome.ok else "blocked", outcome.reason or "job cancelled")
+        self._set_status(STATE_SUCCESS if outcome.ok else STATE_BLOCKED, outcome.reason or "job cancelled")
         self._refresh_destinations()
 
     def record_decision(self, decision: str) -> None:
@@ -3637,9 +3698,9 @@ class MainWindow(QMainWindow):
         )
         outcome = self._workspace.record_decision(decision, actor, note or "")
         if outcome.refused:
-            self._set_status("blocked", outcome.reason)
+            self._set_status(STATE_BLOCKED, outcome.reason)
         else:
-            self._set_status("ok", "decision recorded")
+            self._set_status(STATE_SUCCESS, "decision recorded")
         self._refresh_destinations()
 
     def _set_status(self, state: str, detail: str = "") -> None:
@@ -3648,6 +3709,9 @@ class MainWindow(QMainWindow):
         if detail:
             text += f" — {detail}"
         self.status_label.setText(text)
+        # The footer is not permanently reserved: it appears for a warning, a
+        # failure or a refusal, and stays out of the way otherwise.
+        self._update_footer_relevance()
 
     def _set_neutral_status(self) -> None:
         """Restore the global strip to its neutral, non-operation baseline.
@@ -3715,6 +3779,10 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Open Project", start)
         if not path:
             return
+        self._open_project_root(path)
+
+    def _open_project_root(self, path: str) -> None:
+        """Ask the boundary to bind ``path`` as the workspace root."""
         cid = contract.new_correlation_id()
         request = build_open_project_request(cid, path)
         self._set_status(STATE_RUNNING, "opening project")
@@ -3805,14 +3873,43 @@ class MainWindow(QMainWindow):
         self._set_provider_status(PROVIDER_STATUS_FAILED)
 
     def _set_provider_status(self, status: str) -> None:
-        """Write the fixed-height provider status region from a bounded state.
+        """Write the provider readiness chip from a bounded state.
 
-        Only the preallocated region's text changes; it never toggles
-        visibility, moves the splitter or reflows the body, and it never
-        depends on the truncated footer field.
+        The chip is an *actionable warning*, so it is only revealed when a
+        dispatch in the current plan actually needs a provider that is not
+        configured — see :meth:`_update_provider_warning`. Its text is always
+        current, so revealing it never shows a stale value.
         """
         if self._provider_status_label is not None:
             self._provider_status_label.setText(provider_status_message(status))
+        self._update_provider_warning()
+
+    def _update_provider_warning(self) -> None:
+        """Reveal the provider chip only when a dispatch needs it.
+
+        A plan that will make a provider call, with a provider that is not
+        configured, is the one case where the developer must act on provider
+        state. Everywhere else the readiness of a provider they are not using
+        is noise.
+        """
+        label = self._provider_status_label
+        if label is None:
+            return
+        plan = self._workspace.plan
+        needs_provider = False
+        if plan is not None:
+            for job in plan.jobs:
+                capability = job.capability
+                if capability is None or not capability.is_protected:
+                    continue
+                if (
+                    app_authority.EFFECT_PROVIDER_DISPATCH
+                    in app_authority.effects_for(job.authority)
+                ):
+                    needs_provider = True
+                    break
+        configured = str(self._provider_state) == PROVIDER_STATUS_CONFIGURED
+        label.setVisible(bool(label.text()) and needs_provider and not configured)
 
     # -- Settings surface (P4.2a) ----------------------------------------
 
@@ -4491,6 +4588,7 @@ class MainWindow(QMainWindow):
     def _on_project_opened(self, result: Dict[str, Any]) -> None:
         self._root = result.get("root")
         self._repository_state = result.get("repository_state", REPOSITORY_UNVERIFIED)
+        self._workspace.note_project(str(self._root or ""))
         self._update_status()
         self._update_scan_enabled()
         self._sync_workspace_context()
@@ -5337,6 +5435,9 @@ class MainWindow(QMainWindow):
                 widget.deleteLater()
 
         if not self._document_versions:
+            # No action button here: the document footer already carries the
+            # one contextual action for this state, and repeating it beside the
+            # versions list gives the same control two homes.
             empty = QLabel(
                 "No accepted app version yet.\n\n"
                 "Save stores your requirements; it does not adopt an app. "
@@ -5347,18 +5448,6 @@ class MainWindow(QMainWindow):
             empty.setWordWrap(True)
             empty.setAccessibleName("No accepted app version")
             layout.addWidget(empty)
-            next_button = QPushButton(
-                "Build preview"
-                if self._document_id and self._document_head and not self._document_dirty
-                else "Go to Document"
-            )
-            next_button.setObjectName("primaryButton")
-            next_button.setAccessibleName(next_button.text())
-            if next_button.text() == "Build preview":
-                next_button.clicked.connect(self._build_preview)
-            else:
-                next_button.clicked.connect(partial(self._select_destination, "document"))
-            layout.addWidget(next_button, alignment=Qt.AlignLeft)
             layout.addStretch(1)
             return
 

@@ -19,12 +19,13 @@ from __future__ import annotations
 
 from typing import Callable, Optional, Sequence
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -406,6 +407,66 @@ class DetailsDrawer(QFrame):
                 widget.deleteLater()
 
 
+class Composer(QFrame):
+    """The goal field. Only Agent Chat carries one.
+
+    Its summary line states the bound context, the action that will be taken
+    and the authority it needs, so what a dispatch would do is legible before
+    anything is sent. Every other destination reaches this one through a
+    compact *New task* action rather than showing a second goal field.
+    """
+
+    submitted = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("composerArea")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(visual_tokens.SPACE_4)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(visual_tokens.GAP_TIGHT)
+
+        self.input = QTextEdit(self)
+        self.input.setObjectName("workspaceComposer")
+        self.input.setAccessibleName("Goal")
+        self.input.setPlaceholderText(
+            "Describe what you want done — this proposes a plan; it sends nothing."
+        )
+        self.input.setFixedHeight(44)
+        row.addWidget(self.input, 1)
+
+        self.send_button = make_button(
+            "Propose a plan",
+            "primary",
+            accessible="Propose a plan from this goal",
+            tooltip="Turn the goal into an editable plan. Nothing runs and nothing is sent.",
+            on_click=self._submit,
+        )
+        row.addWidget(self.send_button, 0, Qt.AlignmentFlag.AlignBottom)
+        layout.addLayout(row)
+
+        self.summary = QLabel("", self)
+        self.summary.setObjectName("secondary")
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+
+    def _submit(self) -> None:
+        text = self.input.toPlainText().strip()
+        if text:
+            self.submitted.emit(text)
+
+    def set_summary(self, text: str) -> None:
+        """Update the context/action/authority summary line."""
+        self.summary.setText(text)
+
+    def clear(self) -> None:
+        """Clear the goal field."""
+        self.input.clear()
+
+
 __all__ = [
     "CARD",
     "STATE_VIEW",
@@ -421,4 +482,5 @@ __all__ = [
     "StateView",
     "ListRow",
     "DetailsDrawer",
+    "Composer",
 ]

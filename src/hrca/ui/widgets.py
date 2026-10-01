@@ -19,8 +19,6 @@ from PySide6.QtGui import (
     QFont,
     QPainter,
     QPen,
-    QStandardItem,
-    QStandardItemModel,  # noqa: F401 - re-exported for callers
     QSyntaxHighlighter,
     QTextBlockFormat,
     QTextCharFormat,

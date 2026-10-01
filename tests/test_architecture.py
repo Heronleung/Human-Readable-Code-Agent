@@ -2983,18 +2983,22 @@ class TwinSurfaceRemovalTests(unittest.TestCase):
         self.assertNotIn("twin", text)
 
     def test_navigation_exposes_no_source_tree_or_code_map_destination(self):
-        # UI-TRANSITION-2 replaced the document-first rail with the seven
-        # chat-first destinations. The invariant this guard exists for is
-        # unchanged: no source-tree, code-map or twin destination is reachable.
+        # UI-TRANSITION-2 replaced the document-first rail with a chat-first
+        # workspace; Form 2R grouped it into four primary destinations plus
+        # anchored Settings. The invariant this guard exists for is unchanged:
+        # no source-tree, code-map or twin destination is reachable.
         self.assertEqual(
             self._module_literal("_NAV_DESTINATIONS"),
-            ("resume", "chat", "jobs", "agents", "review", "documents", "settings"),
+            ("home", "chat", "work", "documents", "settings"),
         )
-        # The collapsed Advanced disclosure that used to group the retained
-        # technical views is gone; every destination is always visible.
+        # Jobs, Agents and Review are Work's contextual views, not top-level
+        # choices, and the collapsed Advanced disclosure is gone entirely.
         from hrca.ui import client as client_module
 
         self.assertFalse(hasattr(client_module, "_ADVANCED_DESTINATIONS"))
+        self.assertEqual(
+            tuple(client_module._NAV_WORK_VIEWS), ("jobs", "agents", "review")
+        )
         labels = self._module_literal("_NAV_LABELS")
         self.assertNotIn("source_code_map", labels)
         self.assertNotIn("Source & Code Map", labels.values())

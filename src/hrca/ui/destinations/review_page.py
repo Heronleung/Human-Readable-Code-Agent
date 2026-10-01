@@ -21,6 +21,8 @@ from .base import Destination
 class ReviewDestination(Destination):
     """Evidence, coverage and the four review decisions."""
 
+    #: Shown inside Work, which supplies the title and the "New task" action.
+    embedded = True
     title = "Review"
     subtitle = "Changed artifacts, evidence, missing proof, conflicts and acceptance coverage."
 
@@ -29,19 +31,13 @@ class ReviewDestination(Destination):
         bundle = self.workspace.review()
 
         if not bundle.is_reviewable:
+            # Work owns the single "Start in Agent Chat" action for empty work,
+            # so this view never duplicates it.
             view = self.new_state_view()
             view.set_state(
                 "empty",
                 "Nothing to review yet",
                 "Review fills in once a plan's jobs report what they produced.",
-            )
-            view.add_action(
-                make_button(
-                    "Go to Agent Chat",
-                    "primary",
-                    accessible="Go to Agent Chat",
-                    on_click=lambda: self.host.focus_destination("chat"),
-                )
             )
             return
 

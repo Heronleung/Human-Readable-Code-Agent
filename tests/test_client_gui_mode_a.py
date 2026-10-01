@@ -79,11 +79,19 @@ class ModeAUiTests(unittest.TestCase):
         self.window.deleteLater()
 
     def test_first_run_has_one_primary_document_cta(self):
+        # One primary action for the empty Documents state. Opening a project
+        # belongs to the context bar, so it is not repeated here.
         self.assertFalse(self.window._document_empty_state.isHidden())
         self.assertTrue(self.window._document_editor.isHidden())
-        labels = [button.text() for button in self.window._document_empty_state.findChildren(type(self.window._document_save_button))]
-        self.assertIn("New document", labels)
-        self.assertIn("Open project", labels)
+        buttons = self.window._document_empty_state.findChildren(
+            type(self.window._document_save_button)
+        )
+        self.assertIn("Create document", [button.text() for button in buttons])
+        primaries = [
+            button for button in buttons if button.objectName() == "primaryButton"
+        ]
+        self.assertEqual(len(primaries), 1)
+        self.assertEqual(primaries[0].accessibleName(), "Create document")
 
     def test_document_header_and_dirty_hint_are_explicit(self):
         self.window._apply_document_state(_state())

@@ -46,6 +46,8 @@ def _depths(plan) -> Dict[str, int]:
 class JobsDestination(Destination):
     """The plan's jobs, their states and the controls they actually support."""
 
+    #: Shown inside Work, which supplies the title and the "New task" action.
+    embedded = True
     title = "Jobs"
     subtitle = "Hierarchy, owner, baseline, dependencies, activity and honest terminal state."
 
@@ -54,19 +56,13 @@ class JobsDestination(Destination):
         plan = self.workspace.plan
 
         if plan is None or not plan.jobs:
+            # Work owns the single "Start in Agent Chat" action for an empty
+            # queue, so this view never duplicates it.
             view = self.new_state_view()
             view.set_state(
                 "empty",
                 "No work planned yet",
                 "State a goal in Agent Chat to produce an editable plan.",
-            )
-            view.add_action(
-                make_button(
-                    "Go to Agent Chat",
-                    "primary",
-                    accessible="Go to Agent Chat",
-                    on_click=lambda: self.host.focus_destination("chat"),
-                )
             )
             return
 

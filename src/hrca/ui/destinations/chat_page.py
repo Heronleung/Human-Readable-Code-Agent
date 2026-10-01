@@ -1,29 +1,32 @@
-"""Agent Chat: the coordinating conversation and the editable Plan card.
+"""Agent Chat: the coordinating conversation, the Plan card and the composer.
 
-The destination shows the transcript — what the developer said, what the
-coordinator proposed, what the workspace observed — and, at the position the
-proposal was made, the live **Plan card**.
+Agent Chat is the **only** page with a composer. It is also where a plan is
+confirmed, so it is the one place that shows a plan's full requested authority
+— per job, and again as the plan's ceiling — immediately before the developer
+confirms it. Every other surface shows the single concise authority indicator
+in the context bar.
 
-The Plan card is editable and explicit. Each job can be included or left out
-before confirmation; the card states every job's owner, capability, requested
-authority, risk and acceptance criteria, so the developer can see exactly what
-they are about to authorise. Confirming the plan dispatches nothing: it only
-makes each job dispatchable, still behind its own per-effect approval.
+The composer is pinned to the foot of the page; the transcript scrolls above
+it. Confirming a plan dispatches nothing: it only makes each job dispatchable,
+still behind its own per-effect approval.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Optional
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QLabel,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from ..appmodel import authority as _authority
-from ..components import Card, make_button
+from ..components import Card, Composer, make_button
 from .base import Destination
 
 NO_PLAN_TEXT = (
@@ -33,34 +36,89 @@ NO_PLAN_TEXT = (
 
 
 class AgentChatDestination(Destination):
-    """The transcript and the editable plan card."""
+    """The transcript, the editable plan card, and the one composer."""
 
+    hosted = True
     title = "Agent Chat"
     subtitle = "State a goal, shape the plan, and confirm what may run."
+    #: This page owns the composer, so it carries no "New task" shortcut.
+    show_new_task = False
 
-    def __init__(self, workspace, host, parent=None) -> None:
+    def __init__(self, workspace, host, parent: Optional[QWidget] = None) -> None:
         super().__init__(workspace, host, parent)
         self._included: dict = {}
 
-    def render(self) -> None:
+        body = QWidget(self)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._scroll = QScrollArea(body)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._transcript = QWidget(self._scroll)
+        self._transcript_layout = QVBoxLayout(self._transcript)
+        self._transcript_layout.setContentsMargins(0, 0, 0, 0)
+        self._transcript_layout.setSpacing(12)
+        self._scroll.setWidget(self._transcript)
+        layout.addWidget(self._scroll, 1)
+
+        self.composer = Composer(body)
+        self.composer.submitted.connect(self.host.submit_goal)
+        layout.addWidget(self.composer)
+
+        self.mount(body)
+
+    # -- rendering ----------------------------------------------------------
+    def refresh(self) -> None:
         """Re-render the transcript and the plan card."""
+        while self._transcript_layout.count():
+            item = self._transcript_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
         messages = self.workspace.messages
-
         if not messages:
-            self.add_state_view("empty", "No conversation yet", NO_PLAN_TEXT)
-            self.body.addStretch(1)
-            return
+            from ..components import StateView
 
-        for message in messages:
-            if message.is_plan:
-                self._render_plan_card()
-            else:
-                self.body.addWidget(self._message_bubble(message))
-        self.body.addStretch(1)
+            view = StateView("empty", "No conversation yet", NO_PLAN_TEXT, self._transcript)
+            self._transcript_layout.addWidget(view)
+        else:
+            for message in messages:
+                if message.is_plan:
+                    self._transcript_layout.addWidget(self._plan_card())
+                else:
+                    self._transcript_layout.addWidget(self._message_bubble(message))
+
+        self._transcript_layout.addStretch(1)
+        self.composer.set_summary(self._composer_summary())
+        self.composer.setVisible(self.workspace.context.has_project)
+
+    def _composer_summary(self) -> str:
+        context = self.workspace.context
+        base = (
+            f"Context: {context.document_text}"
+            if context.has_project
+            else "Context: no project open"
+        )
+        plan = self.workspace.plan
+        if plan is not None:
+            authority = _authority.describe_authority(plan.authority_ceiling)
+            return (
+                f"{base}   ·   Action: propose an editable plan   ·   "
+                f"Authority if confirmed: {authority}"
+            )
+        return (
+            f"{base}   ·   Action: propose an editable plan   ·   "
+            "Authority: read only — nothing is sent"
+        )
 
     # -- transcript ---------------------------------------------------------
     def _message_bubble(self, message) -> QWidget:
-        bubble = QWidget(self)
+        bubble = QWidget(self._transcript)
         bubble.setObjectName("messageBubble")
         layout = QVBoxLayout(bubble)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -79,12 +137,12 @@ class AgentChatDestination(Destination):
         return bubble
 
     # -- plan card ----------------------------------------------------------
-    def _render_plan_card(self) -> None:
+    def _plan_card(self) -> QWidget:
         plan = self.workspace.plan
         if plan is None:
-            return
+            return QWidget(self._transcript)
 
-        card = Card("Plan", plan.goal or "No goal stated.", self)
+        card = Card("Plan", plan.goal or "No goal stated.", self._transcript)
         card.setObjectName("planCard")
 
         problems = self.workspace.plan_problems
@@ -93,17 +151,21 @@ class AgentChatDestination(Destination):
             for problem in problems:
                 card.body.addWidget(self._note(f"• {problem}"))
 
+        card.body.addWidget(
+            self._note(
+                "Widest authority this plan requests: "
+                + _authority.describe_authority(plan.authority_ceiling)
+                + ". Each job's authority is listed below."
+            )
+        )
+
         for job in plan.jobs:
             card.body.addWidget(self._job_editor(job, editable=not plan.confirmed))
-
-        if plan.notes:
-            for note in plan.notes:
-                card.body.addWidget(self._note(note))
 
         if plan.confirmed:
             card.body.addWidget(
                 self._note(
-                    "Confirmed. Each job is dispatched from Jobs, and a protected "
+                    "Confirmed. Each job is dispatched from Work, and a protected "
                     "effect is approved there, per job."
                 )
             )
@@ -122,50 +184,40 @@ class AgentChatDestination(Destination):
                     on_click=self._confirm,
                 )
             )
-        self.body.addWidget(card)
+        return card
 
     def _job_editor(self, job, editable: bool) -> QWidget:
-        container = QWidget(self)
+        container = QWidget(self._transcript)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        header = QWidget(container)
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(0)
-
         if editable:
-            toggle = QCheckBox(job.title, header)
+            toggle = QCheckBox(job.title, container)
             toggle.setChecked(self._included.get(job.key, True))
             toggle.setAccessibleName(f"Include {job.title} in the plan")
             toggle.toggled.connect(
                 lambda checked, key=job.key: self._included.__setitem__(key, checked)
             )
-            header_layout.addWidget(toggle)
+            layout.addWidget(toggle)
         else:
-            title = QLabel(job.title, header)
-            header_layout.addWidget(title)
+            layout.addWidget(QLabel(job.title, container))
 
         capability = job.capability
         meta = (
             f"  {job.role_label} · {capability.label if capability else job.capability_key} · "
             f"authority: {_authority.authority_label(job.authority)} · risk: {job.risk}"
         )
-        meta_label = QLabel(meta, header)
+        meta_label = QLabel(meta, container)
         meta_label.setObjectName("secondary")
         meta_label.setWordWrap(True)
-        header_layout.addWidget(meta_label)
+        layout.addWidget(meta_label)
 
         if job.acceptance:
-            acceptance = QLabel(
-                "  Accepted when: " + "; ".join(job.acceptance), header
-            )
+            acceptance = QLabel("  Accepted when: " + "; ".join(job.acceptance), container)
             acceptance.setObjectName("secondary")
             acceptance.setWordWrap(True)
-            header_layout.addWidget(acceptance)
-
-        layout.addWidget(header)
+            layout.addWidget(acceptance)
         return container
 
     def _confirm(self) -> None:

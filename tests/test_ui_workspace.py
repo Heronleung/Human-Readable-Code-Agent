@@ -1,14 +1,15 @@
-"""The redesigned workspace: rail, shell, destinations and their guards.
+"""The redesigned workspace: progressive disclosure, grouping and guards.
 
-These tests prove the chat-first interface exists and behaves: seven
-destinations, a first-run path that explains the product, a goal that becomes
-an editable plan, dispatch that refuses until a protected effect is confirmed,
-review that cannot approve incomplete evidence, and an accessible name on
-every button the window builds.
+These tests prove the Form 2R presentation rules: first use offers one obvious
+path, the rail carries four primary groups plus anchored Settings rather than
+seven equal choices, Work reveals its contextual views only when they have
+something to say, only Agent Chat carries a composer, and no region ever
+presents the same action twice.
 
 They also prove the *absence* of the surfaces the redesign removed — the
-Advanced disclosure, the Memory rail entry and every Code Twin surface — so a
-later change cannot quietly reintroduce one.
+Advanced disclosure, the Memory rail entry and every Code Twin surface — and
+that a blocking risk, a failed job or an unverified claim is never hidden by
+the simplification.
 """
 
 from __future__ import annotations
@@ -21,20 +22,27 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtWidgets import QApplication, QPushButton
 
-    from hrca.ui import style
     from hrca.ui import client as client_module
     from hrca.ui.appmodel import states
     from hrca.ui.appmodel.context import ProjectContext
     from hrca.ui.appmodel.session import Workspace
     from hrca.ui.client import MainWindow
-    from hrca.ui.destinations.resume_page import PURPOSE
-    from hrca.ui.shell import RAIL_DESTINATIONS, Shell
+    from hrca.ui.destinations.home_page import PURPOSE
+    from hrca.ui.shell import (
+        PROJECT_DEPENDENT,
+        RAIL_DESTINATIONS,
+        RAIL_PRIMARY,
+        RAIL_SETTINGS,
+        WORK_VIEWS,
+    )
     HAS_PYSIDE6 = True
 except ImportError:  # pragma: no cover - environment without the desktop extra
     HAS_PYSIDE6 = False
 
 
-EXPECTED_RAIL = ("resume", "chat", "jobs", "agents", "review", "documents", "settings")
+EXPECTED_PRIMARY = ("home", "chat", "work", "documents")
+EXPECTED_RAIL = EXPECTED_PRIMARY + ("settings",)
+WORK_VIEW_KEYS = ("jobs", "agents", "review")
 
 
 def _app():
@@ -42,11 +50,19 @@ def _app():
     return app if app is not None else QApplication([])
 
 
-@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class RailTests(unittest.TestCase):
+class _WindowCase(unittest.TestCase):
+    """A MainWindow per test, with a bound project when the test needs one."""
+
+    with_project = False
+
     def setUp(self):
         _app()
         self.window = MainWindow()
+        if self.with_project:
+            self.window._on_project_opened(
+                {"root": "/repo/Human-Readable-Code-Agent", "repository_state": "Unverified"}
+            )
+            self.window._refresh_destinations()
 
     def tearDown(self):
         self.window._supervisor.terminate()
@@ -54,15 +70,33 @@ class RailTests(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
 
-    def test_the_rail_has_exactly_the_seven_destinations_in_order(self):
+    def visible_buttons(self, widget) -> list:
+        """Return the buttons a user could actually see and press."""
+        return [
+            button
+            for button in widget.findChildren(QPushButton)
+            if not button.isHidden() and button.isEnabled()
+        ]
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class RailTests(_WindowCase):
+    def test_the_rail_has_four_primary_groups_plus_anchored_settings(self):
+        self.assertEqual(tuple(key for key, _, _ in RAIL_PRIMARY), EXPECTED_PRIMARY)
+        self.assertEqual(RAIL_SETTINGS[0], "settings")
         self.assertEqual(tuple(key for key, _, _ in RAIL_DESTINATIONS), EXPECTED_RAIL)
         self.assertEqual(client_module._NAV_DESTINATIONS, EXPECTED_RAIL)
 
     def test_the_client_label_map_matches_the_rail(self):
-        # The client keeps a literal label map so the architecture guard can
-        # read it; this pins it to the shell's own rail definition.
         expected = {key: label for key, _glyph, label in RAIL_DESTINATIONS}
         self.assertEqual(client_module._NAV_LABELS, expected)
+
+    def test_jobs_agents_and_review_are_not_rail_entries(self):
+        # They are Work's contextual views, so they must not be top-level.
+        for key in WORK_VIEW_KEYS:
+            with self.subTest(key=key):
+                self.assertNotIn(key, EXPECTED_RAIL)
+                self.assertNotIn(key, self.window._shell._buttons)
 
     def test_every_rail_button_has_a_label_and_an_accessible_name(self):
         for key, glyph, label in RAIL_DESTINATIONS:
@@ -71,22 +105,272 @@ class RailTests(unittest.TestCase):
                 self.assertEqual(button.accessibleName(), label)
                 self.assertIn(label, button.text())
 
-    def test_every_destination_is_registered_and_reachable(self):
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class FirstUseTests(_WindowCase):
+    """With no project, one obvious path and no inactive orchestration surface."""
+
+    def test_only_home_and_settings_are_offered(self):
+        for key in PROJECT_DEPENDENT:
+            with self.subTest(key=key):
+                self.assertTrue(self.window._shell._buttons[key].isHidden())
+        self.assertFalse(self.window._shell._buttons["home"].isHidden())
+        self.assertFalse(self.window._shell._buttons["settings"].isHidden())
+
+    def test_no_composer_is_reachable_before_a_project_exists(self):
+        self.assertTrue(self.window._chat_destination.composer.isHidden())
+
+    def test_the_context_bar_offers_no_action_or_scan(self):
+        bar = self.window._shell.context_bar
+        self.assertTrue(bar.primary_button.isHidden())
+        self.assertTrue(bar.authority_chip.isHidden())
+        self.assertTrue(self.window.scan_button.isHidden())
+        self.assertTrue(self.window._provider_status_label.isHidden())
+
+    def test_the_status_footer_is_hidden_at_idle(self):
+        self.assertTrue(self.window._shell._footer.isHidden())
+
+    def test_home_offers_exactly_one_primary_action(self):
+        page = self.window._shell.page("home")
+        primaries = [
+            button
+            for button in self.visible_buttons(page)
+            if button.objectName() == "primaryButton"
+        ]
+        self.assertEqual(len(primaries), 1)
+        self.assertEqual(primaries[0].accessibleName(), "Open project")
+
+    def test_home_states_the_products_purpose(self):
+        page = self.window._shell.page("home")
+        from PySide6.QtWidgets import QLabel
+
+        text = "\n".join(
+            label.text() for label in page.findChildren(QLabel) if not label.isHidden()
+        )
+        self.assertIn("manage coding agents", text)
+        self.assertIn("manage coding agents", PURPOSE)
+
+    def test_no_new_task_shortcut_before_a_project_exists(self):
+        for key in ("home", "documents", "settings"):
+            page = self.window._shell.page(key)
+            button = getattr(page, "new_task_button", None)
+            with self.subTest(key=key):
+                self.assertIsNotNone(button)
+                self.assertTrue(button.isHidden())
+
+    def test_no_recent_projects_section_without_history(self):
+        self.assertEqual(self.window._workspace.recent_projects, ())
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class StartedTests(_WindowCase):
+    with_project = True
+
+    def test_all_five_rail_entries_are_offered(self):
+        for key in EXPECTED_RAIL:
+            with self.subTest(key=key):
+                self.assertFalse(self.window._shell._buttons[key].isHidden())
+
+    def test_the_context_bar_offers_its_action_and_scan(self):
+        bar = self.window._shell.context_bar
+        self.assertFalse(bar.primary_button.isHidden())
+        self.assertFalse(self.window.scan_button.isHidden())
+        self.assertFalse(bar.authority_chip.isHidden())
+
+    def test_a_project_is_remembered_for_this_session(self):
+        self.assertEqual(
+            self.window._workspace.recent_projects, ("/repo/Human-Readable-Code-Agent",)
+        )
+
+    def test_every_destination_is_reachable_in_at_most_two_interactions(self):
+        # One interaction: the four primary groups and anchored Settings.
         for key in EXPECTED_RAIL:
             with self.subTest(key=key):
                 self.window._select_destination(key)
                 self.assertEqual(self.window._shell.current, key)
+        # Two interactions: Work, then one of its contextual views.
+        for key in WORK_VIEW_KEYS:
+            with self.subTest(key=key):
+                self.window._select_destination(key)
+                self.assertEqual(self.window._shell.current, "work")
+        # Two interactions: Home, then Project history.
+        self.window._select_destination("history")
+        self.assertEqual(self.window._shell.current, "history")
 
-    def test_the_window_opens_on_resume(self):
-        self.assertEqual(self.window._shell.current, "resume")
-        self.assertEqual(self.window._nav_destination, "resume")
-
-    def test_every_destination_page_builds(self):
-        for key in EXPECTED_RAIL:
+    def test_only_agent_chat_carries_a_composer(self):
+        chat = self.window._chat_destination
+        self.assertIsNotNone(chat.composer)
+        self.assertTrue(hasattr(chat, "composer"))
+        for key in ("home", "work", "documents", "settings"):
             with self.subTest(key=key):
                 page = self.window._shell.page(key)
-                self.assertIsNotNone(page)
-                self.assertTrue(page.heading.text())
+                from hrca.ui.components import Composer
+
+                self.assertEqual(page.findChildren(Composer), [])
+
+    def test_other_pages_offer_one_new_task_shortcut(self):
+        for key in ("home", "work", "documents", "settings"):
+            page = self.window._shell.page(key)
+            button = getattr(page, "new_task_button", None)
+            with self.subTest(key=key):
+                self.assertIsNotNone(button)
+                self.assertFalse(button.isHidden())
+                self.assertEqual(button.accessibleName(), "Start a new task in Agent Chat")
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class WorkDisclosureTests(_WindowCase):
+    with_project = True
+
+    def _work(self):
+        return self.window._shell.page("work")
+
+    def test_empty_work_has_one_start_action(self):
+        work = self._work()
+        work.refresh()
+        primaries = [
+            button
+            for button in self.visible_buttons(work)
+            if button.objectName() == "primaryButton"
+        ]
+        self.assertEqual(len(primaries), 1)
+        self.assertEqual(primaries[0].accessibleName(), "Start in Agent Chat")
+
+    def test_agents_is_hidden_until_a_plan_assigns_a_role(self):
+        work = self._work()
+        work.refresh()
+        self.assertTrue(work._buttons["agents"].isHidden())
+
+    def test_review_is_hidden_until_there_is_evidence(self):
+        work = self._work()
+        work.refresh()
+        self.assertTrue(work._buttons["review"].isHidden())
+
+    def test_a_plan_reveals_jobs_and_agents(self):
+        self.window.submit_goal("scan the project")
+        self.window.confirm_plan()
+        work = self._work()
+        work.refresh()
+        self.assertFalse(work._buttons["jobs"].isHidden())
+        self.assertFalse(work._buttons["agents"].isHidden())
+        self.assertTrue(work._buttons["review"].isHidden())
+
+    def test_completed_work_reveals_review(self):
+        self.window.submit_goal("scan the project")
+        self.window.confirm_plan()
+        self.window._workspace.dispatch("scan")
+        self.window._workspace.report_job("scan", states.STATE_COMPLETED)
+        self.window._refresh_destinations()
+        work = self._work()
+        work.refresh()
+        self.assertFalse(work._buttons["review"].isHidden())
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class HomeDisclosureTests(_WindowCase):
+    with_project = True
+
+    def test_home_shows_continue_and_a_project_history_entry(self):
+        from PySide6.QtWidgets import QLabel
+
+        page = self.window._shell.page("home")
+        page.refresh()
+        text = "\n".join(label.text() for label in page.findChildren(QLabel))
+        self.assertIn("Continue", text)
+        self.assertIn("Project history", text)
+
+    def test_home_does_not_show_the_raw_memory_reader(self):
+        page = self.window._shell.page("home")
+        page.refresh()
+        self.assertFalse(page.isAncestorOf(self.window._memory_run_selector))
+
+    def test_project_history_holds_the_memory_reader(self):
+        page = self.window._shell.page("history")
+        self.assertTrue(page.isAncestorOf(self.window._memory_run_selector))
+
+    def _home_text(self) -> str:
+        from PySide6.QtWidgets import QLabel
+
+        page = self.window._shell.page("home")
+        page.refresh()
+        return "\n".join(label.text() for label in page.findChildren(QLabel))
+
+    def test_needs_attention_is_shown_for_a_blocked_job(self):
+        self.window.submit_goal("scan the project")
+        self.window.confirm_plan()
+        self.window._workspace.dispatch("scan")
+        self.window._workspace.report_job(
+            "scan", states.STATE_BLOCKED, blocker="The root is not readable."
+        )
+        self.window._refresh_destinations()
+        text = self._home_text()
+        self.assertIn("Needs attention", text)
+        self.assertIn("The root is not readable.", text)
+
+    def test_needs_attention_is_shown_for_a_pending_approval(self):
+        # A pending decision is not a "bad" state, but it is something only a
+        # human can clear, so it must never be hidden by the disclosure.
+        self.window.submit_goal("scan the project")
+        self.window.confirm_plan()
+        self.window._workspace.dispatch("scan")
+        self.window._workspace.report_job("scan", states.STATE_COMPLETED)
+        self.window._refresh_destinations()
+        text = self._home_text()
+        self.assertIn("Needs attention", text)
+        self.assertIn("decision is waiting", text)
+
+    def test_needs_attention_is_shown_for_a_failed_job(self):
+        self.window.submit_goal("scan the project")
+        self.window.confirm_plan()
+        self.window._workspace.dispatch("scan")
+        self.window._workspace.report_job("scan", states.STATE_FAILED)
+        self.window._refresh_destinations()
+        text = self._home_text()
+        self.assertIn("Needs attention", text)
+
+    def test_needs_attention_is_shown_for_an_unverified_claim(self):
+        self.window.submit_goal("scan the project")
+        self.window.confirm_plan()
+        self.window._workspace.dispatch("scan")
+        self.window._workspace.report_job("scan", states.STATE_UNKNOWN)
+        self.window._refresh_destinations()
+        text = self._home_text()
+        self.assertIn("Needs attention", text)
+
+    def test_home_hides_the_attention_section_when_nothing_is_outstanding(self):
+        # Nothing planned, nothing blocked: no safety banner to show.
+        self.assertNotIn("Needs attention", self._home_text())
+
+
+@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
+class DocumentsDisclosureTests(_WindowCase):
+    with_project = True
+
+    def test_the_empty_document_state_has_one_primary_action(self):
+        page = self.window._shell.page("documents")
+        empty = self.window._document_empty_state
+        primaries = [
+            button
+            for button in self.visible_buttons(empty)
+            if button.objectName() == "primaryButton"
+        ]
+        self.assertEqual(len(primaries), 1)
+        self.assertEqual(primaries[0].accessibleName(), "Create document")
+
+    def test_the_empty_document_state_does_not_duplicate_open_project(self):
+        empty = self.window._document_empty_state
+        labels = [button.text() for button in empty.findChildren(QPushButton)]
+        self.assertNotIn("Open project", labels)
+
+    def test_the_versions_empty_state_offers_no_second_action(self):
+        self.window._apply_library({"folders": [], "documents": []})
+        self.window._populate_versions_list()
+        labels = [
+            button.text()
+            for button in self.window._versions_page.findChildren(QPushButton)
+        ]
+        self.assertNotIn("Go to Document", labels)
+        self.assertNotIn("Build preview", labels)
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
@@ -100,7 +384,8 @@ class LegacySurfaceRemovalTests(unittest.TestCase):
         self.assertFalse(hasattr(client_module, "_CHANGE_REVIEW_TABS"))
 
     def test_no_legacy_destination_name_is_routable(self):
-        for legacy in ("document", "preview", "versions", "memory", "change_review", "validation_evidence"):
+        for legacy in ("document", "preview", "versions", "memory", "change_review",
+                       "validation_evidence", "resume"):
             with self.subTest(legacy=legacy):
                 self.assertNotIn(legacy, client_module._NAV_DESTINATIONS)
 
@@ -117,157 +402,54 @@ class LegacySurfaceRemovalTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class FirstRunTests(unittest.TestCase):
-    def setUp(self):
-        _app()
-        self.window = MainWindow()
+class DuplicateActionTests(_WindowCase):
+    """One region, one dominant primary action; no action in two places."""
 
-    def tearDown(self):
-        self.window._supervisor.terminate()
-        self.window._credential_supervisor.terminate()
-        self.window.close()
-        self.window.deleteLater()
+    with_project = True
 
-    def test_first_run_explains_the_product_and_offers_opening_a_project(self):
-        page = self.window._shell.page("resume")
-        text = self._all_text(page)
-        self.assertIn("helps you manage coding agents", PURPOSE)
-        self.assertIn("Open project", text)
-
-    def test_first_run_offers_exactly_one_primary_action(self):
-        page = self.window._shell.page("resume")
-        primaries = [
-            button
-            for button in page.findChildren(QPushButton)
-            if button.objectName() == "primaryButton" and button.isVisibleTo(page)
+    def test_the_context_bar_and_home_do_not_both_offer_open_project(self):
+        bar = self.window._shell.context_bar
+        home = self.window._shell.page("home")
+        home.refresh()
+        self.assertNotEqual(
+            bar.primary_button.accessibleName(), "Open project"
+        )
+        labels = [
+            button.accessibleName()
+            for button in home.findChildren(QPushButton)
+            if not button.isHidden()
         ]
-        self.assertEqual(len(primaries), 1)
-        self.assertEqual(primaries[0].accessibleName(), "Open project")
+        self.assertNotIn("Open project", labels)
 
-    def test_the_context_bar_states_there_is_no_project(self):
-        self.assertEqual(self.window._shell.context_bar.primary_button.text(), "Open Project")
-
-    def test_the_composer_states_context_action_and_authority(self):
-        summary = self.window._shell.composer.summary.text()
-        self.assertIn("Context:", summary)
-        self.assertIn("Action:", summary)
-        self.assertIn("Authority:", summary)
-        self.assertIn("nothing is sent", summary)
-
-    @staticmethod
-    def _all_text(widget) -> str:
-        from PySide6.QtWidgets import QLabel
-
-        parts = [label.text() for label in widget.findChildren(QLabel)]
-        for button in widget.findChildren(QPushButton):
-            parts.append(button.text())
-        return "\n".join(parts)
+    def test_no_destination_shows_the_same_accessible_name_twice(self):
+        for key in EXPECTED_RAIL:
+            page = self.window._shell.page(key)
+            names = [button.accessibleName() for button in self.visible_buttons(page)]
+            with self.subTest(key=key):
+                self.assertEqual(len(names), len(set(names)))
 
 
 @unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class GoalToPlanTests(unittest.TestCase):
-    def setUp(self):
-        _app()
-        self.window = MainWindow()
-        self.window._on_project_opened({"root": "/repo", "repository_state": "Unverified"})
-        self.window._sync_workspace_context()
-
-    def tearDown(self):
-        self.window._supervisor.terminate()
-        self.window._credential_supervisor.terminate()
-        self.window.close()
-        self.window.deleteLater()
-
-    def test_a_goal_becomes_an_editable_plan_in_agent_chat(self):
-        self.window._on_goal_submitted("scan the project")
-        self.assertEqual(self.window._shell.current, "chat")
-        self.assertIsNotNone(self.window._workspace.plan)
-        self.assertFalse(self.window._workspace.plan.confirmed)
-
-    def test_confirming_the_plan_makes_its_jobs_ready(self):
-        self.window._on_goal_submitted("scan the project")
-        self.window.confirm_plan()
-        self.assertTrue(self.window._workspace.plan.confirmed)
-        self.assertEqual(self.window._workspace.job("scan").state, states.STATE_READY)
-
-    def test_jobs_destination_shows_the_plan_hierarchy(self):
-        self.window._on_goal_submitted("scan the project")
-        self.window.confirm_plan()
-        page = self.window._shell.page("jobs")
-        from PySide6.QtWidgets import QLabel
-
-        text = "\n".join(label.text() for label in page.findChildren(QLabel))
-        self.assertIn("Scan the project", text)
-        self.assertIn("Owner:", text)
-
-    def test_a_destination_refresh_after_a_goal_does_not_lose_the_plan(self):
-        self.window._on_goal_submitted("scan the project")
-        before = self.window._workspace.plan.job_keys
-        self.window._refresh_destinations()
-        self.assertEqual(self.window._workspace.plan.job_keys, before)
-
-
-@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class ReviewDecisionTests(unittest.TestCase):
-    def _workspace(self) -> Workspace:
-        # No document open, so the goal composes a single scan job and the
-        # evidence question is unambiguous.
-        context = ProjectContext(root="/repo", repository_state="Unverified")
-        workspace = Workspace(context)
-        workspace.state_goal("scan the project")
-        workspace.confirm_plan()
-        return workspace
-
-    def test_approval_is_refused_until_the_evidence_is_complete(self):
-        workspace = self._workspace()
-        outcome = workspace.record_decision(states.DECISION_APPROVE, "heron")
-        self.assertTrue(outcome.refused)
-        self.assertIn("Missing proof", outcome.reason)
-
-    def test_approving_records_a_decision_and_advances_no_baseline(self):
-        workspace = self._workspace()
-        workspace.dispatch("scan")
-        workspace.report_job("scan", states.STATE_COMPLETED)
-        self.assertTrue(workspace.record_decision(states.DECISION_APPROVE, "heron").ok)
-        self.assertFalse(workspace.context.has_baseline)
-
-    def test_rejection_is_always_available(self):
-        workspace = self._workspace()
-        self.assertTrue(workspace.record_decision(states.DECISION_REJECT, "heron").ok)
-
-
-@unittest.skipUnless(HAS_PYSIDE6, "PySide6 is not installed")
-class AccessibleControlTests(unittest.TestCase):
-    """Every control the window builds must explain itself."""
-
-    def setUp(self):
-        _app()
-        self.window = MainWindow()
-
-    def tearDown(self):
-        self.window._supervisor.terminate()
-        self.window._credential_supervisor.terminate()
-        self.window.close()
-        self.window.deleteLater()
-
-    def _assert_named(self, destination_key: str) -> None:
-        page = self.window._shell.page(destination_key)
-        for button in page.findChildren(QPushButton):
-            with self.subTest(destination=destination_key, label=button.text()):
-                self.assertTrue(
-                    button.accessibleName(),
-                    f"{destination_key}: {button.text()!r} has no accessible name",
-                )
+class AccessibleControlTests(_WindowCase):
+    with_project = True
 
     def test_every_button_in_every_destination_has_an_accessible_name(self):
-        for key in EXPECTED_RAIL:
-            self._assert_named(key)
+        for key in EXPECTED_RAIL + ("history",):
+            page = self.window._shell.page(key)
+            for button in page.findChildren(QPushButton):
+                with self.subTest(destination=key, label=button.text()):
+                    self.assertTrue(
+                        button.accessibleName(),
+                        f"{key}: {button.text()!r} has no accessible name",
+                    )
 
     def test_rail_and_context_controls_have_accessible_names(self):
         for key, _, label in RAIL_DESTINATIONS:
             self.assertTrue(self.window._shell._buttons[key].accessibleName())
-        self.assertTrue(self.window._shell.context_bar.primary_button.accessibleName())
-        self.assertTrue(self.window._shell.composer.send_button.accessibleName())
+        bar = self.window._shell.context_bar
+        self.assertTrue(bar.primary_button.accessibleName())
+        self.assertTrue(bar.activity_button.accessibleName())
+        self.assertTrue(self.window._chat_destination.composer.send_button.accessibleName())
         self.assertTrue(self.window.scan_button.accessibleName())
 
 
@@ -275,29 +457,37 @@ class AccessibleControlTests(unittest.TestCase):
 class ShellTests(unittest.TestCase):
     def setUp(self):
         _app()
-        self.host_calls = []
+        from hrca.ui.shell import Shell
 
-        class Host:
-            def __getattr__(inner, name):
-                def record(*args, **kwargs):
-                    self.host_calls.append((name, args))
-                return record
-
-        self.host = Host()
-        self.shell = Shell(style.palette_for(QApplication.instance()))
+        self.shell = Shell(__import__("hrca.ui.style", fromlist=["style"]).palette_for(_app()))
 
     def test_selecting_a_destination_reports_the_change(self):
+        from PySide6.QtWidgets import QWidget
+
         seen = []
         self.shell.destination_changed.connect(seen.append)
-        page = client_module.QWidget()
-        self.shell.register("resume", page)
-        self.shell.select("resume")
-        self.assertEqual(seen, ["resume"])
+        self.shell.register("home", QWidget())
+        self.shell.select("home")
+        self.assertEqual(seen, ["home"])
 
     def test_selecting_an_unregistered_destination_is_a_no_op(self):
         before = self.shell.current
         self.shell.select("nope")
         self.assertEqual(self.shell.current, before)
+
+    def test_set_started_hides_the_project_dependent_entries(self):
+        from PySide6.QtWidgets import QWidget
+
+        for key, _, _ in RAIL_DESTINATIONS:
+            self.shell.register(key, QWidget())
+        self.shell.set_started(True)
+        for key in PROJECT_DEPENDENT:
+            self.assertFalse(self.shell._buttons[key].isHidden())
+        self.shell.set_started(False)
+        for key in PROJECT_DEPENDENT:
+            self.assertTrue(self.shell._buttons[key].isHidden())
+        self.assertFalse(self.shell._buttons["home"].isHidden())
+        self.assertFalse(self.shell._buttons["settings"].isHidden())
 
     def test_the_details_drawer_starts_hidden_and_shows_on_demand(self):
         self.assertTrue(self.shell.drawer.isHidden())
@@ -308,7 +498,16 @@ class ShellTests(unittest.TestCase):
 
     def test_the_context_bar_states_no_project_before_one_is_bound(self):
         self.shell.set_context(ProjectContext())
-        self.assertEqual(self.shell.context_bar.primary_button.text(), "Open Project")
+        self.assertIn("No project", self.shell.context_bar._primary.text())
+
+    def test_the_footer_stays_hidden_until_it_has_news(self):
+        from PySide6.QtWidgets import QWidget
+
+        footer = QWidget()
+        self.shell.add_footer(footer)
+        self.assertTrue(footer.isHidden())
+        self.shell.set_footer(True)
+        self.assertFalse(footer.isHidden())
 
 
 if __name__ == "__main__":

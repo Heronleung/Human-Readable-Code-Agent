@@ -28,6 +28,8 @@ NO_AGENT_NOTE = (
 class AgentsDestination(Destination):
     """Every role, its capabilities and its authority."""
 
+    #: Shown inside Work, which supplies the title and the "New task" action.
+    embedded = True
     title = "Agents"
     subtitle = "The bounded roles a plan can assign work to, and what each may touch."
 

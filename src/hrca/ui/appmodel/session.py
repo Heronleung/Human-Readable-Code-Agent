@@ -56,6 +56,9 @@ class Outcome:
 
 _OK = Outcome(True, "")
 
+#: How many session-opened project roots Home lists.
+RECENT_PROJECT_LIMIT = 5
+
 
 class Workspace:
     """The local presentation state for one desktop session."""
@@ -69,6 +72,7 @@ class Workspace:
         self._decision_note = ""
         self._message_seq = 0
         self._baseline_at_plan = ""
+        self._recent_projects: List[str] = []
 
     # -- context ------------------------------------------------------------
     @property
@@ -80,6 +84,26 @@ class Workspace:
         """Replace the bound context, staleness-checking any plan against it."""
         self._context = context
         self._apply_baseline_staleness()
+
+    @property
+    def recent_projects(self) -> Tuple[str, ...]:
+        """Return the roots opened in this session, most recent first.
+
+        This is session presentation state, not a persisted record: the
+        product has no recent-projects store, and this task adds none. It is
+        therefore empty on a fresh launch, and Home shows the recent-projects
+        section only when there is something to list.
+        """
+        return tuple(self._recent_projects)
+
+    def note_project(self, root: str) -> None:
+        """Record a project root the developer just opened."""
+        if not root:
+            return
+        self._recent_projects = [root] + [
+            path for path in self._recent_projects if path != root
+        ]
+        del self._recent_projects[RECENT_PROJECT_LIMIT:]
 
     # -- transcript ---------------------------------------------------------
     @property

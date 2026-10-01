@@ -93,7 +93,7 @@ class MemorySurfaceTestCase(unittest.TestCase):
         self.window = MainWindow()
         self.window.show()
         self._app.processEvents()
-        self.window._select_destination("resume")
+        self.window._select_destination("history")
         self.sent = []
         self.wire_backend()
 
@@ -227,15 +227,21 @@ class MemorySurfaceTestCase(unittest.TestCase):
 
 
 class NavigationTests(MemorySurfaceTestCase):
-    def test_the_memory_reader_is_rehomed_into_resume(self):
-        # UI-TRANSITION-2 removed the Memory rail destination: the recorded runs
-        # are the record set behind the resume, so the reader now lives inside
-        # the Resume destination rather than a parallel one.
+    def test_the_memory_reader_is_rehomed_into_project_history(self):
+        # UI-TRANSITION-2 removed the Memory rail destination; Form 2R moved the
+        # reader off the landing page. The recorded runs are the record set
+        # behind the resume, so the reader lives in Project history, one
+        # deliberate step behind Home's "Project history" entry.
         self.assertNotIn("memory", self.window._shell._buttons)
-        self.window._select_destination("resume")
-        self.assertEqual("resume", self.window._nav_destination)
+        self.assertNotIn("history", self.window._shell._buttons)
+        self.window._select_destination("history")
+        self.assertEqual("history", self.window._nav_destination)
         self.assertTrue(
-            self.window._shell.page("resume").isAncestorOf(self.window._memory_run_selector)
+            self.window._shell.page("history").isAncestorOf(self.window._memory_run_selector)
+        )
+        # Home is the door to it, and does not show the reader itself.
+        self.assertFalse(
+            self.window._shell.page("home").isAncestorOf(self.window._memory_run_selector)
         )
 
     def test_load_requests_documents_through_the_protocol(self):

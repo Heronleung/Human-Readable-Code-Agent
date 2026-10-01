@@ -1,70 +1,69 @@
 # The PrimaAgent workspace
 
-PrimaAgent helps you manage coding agents. You state a goal, it proposes an
-editable plan, you confirm what may run, you watch the work honestly, you
-review the evidence, and you decide. It reads your repository. It changes
-nothing without your explicit confirmation.
+PrimaAgent helps you manage coding agents. You open a project, state a goal,
+get an editable plan, confirm what may run, watch the work honestly, review the
+evidence, and decide. It reads your repository. It changes nothing without your
+explicit confirmation.
 
-This page covers every screen and every option. You should not need it to get
-started — the app explains itself — but it is the complete reference.
+The interface shows you only the next useful decision. Advanced records,
+capability detail and diagnostics stay available, but they appear when they are
+relevant rather than all at once.
 
 ## First run
 
-With no project open, PrimaAgent opens on **Resume** and states its purpose in
-one line, with one primary action: **Open project**. Choose the repository
-root you want the workspace bound to.
+With no project open, PrimaAgent shows exactly one path:
 
-After it opens, the **context bar** across the top shows:
+* a short statement of what the product is for;
+* any projects you opened earlier in this session;
+* **one** primary action: **Open project**;
+* **Settings**, anchored at the foot of the rail for provider setup.
 
-* the repository name and its reported state;
-* the accepted baseline (or `No accepted baseline yet`);
-* the open document and its revision;
-* the **safest next action** as a single button, which changes as your work
-  advances.
+Nothing else is on screen. There is no goal field, no scan action, no provider
+warning, no status footer and no inactive navigation: a project-dependent
+surface appears only once there is a project to act on.
 
-The composer at the bottom always states, before you send anything:
+## After you open a project
 
-```
-Context: …   ·   Action: propose an editable plan   ·   Authority: read only — nothing is sent
-```
-
-## The seven destinations
-
-The thin rail on the left has exactly seven destinations. Every surface the
-product keeps is reachable from one of them.
+The rail carries four primary destinations, with Settings anchored separately:
 
 | Destination | What it is for |
 | --- | --- |
-| **Resume** | Where the work stands: the baseline, what changed, active/blocked/failed jobs, pending decisions, unverified claims, and one recommended next action. Also hosts the recorded Memory runs — the records behind the resume. |
-| **Agent Chat** | The conversation with the coordinator, and the editable **Plan card**. |
-| **Jobs** | Every job from the confirmed plan: owner, baseline, dependencies, progress, blocker and terminal state, with the controls it actually supports. |
-| **Agents** | The bounded roles a plan can assign work to, what each may touch, and why an unavailable role is unavailable. |
-| **Review** | Changed artifacts, evidence, missing proof, conflicts and acceptance coverage, then Approve / Request changes / Reject / Escalate. Also hosts the document's candidate preview and the project's scan evidence. |
-| **Documents** | The document library, the working-document editor, and the accepted versions. |
-| **Settings** | Provider readiness and credentials, appearance, workspace, privacy and about. |
+| **Home** | Continue, Needs attention, Recent changes — and Project history. |
+| **Agent Chat** | The conversation, the editable Plan card, and the one composer. |
+| **Work** | Jobs, Agents and Review, shown when they have something to say. |
+| **Documents** | The document library, the editor and the accepted versions. |
+| **Settings** | Provider readiness and credentials, appearance, workspace, privacy. |
+
+Jobs, Agents and Review are **Work's contextual views**, so every functional
+surface is at most two interactions away: one click to Work, one to the view.
+
+Across the top, the **context bar** shows the repository and its reported
+state, the accepted baseline and the open document, one concise **authority**
+indicator, and the single safest next action. A **New task** action on each
+non-Chat page returns you to Agent Chat.
 
 ## The workflow
 
-1. **State a goal** in the composer. Nothing is sent. PrimaAgent proposes an
-   editable plan and opens **Agent Chat**.
-2. **Shape the plan.** The Plan card lists every job with its owner, capability,
-   requested authority, risk and acceptance criteria. Untick a job to leave it
-   out. The card tells you exactly which signals produced the proposal, and it
-   refuses to be confirmed while anything about it is incoherent.
+1. **State a goal** in Agent Chat's composer. Nothing is sent. PrimaAgent
+   proposes an editable plan.
+2. **Shape the plan.** The Plan card lists every job with its owner,
+   capability, requested authority, risk and acceptance criteria. Untick a job
+   to leave it out. This is the one place the full authority is shown.
 3. **Confirm the plan.** Confirming makes the jobs dispatchable. It runs
    nothing and sends nothing by itself.
-4. **Dispatch jobs** from **Jobs**. A job whose authority is protected — a
-   provider request, a credential use, a repository write, a destructive action
-   — asks you to confirm that *specific effect* first, in its own dialog, every
-   time. Cancelling dispatches nothing.
+4. **Dispatch jobs** from **Work → Jobs**. A job whose authority is protected —
+   a provider request, a credential use, a repository write, a destructive
+   action — asks you to confirm that *specific effect* first, every time.
+   Cancelling dispatches nothing.
 5. **Watch honestly.** A job can be draft, ready, running, paused, blocked,
    completed, failed, cancelled, stale or unknown. `unknown` means the outcome
-   could not be observed; it is never rounded up to success. If the accepted
+   could not be observed and is never rounded up to success. If the accepted
    baseline moves, jobs planned against the old one become `stale` rather than
    being silently re-bound.
-6. **Review** the evidence and record a decision. Approving is disabled — with
-   the reason stated — while proof is missing or a conflict stands.
-7. **Return** any time. **Resume** reconstructs where you are and names the one
+6. **Review** in **Work → Review** once a job has produced evidence. Approval
+   is disabled — with the reason stated — while proof is missing or a conflict
+   stands.
+7. **Return** any time. **Home** reconstructs where you are and names the one
    next action.
 
 ## What each state means
@@ -72,7 +71,7 @@ product keeps is reachable from one of them.
 | State | Meaning |
 | --- | --- |
 | Draft | In the plan, not yet confirmed. |
-| Ready | Confirmed; waiting for you to dispatch it, and its dependencies are done. |
+| Ready | Confirmed; waiting for you to dispatch it. |
 | Running | Dispatched. |
 | Paused | Stopped by you. Only offered where the capability supports it. |
 | Blocked | Cannot proceed; the recorded reason is shown. |
@@ -94,39 +93,48 @@ product keeps is reachable from one of them.
 Moving the accepted baseline is always a separate, explicit step in
 **Documents**. No decision you record here does it for you.
 
-## Every option, and where it lives
+## What is deliberately not on screen
 
-* **Open project** — context bar (first run) or Resume.
-* **Run read-only scan** — context bar, once a project is open.
-* **Propose a plan** — the composer, from any destination.
-* **Confirm plan** — the Plan card in Agent Chat, or the plan summary in Jobs.
-* **Dispatch / Cancel** — a job row in Jobs. Dispatch appears only before a job
-  has run; Cancel only where the capability can be interrupted.
-* **Pause / Resume / Reassign** — a job row, **only** where the capability
-  supports the control. A capability that cannot be paused offers no pause
-  button at all rather than one that does nothing.
-* **Review decisions** — the Decision card in Review.
-* **Document actions** — Save, the contextual preview action, and the accepted
-  version list, in Documents.
-* **Library actions** — New document, New folder, Rename, Move, Trash and
-  Restore, in the Documents library. Trash stays recoverable.
-* **Provider, credentials, appearance, workspace, privacy** — Settings.
+These are available, not removed — they appear when relevant:
+
+| Surface | Where it lives |
+| --- | --- |
+| The Developer Memory reader (Documents, Search, Resume, Corrections) | **Home → Project history**, read-only |
+| The capability catalogue | **Work → Agents**, once a plan assigns a role |
+| Review detail | **Work → Review**, once a job has produced evidence |
+| Diagnostics and the recorded status | The **Activity** action in the context bar |
+| Provider readiness | The context bar, as a warning, only when a dispatch needs a provider that is not configured |
+| The scan action | The context bar, once a project is open |
+
+**Needs attention** on Home is never hidden. A blocking risk, a failed or
+blocked job, a pending approval and an unverified claim always appear there
+regardless of anything else on the page. Progressive disclosure reduces
+irrelevant controls, never safety information.
+
+## Documents
+
+One primary action per state, and never the same action twice:
+
+* no document selected → **Create document**;
+* a document selected → Save, and its one contextual preview action;
+* the versions list carries no action of its own — the editor's footer already
+  owns it, and opening a project belongs to the context bar.
 
 ## Accessibility
 
 * Every control has a visible label or an accessible name, and a disabled
-  control always states why it is disabled.
+  control states why it is disabled.
 * State never depends on colour: every state chip shows a glyph and a word.
 * The rail is keyboard reachable with a visible focus ring, and the tab order
-  follows the visual order (rail, context bar, content, composer, status).
+  follows the visual order.
 * The window is usable at 1024×640 and 1920×1080 without clipping a primary
   action.
 
 ## What PrimaAgent will not do
 
 * It does not run autonomous agents. A role may use only the capabilities
-  listed under **Agents**, and nothing reaches beyond the authority those
-  capabilities imply.
+  listed under **Work → Agents**, and nothing reaches beyond the authority
+  those capabilities imply.
 * It does not write to your repository, adopt a version, merge, deploy, or use
   a credential without its own explicit confirmation.
 * It never shows an API key. The key is entered only in the native secure

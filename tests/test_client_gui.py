@@ -37,7 +37,7 @@ try:
     from hrca.ui import style
     from hrca.ui.widgets import PythonHighlighter
     from hrca.ui.client import BackendSupervisor, CodeView, MainWindow, _NAV_LABELS, _SETTINGS_ACTIVE_LABEL, _SETTINGS_ADD_PROFILE, _SETTINGS_NO_PROFILES, _SETTINGS_RENAME, _SETTINGS_REPLACE
-    from hrca.boundary.client_core import CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, PROVIDER_STATUS_PENDING, VALIDATION_OK, build_open_project_request, build_request, resolve_credential_host_command
+    from hrca.boundary.client_core import CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, PROVIDER_STATUS_PENDING, STATE_BLOCKED, VALIDATION_OK, build_open_project_request, build_request, resolve_credential_host_command
 
     HAS_PYSIDE6 = True
 except ImportError:  # pragma: no cover - exercised in the no-Qt environment
@@ -194,7 +194,9 @@ class MainWindowLayoutTests(unittest.TestCase):
                     window.show()
                     QApplication.processEvents()
                     self.assertIs(window._palette, palette)
-                    self.assertEqual(window._shell.stack.count(), 7)
+                    # Four rail groups, anchored Settings, and the off-rail
+                    # Project history page Home opens.
+                    self.assertEqual(window._shell.stack.count(), 6)
 
     def test_main_window_uses_supplied_palette(self):
         for palette in (style.LIGHT_PALETTE, style.DARK_PALETTE):
@@ -202,14 +204,22 @@ class MainWindowLayoutTests(unittest.TestCase):
                 window = MainWindow(palette=palette)
                 self.assertIs(window._palette, palette)
 
-    def test_the_shell_composer_is_the_single_chat_input(self):
+    def test_agent_chat_owns_the_single_composer(self):
+        from hrca.ui.components import Composer
+
         window = MainWindow()
-        # The legacy disabled chat placeholder is gone; the shell composer is
-        # the one chat input, and it is enabled because it only proposes a plan.
+        # The legacy disabled chat placeholder is gone, and the shell no longer
+        # carries a global composer: Agent Chat owns the one input, and it is
+        # enabled because proposing a plan sends nothing.
         self.assertFalse(hasattr(window, "_chat_composer"))
         self.assertFalse(hasattr(window, "_chat_send"))
-        self.assertTrue(window._shell.composer.send_button.isEnabled())
-        self.assertIn("nothing is sent", window._shell.composer.summary.text())
+        self.assertFalse(hasattr(window._shell, "composer"))
+        chat = window._chat_destination
+        self.assertIsInstance(chat.composer, Composer)
+        self.assertTrue(chat.composer.send_button.isEnabled())
+        for key in ("home", "work", "documents", "settings"):
+            with self.subTest(destination=key):
+                self.assertEqual(window._shell.page(key).findChildren(Composer), [])
 
     def test_secondary_surfaces_present(self):
         window = MainWindow()
@@ -244,17 +254,21 @@ class MainWindowLayoutTests(unittest.TestCase):
     def test_the_rail_is_the_primary_navigation(self):
         window = MainWindow()
         self.assertIsInstance(window._shell.stack, QStackedWidget)
-        self.assertEqual(window._shell.stack.count(), 7)
-        # Resume is the landing destination.
-        self.assertEqual(window._nav_destination, "resume")
-        self.assertTrue(window._shell._buttons["resume"].isChecked())
+        self.assertEqual(window._shell.stack.count(), 6)
+        # Home is the landing destination.
+        self.assertEqual(window._nav_destination, "home")
+        self.assertTrue(window._shell._buttons["home"].isChecked())
 
-    def test_the_workspace_opens_on_resume_with_every_destination_visible(self):
+    def test_first_use_offers_home_and_settings_only(self):
         window = MainWindow()
-        self.assertEqual(window._nav_destination, "resume")
-        # There is no collapsed group: every destination is always visible.
-        for key in window._shell._buttons:
-            self.assertFalse(window._shell._buttons[key].isHidden())
+        self.assertEqual(window._nav_destination, "home")
+        # Project-dependent entries stay hidden until there is a project, so
+        # first use is one obvious path rather than four inactive choices.
+        for key in ("chat", "work", "documents"):
+            with self.subTest(key=key):
+                self.assertTrue(window._shell._buttons[key].isHidden())
+        self.assertFalse(window._shell._buttons["home"].isHidden())
+        self.assertFalse(window._shell._buttons["settings"].isHidden())
 
     def test_there_is_no_advanced_disclosure(self):
         window = MainWindow()
@@ -262,17 +276,18 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertFalse(hasattr(window, "_nav_group_container"))
 
 
-    def test_scan_button_disabled_until_project_open(self):
+    def test_scan_action_appears_only_once_a_project_is_open(self):
         window = MainWindow()
-        self.assertFalse(window.scan_button.isEnabled())
+        self.assertTrue(window.scan_button.isHidden())
         window._on_project_opened({"root": "/some/root", "repository_state": "Unverified"})
+        self.assertFalse(window.scan_button.isHidden())
         self.assertTrue(window.scan_button.isEnabled())
 
     def test_scan_button_tooltip_is_explanatory(self):
         window = MainWindow()
         self.assertEqual(
             window.scan_button.toolTip(),
-            "Open a project to run a local read-only scan.",
+            "Run a local read-only scan of the open project.",
         )
 
     def test_scan_button_dispatches_local_read_only_scan(self):
@@ -324,7 +339,7 @@ class MainWindowLayoutTests(unittest.TestCase):
     def _assert_geometry(self, palette, width, height):
         window = self._laid_out_window(palette, width, height)
 
-        # The workspace opens on Resume, which is laid out at every size.
+        # The workspace opens on Home, which is laid out at every size.
         self.assertEqual(window._shell.stack.currentIndex(), 0)
 
         # The Documents destination holds a full-height, usable editor.
@@ -333,8 +348,8 @@ class MainWindowLayoutTests(unittest.TestCase):
         self.assertGreater(window._document_editor.width(), 0)
         self.assertGreater(window._document_editor.height(), 0)
 
-        # The rail's Resume destination is laid out (a labelled column).
-        self.assertGreater(window._shell._buttons["resume"].width(), 0)
+        # The rail's Home destination is laid out (a labelled column).
+        self.assertGreater(window._shell._buttons["home"].width(), 0)
 
         # The status bar remains one fixed-height row at the bottom.
         status_bar = window.findChild(QWidget, "statusBar")
@@ -393,7 +408,11 @@ class MainWindowLayoutTests(unittest.TestCase):
         window = MainWindow()
         window._root = "/home/heron/projects/Human-Readable-Code-Agent/" + "x" * 120
         window._update_status()
-        # Mode A collapses the diagnostic row by default; Details reveals it.
+        # The footer is hidden at idle and appears for a warning or failure;
+        # its diagnostic row is collapsed until Details is toggled.
+        self.assertTrue(window._shell._footer.isHidden())
+        window._set_status(STATE_BLOCKED, "diagnostics under test")
+        self.assertFalse(window._shell._footer.isHidden())
         self.assertTrue(all(lbl.isHidden() for lbl in window._diagnostic_labels))
         window._status_details_button.setChecked(True)
         self.assertTrue(all(not lbl.isHidden() for lbl in window._diagnostic_labels))
@@ -621,11 +640,17 @@ class NavigationRailTests(unittest.TestCase):
     def test_nav_rail_hierarchy(self):
         window = MainWindow()
         self.assertIsInstance(window._shell.stack, QStackedWidget)
-        self.assertEqual(window._shell.stack.count(), 7)
+        # Four rail groups + anchored Settings + the off-rail history page.
+        self.assertEqual(window._shell.stack.count(), 6)
         self.assertEqual(
             set(window._shell._buttons),
-            {"resume", "chat", "jobs", "agents", "review", "documents", "settings"},
+            {"home", "chat", "work", "documents", "settings"},
         )
+        # Jobs, Agents and Review are Work's contextual views, not rail entries.
+        for key in ("jobs", "agents", "review"):
+            with self.subTest(key=key):
+                self.assertNotIn(key, window._shell._buttons)
+        self.assertIsNotNone(window._shell.page("history"))
         # The Advanced disclosure and its collapsed group are gone.
         self.assertFalse(hasattr(window, "_advanced_button"))
         self.assertFalse(hasattr(window, "_nav_group_container"))
@@ -649,9 +674,10 @@ class NavigationRailTests(unittest.TestCase):
         ):
             self.assertFalse(hasattr(window, method), f"legacy method {method} remains")
 
-    def test_all_seven_destinations_are_always_visible(self):
+    def test_every_rail_group_is_visible_once_started(self):
         window = self._laid_out(style.LIGHT_PALETTE, 1360, 840)
-        for key in ("resume", "chat", "jobs", "agents", "review", "documents", "settings"):
+        window._on_project_opened({"root": "/some/root", "repository_state": "Unverified"})
+        for key in ("home", "chat", "work", "documents", "settings"):
             with self.subTest(key=key):
                 self.assertFalse(window._shell._buttons[key].isHidden())
 
@@ -660,7 +686,7 @@ class NavigationRailTests(unittest.TestCase):
     def test_destination_selection_switches_stack_and_checks_button(self):
         window = MainWindow()
         for index, key in enumerate(
-            ("resume", "chat", "jobs", "agents", "review", "documents", "settings")
+            ("home", "chat", "work", "documents", "settings")
         ):
             with self.subTest(key=key):
                 window._select_destination(key)
@@ -699,11 +725,12 @@ class NavigationRailTests(unittest.TestCase):
     def test_review_rehomes_the_retained_technical_surfaces(self):
         window = MainWindow()
         # The plan/diff projection, the raw candidate metadata and the scan
-        # evidence are all reachable from the Review destination now.
+        # evidence are all reachable from Review, which Work groups.
         for key in ("plan", "diff", "problems", "tests", "evidence"):
             self.assertIn(key, window._views)
         self.assertIsNotNone(window._document_result)
-        review = window._shell.page("review")
+        review = window._review_destination
+        self.assertIs(window._shell.page("work"), window._work_destination)
         for view in window._views.values():
             with self.subTest(view=id(view)):
                 self.assertTrue(review.isAncestorOf(view))
