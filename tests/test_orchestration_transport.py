@@ -7,10 +7,17 @@ NDJSON on stdin/stdout, and every request crosses that boundary.
 
 This module exercises that path end to end. It spawns the real
 :class:`~hrca.ui.client.BackendSupervisor`, roots the child's app data at an
-isolated temporary directory through the supported ``XDG_DATA_HOME``
-convention (no code path is added or changed to make this testable), and drives
+isolated temporary directory through the platform's own app-data convention
+variables (no code path is added or changed to make this testable), and drives
 goal → plan → confirmation → run → review → decision, then disposes of both the
 backend process and the window, recreates them, and reopens.
+
+The isolation has to name *both* convention variables, because
+:func:`hrca.core.storage.app_data_dir` picks one by platform and ignores the
+other — ``%LOCALAPPDATA%`` on Windows, ``$XDG_DATA_HOME`` on POSIX. Injecting
+only the POSIX variable leaves every test on Windows writing to the real
+per-user store, where the execution counts below then accumulate across tests.
+``test_the_test_store_is_isolated_from_the_real_app_data_location`` pins that.
 
 Two things are measured rather than asserted by inspection:
 
@@ -64,10 +71,18 @@ class SupervisedTransportTests(unittest.TestCase):
         self.data_home = tempfile.mkdtemp(prefix="orcht-data-")
         self._write("app.py", _CLEAN)
         self._write("broken.py", _BROKEN)
-        # The child inherits this, so the backend roots its store here and
-        # nowhere near the selected project.
+        # The child inherits this, so the backend roots its store under this
+        # test's own temporary directory and nowhere near the selected project.
+        #
+        # Both convention variables are injected because the platform picks one:
+        # :func:`hrca.core.storage.app_data_dir` reads ``%LOCALAPPDATA%`` on
+        # Windows and ``$XDG_DATA_HOME`` on POSIX, and ignores the other. Setting
+        # only the POSIX one leaves every test on Windows sharing the real
+        # per-user store, where the execution counts below then accumulate
+        # across tests instead of counting a single test's own runs.
         self._env = mock.patch.dict(
-            os.environ, {"XDG_DATA_HOME": self.data_home}
+            os.environ,
+            {"XDG_DATA_HOME": self.data_home, "LOCALAPPDATA": self.data_home},
         )
         self._env.start()
         self.window = None
@@ -142,13 +157,29 @@ class SupervisedTransportTests(unittest.TestCase):
             storage.app_data_dir(), "orchestration", "orchestration.db"
         )
 
+    @property
+    def _project_id(self) -> str:
+        """This test's own project identity, exactly as the boundary derives it."""
+        return identity.workspace_id_for(
+            os.path.realpath(os.path.abspath(self.root))
+        )
+
     def _run_count(self) -> int:
-        """Count claimed executions straight from the store (test-only)."""
+        """Count the executions *this test's project* claimed (test-only).
+
+        Scoped by project on purpose: an unscoped ``COUNT(*)`` answers "how many
+        rows are in this store", which is only the same question while the store
+        happens to hold one project. The assertion this feeds is about one
+        test's own dispatches, so it asks about them directly.
+        """
         if not os.path.exists(self._database):
             return 0
         connection = sqlite3.connect(self._database)
         try:
-            row = connection.execute("SELECT COUNT(*) FROM agent_run").fetchone()
+            row = connection.execute(
+                "SELECT COUNT(*) FROM agent_run WHERE project_id = ?",
+                (self._project_id,),
+            ).fetchone()
             return int(row[0]) if row else 0
         finally:
             connection.close()
@@ -183,6 +214,18 @@ class SupervisedTransportTests(unittest.TestCase):
         return self._workflow(window)
 
     # -- acceptance ---------------------------------------------------------
+    def test_the_test_store_is_isolated_from_the_real_app_data_location(self):
+        # The regression guard for the Windows leak: this asserts the resolver
+        # lands inside this test's own temporary directory, which it only does
+        # when the platform's own convention variable was injected. Injecting
+        # just the POSIX one passes on Linux and silently shares the real store
+        # on Windows.
+        resolved = storage.app_data_dir()
+        self.assertTrue(
+            resolved.startswith(self.data_home),
+            f"the test store rooted at {resolved}, outside {self.data_home}",
+        )
+
     def test_the_supervised_transport_completes_the_persisted_workflow(self):
         self.window = self._start()
         flow = self._drive_to_review(self.window)
