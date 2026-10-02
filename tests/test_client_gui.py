@@ -1058,14 +1058,25 @@ class ProviderReadinessGuiTests(unittest.TestCase):
                 "store_available": True,
             }
         )
-        self.assertIn("DeepSeek is configured locally", window._provider_status_label.text())
+        # ``fullText`` is the complete message. The chip is an ElidedLabel with
+        # a bounded width, so its *rendered* text is width-dependent: once a
+        # layout pass has given it a width the message is elided to fit, and on
+        # a host whose font metrics make the message wider than the allocated
+        # space the rendered form is a truncated one. Asserting the rendered
+        # text makes the test depend on the host's font, which is not what the
+        # test is about.
+        self.assertIn(
+            "DeepSeek is configured locally", window._provider_status_label.fullText()
+        )
         self.assertEqual(window._provider_model, "deepseek-flash")
         self.assertTrue(window._provider_credential_present)
 
     def test_profiles_error_sets_provider_status_failed(self):
         window = MainWindow()
         window._on_profiles_error("invalid_config")
-        self.assertIn("Provider check failed", window._provider_status_label.text())
+        # The complete message, not the elided rendering — see the note in
+        # ``test_profiles_ready_updates_provider_status_region``.
+        self.assertIn("Provider check failed", window._provider_status_label.fullText())
 
     def test_show_credential_result_stored_updates_status(self):
         window = MainWindow()
@@ -1351,6 +1362,13 @@ class SettingsDialogTests(unittest.TestCase):
         # centred, and stack downward with identical fixed gaps.
         window = MainWindow()
         self._dialog(window)
+        # Entering Settings asks the backend for the saved profiles. With the
+        # real supervisor that reply is asynchronous, and whenever it lands
+        # after the profiles below are injected it replaces them with the
+        # backend's list and pops the very cards this test indexes. The fake
+        # send keeps the test hermetic, exactly as the sibling tests in this
+        # class already do; the card layout under test is unaffected.
+        self._fake_send(window)
         window._select_destination("settings")
         window.show()
         window._settings_surface.show()
