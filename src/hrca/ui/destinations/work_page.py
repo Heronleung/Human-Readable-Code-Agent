@@ -130,6 +130,17 @@ class WorkDestination(Destination):
             for job in plan.jobs
         )
 
+        # A persisted workflow is a plan too, and after a desktop restart it is
+        # the *only* one: the local model is empty while the backend still holds
+        # the plan, its job and its evidence. Without this, reopening the app
+        # would hide Work's views on a project that plainly has work in it.
+        persisted = self.host.persisted_plan()
+        if isinstance(persisted, dict):
+            review = self.host.persisted_review() or {}
+            has_plan = True
+            assigns_roles = True
+            has_evidence = bool(review.get("run_outcome"))
+
         relevant = {
             "jobs": has_plan,
             "agents": assigns_roles,

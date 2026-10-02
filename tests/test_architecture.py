@@ -439,6 +439,45 @@ class ClientArchitectureTests(unittest.TestCase):
                     f"{sorted(imported & _MEMORY_SEAM)}",
                 )
 
+    def test_the_desktop_reaches_orchestration_only_through_the_boundary(self):
+        # ORCH-BACKBONE-1B. The persisted workflow is owned by the backend and
+        # reached over the NDJSON boundary. A desktop module that imported the
+        # orchestration package would hold a second copy of records the backend
+        # owns — the exact shortcut the persisted slice exists to remove — and
+        # one that imported the scanner or the store would gain a filesystem
+        # authority the client must never have.
+        import glob
+
+        offenders = []
+        for path in sorted(glob.glob("src/hrca/ui/**/*.py", recursive=True)):
+            with open(path, encoding="utf-8") as handle:
+                tree = ast.parse(handle.read())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    if module.startswith("hrca.orchestration") or module.startswith(
+                        ("..orchestration", ".orchestration")
+                    ):
+                        offenders.append((path, module))
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.startswith("hrca.orchestration"):
+                            offenders.append((path, alias.name))
+        self.assertEqual([], offenders, f"the desktop imports the orchestration seam: {offenders}")
+
+    def test_the_orchestration_package_is_backend_only(self):
+        # It owns storage and runs the scanner, so it must reach no Qt, no
+        # desktop module, no provider, no credential and no command.
+        import glob
+
+        forbidden = ("PySide6", "hrca.ui", "subprocess", "socket", "requests", "urllib")
+        for path in sorted(glob.glob("src/hrca/orchestration/**/*.py", recursive=True)):
+            with open(path, encoding="utf-8") as handle:
+                source = handle.read()
+            for name in forbidden:
+                with self.subTest(path=path, forbidden=name):
+                    self.assertNotIn(name, source)
+
     def test_client_modules_do_not_import_capture_seam(self):
         # Capture is a local, explicitly configured operation. The desktop
         # shell must not reach it, so no client can start a capture.

@@ -467,6 +467,34 @@ class RecoveryTests(_Harness):
         self.assertEqual(self.scans, scans)
         self.assertTrue(any("unknown" in reason.lower() for reason in flow["review"]["blocking"]))
 
+    def test_an_uncertain_owner_is_never_recovered(self):
+        # A run with no recorded executor cannot be proven dead, so a reader
+        # leaves it exactly as it is. "Execution outcome unknown" is never
+        # upgraded to a terminal state on an absence of evidence, and the run
+        # is never replayed.
+        plan, _confirmed, _run = self.to_decision_point()
+        state = service.read_workflow(store_base=self.store_base, root=self.root)
+        from hrca.orchestration import store as store_mod
+
+        store = store_mod.OrchestrationStore(self.store_base)
+        project_id = service.project_id_for(self.root)
+        store.claim_run(
+            domain.AgentRun(
+                run_id="run:unowned", project_id=project_id, job_id=state["job_id"],
+                plan_id=plan["plan_id"], plan_revision=1, attempt=0,
+                idempotency_key="k-unowned", executor=domain.EXECUTOR_LOCAL_SCANNER,
+                executor_version="1.1.0", manifest_id="manifest:x",
+                outcome=domain.RUN_RUNNING, started_at="t", executor_pid=0,
+            ),
+            idempotency_key="k-unowned", now="t",
+        )
+        scans = self.scans
+        service.read_workflow(store_base=self.store_base, root=self.root)
+        record = store.read_state(project_id)
+        unowned = [r for r in record["runs"] if r.run_id == "run:unowned"][0]
+        self.assertEqual(unowned.outcome, domain.RUN_RUNNING)
+        self.assertEqual(self.scans, scans)
+
     def test_a_live_executor_is_never_rewritten_by_a_reader(self):
         self.to_decision_point()
         state = service.read_workflow(store_base=self.store_base, root=self.root)

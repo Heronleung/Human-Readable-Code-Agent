@@ -237,9 +237,15 @@ class MainWindowLayoutTests(unittest.TestCase):
         window._send = fake_send
         window._on_project_opened({"root": "/some/root", "repository_state": "Unverified"})
         self.assertEqual(window._root, "/some/root")
-        # Opening a project binds the workspace root and requests nothing: the
-        # tree view it used to load is not part of this product surface.
-        self.assertEqual(sent, [])
+        # Opening a project binds the workspace root and reads back whatever
+        # persisted orchestration workflow the backend already holds for it, so
+        # a reopen reconstructs the same records. It does not load a tree, run a
+        # scan, read a document or dispatch anything: the tree view it used to
+        # load is not part of this product surface.
+        self.assertEqual(
+            [request["action"] for request in sent],
+            [contract.ACTION_ORCHESTRATION_READ],
+        )
 
 
     def test_scan_renders_secondary_surfaces(self):

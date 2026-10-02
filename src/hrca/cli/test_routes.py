@@ -367,6 +367,8 @@ ROUTE_MODULES: Dict[str, Tuple[str, ...]] = {
         "test_memory_store",
         "test_mode_a_visual_contract",
         "test_orchestration",
+        "test_orchestration_desktop",
+        "test_orchestration_transport",
         "test_planning",
         "test_proposal",
         "test_provider",

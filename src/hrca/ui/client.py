@@ -105,6 +105,7 @@ from .widgets import (
     _json_text,
 )
 from .appmodel import authority as app_authority
+from .appmodel import states as app_states
 from .appmodel.context import ProjectContext
 from .appmodel.session import Workspace
 from .shell import WORK_VIEWS, Shell
@@ -117,7 +118,7 @@ from .destinations.jobs_page import JobsDestination
 from .destinations.review_page import ReviewDestination
 from .destinations.settings_page import SettingsDestination
 from .destinations.work_page import WorkDestination
-from ..boundary.client_core import PROVIDER_STATUS_CONFIGURED, PROVIDER_STATUS_FAILED, PROVIDER_STATUS_MISSING_CREDENTIAL, PROVIDER_STATUS_PENDING, PROVIDER_STATUS_UNAVAILABLE, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, STATE_BLOCKED, STATE_FAILED, STATE_IDLE, STATE_RUNNING, STATE_SUCCESS, STATE_UNAVAILABLE, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, LineBuffer, ResponseRouter, credential_action_message, profile_failure_message, build_add_profile_request, build_delete_profile_request, build_get_profiles_request, build_manage_credential_request, build_open_project_request, build_remove_credential_request, build_rename_profile_request, build_request, build_scan_request, build_set_active_profile_request, default_fixture_root, operation_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, build_create_document_request, build_open_document_request, build_save_document_request, build_create_candidate_request, build_adopt_candidate_request, build_list_versions_request, build_restore_version_request, document_failure_message, document_kind_label, format_document_state, format_version_list, build_preview_request, format_preview, preview_badge, preview_state_label, preview_state_message, build_get_library_request, build_create_folder_request, build_rename_item_request, build_move_item_request, build_trash_item_request, build_restore_item_request, build_prepare_rule_delta_request, build_interpret_rule_delta_request, format_delta_disclosure, format_delta_interpret_result, delta_interpret_state_label, build_get_memory_documents_request, build_get_memory_record_request, memory_run_rows, claim_rows, record_detail_rows, memory_record_kind_label, memory_state_label, memory_origin_label, MEMORY_QUERY_FACETS, MEMORY_QUERY_ORDERS, MEMORY_ORDER_RELEVANCE, MEMORY_ORDER_RECORDED_TIME, MEMORY_MAX_FILTERS, MEMORY_UNSUPPORTED_FACETS, MEMORY_FACET_LABELS, MEMORY_ORDER_LABELS, memory_facet_label, build_search_memory_request, build_memory_resume_request, memory_hit_rows, memory_resume_view, MEMORY_REVIEW_OPERATIONS, MEMORY_OPERATION_LABELS, memory_operation_label, memory_correction_state_label, memory_correction_source_id, memory_review_view, build_memory_history_request, build_memory_effective_request, build_memory_correction_request
+from ..boundary.client_core import PROVIDER_STATUS_CONFIGURED, PROVIDER_STATUS_FAILED, PROVIDER_STATUS_MISSING_CREDENTIAL, PROVIDER_STATUS_PENDING, PROVIDER_STATUS_UNAVAILABLE, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, STATE_BLOCKED, STATE_FAILED, STATE_IDLE, STATE_RUNNING, STATE_SUCCESS, STATE_UNAVAILABLE, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, CREDENTIAL_ACTION_PENDING, CREDENTIAL_MASK, PROFILE_ACTION_MESSAGES, LineBuffer, ResponseRouter, credential_action_message, profile_failure_message, build_add_profile_request, build_delete_profile_request, build_get_profiles_request, build_manage_credential_request, build_open_project_request, build_remove_credential_request, build_rename_profile_request, build_request, build_scan_request, build_set_active_profile_request, default_fixture_root, operation_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, build_create_document_request, build_open_document_request, build_save_document_request, build_create_candidate_request, build_adopt_candidate_request, build_list_versions_request, build_restore_version_request, document_failure_message, document_kind_label, format_document_state, format_version_list, build_preview_request, format_preview, preview_badge, preview_state_label, preview_state_message, build_get_library_request, build_create_folder_request, build_rename_item_request, build_move_item_request, build_trash_item_request, build_restore_item_request, build_prepare_rule_delta_request, build_interpret_rule_delta_request, format_delta_disclosure, format_delta_interpret_result, delta_interpret_state_label, build_get_memory_documents_request, build_get_memory_record_request, memory_run_rows, claim_rows, record_detail_rows, memory_record_kind_label, memory_state_label, memory_origin_label, MEMORY_QUERY_FACETS, MEMORY_QUERY_ORDERS, MEMORY_ORDER_RELEVANCE, MEMORY_ORDER_RECORDED_TIME, MEMORY_MAX_FILTERS, MEMORY_UNSUPPORTED_FACETS, MEMORY_FACET_LABELS, MEMORY_ORDER_LABELS, memory_facet_label, build_search_memory_request, build_memory_resume_request, memory_hit_rows, memory_resume_view, MEMORY_REVIEW_OPERATIONS, MEMORY_OPERATION_LABELS, memory_operation_label, memory_correction_state_label, memory_correction_source_id, memory_review_view, build_memory_history_request, build_memory_effective_request, build_memory_correction_request, build_orchestration_save_plan_request, build_orchestration_confirm_plan_request, build_orchestration_run_scan_request, build_orchestration_read_request, build_orchestration_decide_request
 
 # Client-side failure reasons for backend misbehaviour that is not a bounded
 # boundary error. These are display-only; they are distinct from the contract
@@ -457,6 +458,16 @@ class MainWindow(QMainWindow):
         # :class:`hrca.ui.shell.Shell`; the client keeps only which destination
         # is current, so a late response can be routed to the right surface.
         self._nav_destination: str = "resume"
+        # ORCH-BACKBONE-1B: the persisted orchestration workflow, as the backend
+        # last reported it. This is a *cache of a backend projection*, not an
+        # authority: the client renders it and re-reads it after every mutation,
+        # and it never invents a plan id, a run id, a criterion or a coverage
+        # verdict the backend did not return.
+        self._orchestration_workflow: Optional[Dict[str, Any]] = None
+        # One idempotency key per in-flight operation, minted when the developer
+        # initiates it and cleared when it completes, so a repeated click
+        # replays one effect instead of creating a second one.
+        self._orchestration_keys: Dict[str, str] = {}
         # P4.6 app-owned document library (explorer) state: the joined tree, the
         # currently selected item (a folder or document id), a monotonic open
         # generation that discards late open responses, a deferred target for the
@@ -3582,8 +3593,155 @@ class MainWindow(QMainWindow):
         else:
             self._select_destination("home")
 
+    # -- persisted orchestration binding (ORCH-BACKBONE-1B) --------------
+
+    def _orchestration_key(self, op: str) -> str:
+        """Return the idempotency key for the current attempt at ``op``.
+
+        Minted once per developer-initiated attempt and cleared when that
+        attempt completes, so a repeated click while a request is in flight
+        replays one effect rather than creating a second one. A fresh
+        deliberate action mints a fresh key.
+        """
+        key = self._orchestration_keys.get(op)
+        if key is None:
+            key = f"orch:{op}:{contract.new_correlation_id()}"
+            self._orchestration_keys[op] = key
+        return key
+
+    def _send_orchestration(self, op: str, request: Dict[str, Any], on_result=None) -> bool:
+        """Send one orchestration request; refresh from the backend afterwards."""
+        sent = self._send(
+            request,
+            partial(self._on_orchestration_result, op, on_result),
+            partial(self._on_orchestration_failed, op),
+        )
+        if not sent:
+            self._orchestration_keys.pop(op, None)
+            self._set_status(STATE_FAILED, "a request is already in progress")
+        return sent
+
+    def _on_orchestration_result(self, op: str, on_result, result: Any) -> None:
+        """Handle a completed orchestration request."""
+        self._orchestration_keys.pop(op, None)
+        if isinstance(result, dict) and result.get("state") == "refused":
+            # A bounded backend refusal is surfaced in the backend's own words.
+            # The UI never converts it into a success card, and it re-reads so
+            # the displayed state is the state that actually holds.
+            self._set_status(STATE_BLOCKED, str(result.get("reason") or "refused"))
+            self._refresh_orchestration()
+            return
+        workflow = result.get("workflow") if isinstance(result, dict) else None
+        if on_result is not None:
+            on_result(workflow)
+        # A mutation answers with its own small result, not the scoped workflow,
+        # so the displayed state always comes from a fresh read rather than from
+        # whatever the mutation happened to return.
+        self._refresh_orchestration()
+        self._refresh_destinations()
+
+    def _on_orchestration_failed(self, op: str, reason: Any) -> None:
+        """Handle a bounded boundary failure for an orchestration request."""
+        self._orchestration_keys.pop(op, None)
+        self._set_status(STATE_FAILED, str(reason))
+
+    def _refresh_orchestration(self) -> None:
+        """Re-read the persisted workflow. A read mutates nothing."""
+        if not self._root:
+            self._orchestration_workflow = None
+            self._refresh_destinations()
+            return
+        self._send(
+            build_orchestration_read_request(contract.new_correlation_id()),
+            self._on_orchestration_read,
+            partial(self._on_orchestration_failed, "read"),
+        )
+
+    def _on_orchestration_read(self, result: Any) -> None:
+        """Store the backend's projection and re-render from it."""
+        workflow = result.get("workflow") if isinstance(result, dict) else None
+        self._orchestration_workflow = workflow if isinstance(workflow, dict) else None
+        if self._orchestration_workflow is not None:
+            self._sync_job_from_workflow(self._orchestration_workflow)
+        self._refresh_destinations()
+
+    def _sync_job_from_workflow(self, workflow: Dict[str, Any]) -> None:
+        """Report the persisted execution outcome into the local job card.
+
+        The persisted record is the authority; the card follows it. Without
+        this the plan's job would sit ``running`` forever while the backend had
+        long since finished, which is exactly the shortcut this binding exists
+        to remove.
+        """
+        job = self._workspace.job("scan")
+        if job is None:
+            return
+        review = workflow.get("review") or {}
+        run_outcome = str(review.get("run_outcome") or "")
+        mapping = {
+            "succeeded": "completed",
+            "failed": "failed",
+            "interrupted_unknown": "unknown",
+            "running": "running",
+        }
+        target = mapping.get(run_outcome)
+        if target is None or job.state == target:
+            return
+        self._workspace.report_job(
+            job.key, target, detail="Reported by the persisted execution record."
+        )
+
+    def _persisted_revision(self) -> int:
+        """Return the newest persisted plan revision number, or zero."""
+        workflow = self._orchestration_workflow
+        if not isinstance(workflow, dict) or not workflow.get("has_plan"):
+            return 0
+        try:
+            return int(workflow.get("plan_revision") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    # -- destination accessors: backend projections, never local guesses --
+
+    def persisted_plan(self) -> Optional[Dict[str, Any]]:
+        """Return the persisted plan identity, or ``None``."""
+        workflow = self._orchestration_workflow
+        if not isinstance(workflow, dict) or not workflow.get("has_plan"):
+            return None
+        return {
+            "plan_id": workflow.get("plan_id"),
+            "plan_digest": workflow.get("plan_digest"),
+            "plan_revision": workflow.get("plan_revision"),
+            "plan_phase": workflow.get("plan_phase"),
+            "job_id": workflow.get("job_id"),
+            "job_state": workflow.get("job_state"),
+            "run_id": workflow.get("run_id"),
+        }
+
+    def persisted_review(self) -> Optional[Dict[str, Any]]:
+        """Return the persisted review projection, or ``None``."""
+        workflow = self._orchestration_workflow
+        if not isinstance(workflow, dict) or not workflow.get("has_plan"):
+            return None
+        review = workflow.get("review")
+        return review if isinstance(review, dict) else None
+
+    def persisted_resume(self) -> Optional[Dict[str, Any]]:
+        """Return the persisted resume projection, or ``None``."""
+        workflow = self._orchestration_workflow
+        if not isinstance(workflow, dict) or not workflow.get("has_plan"):
+            return None
+        resume = workflow.get("resume")
+        return resume if isinstance(resume, dict) else None
+
     def submit_goal(self, goal: str) -> None:
-        """Record a stated goal, propose a plan, and show the plan card."""
+        """Record a stated goal, propose a plan, and persist that plan.
+
+        The local workspace keeps the transcript and the plan card; the
+        persisted records own the ids, the source binding and the criteria. The
+        two are reconciled by re-reading the backend, never by the card
+        asserting an identity the backend never returned.
+        """
         outcome = self._workspace.state_goal(goal)
         if outcome.refused:
             self._set_status(STATE_BLOCKED, outcome.reason)
@@ -3591,6 +3749,21 @@ class MainWindow(QMainWindow):
         self._chat_destination.composer.clear()
         self._select_destination("chat")
         self._refresh_destinations()
+        if self._root:
+            self._send_orchestration(
+                "save_plan",
+                build_orchestration_save_plan_request(
+                    contract.new_correlation_id(),
+                    goal.strip(),
+                    self._persisted_revision(),
+                    self._orchestration_key("save_plan"),
+                ),
+            )
+        else:
+            self._set_status(
+                STATE_BLOCKED, "open a project before a plan can be persisted"
+            )
+            return
         self._set_status(STATE_SUCCESS, "plan proposed — review it before confirming")
 
     # -- host protocol used by the destinations -------------------------
@@ -3612,13 +3785,36 @@ class MainWindow(QMainWindow):
         self._shell.show_details(heading, rows)
 
     def confirm_plan(self) -> None:
-        """Destination hook: confirm the current plan."""
+        """Confirm the exact persisted revision. Dispatches nothing.
+
+        The card is only marked confirmed after the backend has confirmed the
+        revision digest the developer actually saw, so the two cannot disagree
+        about which revision is live.
+        """
+        plan = self.persisted_plan()
+        if not plan or not plan.get("plan_id") or not self._root:
+            self._set_status(
+                STATE_BLOCKED, "save the plan before confirming it"
+            )
+            return
+        self._send_orchestration(
+            "confirm_plan",
+            build_orchestration_confirm_plan_request(
+                contract.new_correlation_id(),
+                str(plan["plan_id"]),
+                str(plan.get("plan_digest") or ""),
+                self._orchestration_key("confirm_plan"),
+            ),
+            on_result=self._after_confirm,
+        )
+
+    def _after_confirm(self, workflow) -> None:
+        """Mirror a successful backend confirmation into the local card."""
         outcome = self._workspace.confirm_plan()
         if outcome.refused:
             self._set_status(STATE_BLOCKED, outcome.reason)
-        else:
-            self._set_status(STATE_SUCCESS, "plan confirmed — jobs can now be dispatched")
-        self._refresh_destinations()
+            return
+        self._set_status(STATE_SUCCESS, "plan confirmed — jobs can now be dispatched")
 
     def dispatch_job(self, key: str) -> None:
         """Destination hook: dispatch a job, confirming a protected effect first.
@@ -3670,7 +3866,31 @@ class MainWindow(QMainWindow):
         if job.capability_key == "project.open":
             self._on_open_project()
         elif job.capability_key == "source.scan":
-            self._on_run_scan()
+            # The one execution this slice supports, and the only branch that
+            # runs real work. The desktop submits the *stored* plan identity and
+            # nothing else: the boundary resolves the confirmed job, re-checks
+            # the source binding and claims the single execution. No root,
+            # command, capability, executor or source binding is synthesized
+            # here, because the desktop owns none of them.
+            plan = self.persisted_plan()
+            if not plan or not plan.get("plan_id") or not self._root:
+                self._workspace.report_job(
+                    job.key,
+                    "unknown",
+                    detail="No persisted plan is bound to this job, so nothing was run.",
+                )
+                self._set_status(
+                    STATE_BLOCKED, "save and confirm the plan before running it"
+                )
+                return
+            self._send_orchestration(
+                "run_scan",
+                build_orchestration_run_scan_request(
+                    contract.new_correlation_id(),
+                    str(plan["plan_id"]),
+                    self._orchestration_key("run_scan"),
+                ),
+            )
         else:
             # The capability is available but has no dispatch path wired from a
             # plan yet. Record that honestly instead of claiming it ran.
@@ -3699,8 +3919,24 @@ class MainWindow(QMainWindow):
         self._refresh_destinations()
 
     def record_decision(self, decision: str) -> None:
-        """Destination hook: record a named human review decision."""
+        """Record a named human decision against the exact persisted run.
+
+        The outcome vocabulary is the boundary's: acknowledging means the scan
+        *evidence* is acknowledged, never that source was adopted. Rejection,
+        a change request and an escalation record the decision and schedule
+        nothing at all.
+        """
         from PySide6.QtWidgets import QInputDialog
+
+        run_id = ""
+        workflow = self._orchestration_workflow
+        if isinstance(workflow, dict):
+            run_id = str(workflow.get("run_id") or "")
+        if not run_id or not self._root:
+            self._set_status(
+                STATE_BLOCKED, "there is no persisted execution to review"
+            )
+            return
 
         actor, accepted = QInputDialog.getText(
             self,
@@ -3714,12 +3950,40 @@ class MainWindow(QMainWindow):
             "Record decision",
             "Note (optional):",
         )
-        outcome = self._workspace.record_decision(decision, actor, note or "")
+
+        # The boundary's review-outcome vocabulary, kept as literals so the
+        # desktop imports no orchestration module.
+        outcomes = {
+            app_states.DECISION_APPROVE: "acknowledged",
+            app_states.DECISION_REQUEST_CHANGES: "request_changes",
+            app_states.DECISION_REJECT: "rejected",
+            app_states.DECISION_ESCALATE: "escalated",
+        }
+        backend_outcome = outcomes.get(decision)
+        if backend_outcome is None:
+            self._set_status(STATE_BLOCKED, "that decision is not supported")
+            return
+
+        self._send_orchestration(
+            "decide",
+            build_orchestration_decide_request(
+                contract.new_correlation_id(),
+                run_id,
+                backend_outcome,
+                actor.strip(),
+                self._orchestration_key("decide"),
+                note or "",
+            ),
+            on_result=partial(self._after_decision, decision, actor.strip(), note or ""),
+        )
+
+    def _after_decision(self, decision: str, actor: str, note: str, workflow) -> None:
+        """Mirror a recorded backend decision into the local transcript."""
+        outcome = self._workspace.record_decision(decision, actor, note)
         if outcome.refused:
             self._set_status(STATE_BLOCKED, outcome.reason)
-        else:
-            self._set_status(STATE_SUCCESS, "decision recorded")
-        self._refresh_destinations()
+            return
+        self._set_status(STATE_SUCCESS, "decision recorded")
 
     def _set_status(self, state: str, detail: str = "") -> None:
         self._status = state
@@ -4611,6 +4875,9 @@ class MainWindow(QMainWindow):
         self._update_scan_enabled()
         self._sync_workspace_context()
         self._refresh_destinations()
+        # Recover whatever the backend already holds for this project, so a
+        # desktop reopen reconstructs the same records instead of an empty plan.
+        self._refresh_orchestration()
         self._set_status(STATE_SUCCESS, "project open")
 
 

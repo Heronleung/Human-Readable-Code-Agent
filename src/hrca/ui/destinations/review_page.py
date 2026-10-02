@@ -27,7 +27,18 @@ class ReviewDestination(Destination):
     subtitle = "Changed artifacts, evidence, missing proof, conflicts and acceptance coverage."
 
     def render(self) -> None:
-        """Re-render the review from the workspace."""
+        """Re-render the review.
+
+        When the backend holds a persisted workflow, Review renders *that* — the
+        projection it returns, with its own record ids, coverage and freshness.
+        Only a capability the slice does not persist falls back to the local
+        model, and the fallback says so.
+        """
+        persisted = self.host.persisted_review()
+        if isinstance(persisted, dict):
+            self._render_persisted(persisted)
+            return
+
         bundle = self.workspace.review()
 
         if not bundle.is_reviewable:
@@ -58,6 +69,145 @@ class ReviewDestination(Destination):
         self._render_acceptance(bundle)
         self._render_decisions(bundle)
         self.body.addStretch(1)
+
+    # -- persisted projection ----------------------------------------------
+    def _render_persisted(self, review: dict) -> None:
+        """Render the backend's review projection exactly as it returned it."""
+        run_outcome = str(review.get("run_outcome") or "")
+        if not run_outcome:
+            view = self.new_state_view()
+            view.set_state(
+                "empty",
+                "Nothing to review yet",
+                "The plan is persisted. Review fills in once its scan job has run.",
+            )
+            return
+
+        freshness = str(review.get("freshness") or "")
+        summary = Card(
+            "What is under review",
+            str(review.get("goal") or "No goal recorded."),
+            self,
+        )
+        summary.body.addWidget(
+            self._line(
+                f"Plan {review.get('plan_id')} · revision {review.get('plan_revision')}"
+            )
+        )
+        summary.body.addWidget(self._line(f"Job {review.get('job_id')} · {review.get('job_state')}"))
+        summary.body.addWidget(
+            self._line(f"Run {review.get('run_id')} · {run_outcome} · freshness: {freshness}")
+        )
+        if review.get("run_reason"):
+            summary.body.addWidget(self._line(str(review["run_reason"])))
+        blocking = list(review.get("blocking") or [])
+        for reason in blocking:
+            summary.body.addWidget(self._line(f"• {reason}"))
+        if not blocking:
+            summary.body.addWidget(
+                self._line(
+                    "The evidence is current. Acknowledging records that you have seen "
+                    "it; it does not adopt source and does not move a baseline."
+                )
+            )
+        self.body.addWidget(summary)
+
+        limitations = list(review.get("limitations") or [])
+        if limitations:
+            card = Card(
+                "Limitations",
+                "Reported by the scan, never converted into a clean bill of health.",
+                self,
+            )
+            for item in limitations:
+                card.body.addWidget(ListRow(str(item), "", "warning", "Preserved"))
+            self.body.addWidget(card)
+
+        evidence = list(review.get("evidence") or [])
+        if evidence:
+            card = Card("Evidence", "One row per code-owned check the scan recorded.", self)
+            for item in evidence:
+                tone = {
+                    "satisfied": "verified",
+                    "unsatisfied": "missing",
+                    "unknown": "unverified",
+                }.get(str(item.get("result")), "unverified")
+                row = ListRow(
+                    str(item.get("label") or item.get("predicate_id")),
+                    str(item.get("limitation") or item.get("evidence_id") or ""),
+                    tone,
+                    str(item.get("result")),
+                )
+                card.body.addWidget(row)
+            self.body.addWidget(card)
+
+        coverage = list(review.get("coverage") or [])
+        if coverage:
+            covered = sum(1 for row in coverage if row.get("covered"))
+            card = Card(
+                "Acceptance coverage",
+                f"{covered} of {len(coverage)} criteria have evidence.",
+                self,
+            )
+            for row in coverage:
+                tone = "verified" if row.get("covered") else "missing"
+                detail = str(row.get("note") or "")
+                if not row.get("supported"):
+                    detail = detail or "No supported check establishes this requirement."
+                card.body.addWidget(
+                    ListRow(
+                        str(row.get("label") or row.get("criterion_id")),
+                        detail,
+                        tone,
+                        "Covered" if row.get("covered") else "Open",
+                    )
+                )
+            self.body.addWidget(card)
+
+        self._render_persisted_decision(review)
+
+    def _render_persisted_decision(self, review: dict) -> None:
+        """Offer exactly the decisions the persisted run supports."""
+        decision = review.get("decision")
+        card = Card("Decision", "Each decision records what it does, and nothing more.", self)
+        if isinstance(decision, dict):
+            card.body.addWidget(
+                self._line(
+                    f"{decision.get('outcome')} recorded by {decision.get('actor')} "
+                    f"against run {decision.get('run_id')}."
+                )
+            )
+            card.body.addWidget(
+                self._line(
+                    "Acknowledging the scan evidence adopts nothing and moves no baseline."
+                )
+            )
+            self.body.addWidget(card)
+            return
+
+        blocking = list(review.get("blocking") or [])
+        for choice in states.REVIEW_DECISIONS:
+            enabled = choice != states.DECISION_APPROVE or not blocking
+            card.body.addWidget(
+                make_button(
+                    states.decision_label(choice),
+                    "primary" if choice == states.DECISION_APPROVE else "secondary",
+                    accessible=states.decision_label(choice),
+                    tooltip=states.decision_effect(choice),
+                    enabled=enabled,
+                    disabled_reason=blocking[0] if (blocking and not enabled) else "",
+                    on_click=lambda _c=False, picked=choice: self.host.record_decision(picked),
+                )
+            )
+        self.body.addWidget(card)
+
+    def _line(self, text: str):
+        from PySide6.QtWidgets import QLabel
+
+        label = QLabel(text, self)
+        label.setObjectName("secondary")
+        label.setWordWrap(True)
+        return label
 
     # -- sections -----------------------------------------------------------
     def _render_summary(self, bundle) -> None:

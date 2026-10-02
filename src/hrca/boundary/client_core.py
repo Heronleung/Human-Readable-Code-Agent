@@ -3305,6 +3305,122 @@ def build_memory_code_freshness_request(
     return request
 
 
+def build_orchestration_save_plan_request(
+    correlation_id: str,
+    goal: str,
+    expected_revision: int,
+    idempotency_key: str,
+    scope: Optional[Dict[str, Any]] = None,
+    extra_requirements: Optional[List[str]] = None,
+    accepted_baseline_ref: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build an ``orchestration_save_plan`` request.
+
+    The client supplies the developer's goal and the revision it believes is
+    current; the boundary observes the source, derives the scaffold and assigns
+    every identity. No root, capability, executor or source binding is sent —
+    the desktop cannot name what it does not own.
+    """
+    task: Dict[str, Any] = {
+        "goal": goal,
+        "expected_revision": int(expected_revision),
+        "idempotency_key": idempotency_key,
+    }
+    if scope is not None:
+        task["scope"] = scope
+    if extra_requirements:
+        task["extra_requirements"] = list(extra_requirements)
+    if accepted_baseline_ref:
+        task["accepted_baseline_ref"] = accepted_baseline_ref
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_ORCHESTRATION_SAVE_PLAN,
+        "task": task,
+    }
+
+
+def build_orchestration_confirm_plan_request(
+    correlation_id: str, plan_id: str, expected_digest: str, idempotency_key: str
+) -> Dict[str, Any]:
+    """Build an ``orchestration_confirm_plan`` request.
+
+    ``expected_digest`` is the revision digest the developer actually saw, so a
+    confirmation cannot slide onto a revision edited in between. Confirming
+    dispatches nothing.
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_ORCHESTRATION_CONFIRM_PLAN,
+        "task": {
+            "plan_id": plan_id,
+            "expected_digest": expected_digest,
+            "idempotency_key": idempotency_key,
+        },
+    }
+
+
+def build_orchestration_run_scan_request(
+    correlation_id: str, plan_id: str, idempotency_key: str
+) -> Dict[str, Any]:
+    """Build an ``orchestration_run_scan`` request.
+
+    Carries the stored plan identity and nothing else: the boundary resolves the
+    confirmed job, re-checks the source binding and claims the one execution.
+    The desktop never supplies a root, a command, a capability or a source.
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_ORCHESTRATION_RUN_SCAN,
+        "task": {"plan_id": plan_id, "idempotency_key": idempotency_key},
+    }
+
+
+def build_orchestration_read_request(correlation_id: str) -> Dict[str, Any]:
+    """Build an ``orchestration_read`` request.
+
+    A read: it returns the scoped workflow, its review projection and its
+    resume. It dispatches nothing, and a normal read never rewrites a live run.
+    """
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_ORCHESTRATION_READ,
+        "task": {},
+    }
+
+
+def build_orchestration_decide_request(
+    correlation_id: str,
+    run_id: str,
+    outcome: str,
+    actor: str,
+    idempotency_key: str,
+    reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build an ``orchestration_decide`` request for one human review decision.
+
+    The target is the exact run the decision was made against. The actor is
+    attribution, not identity. Nothing here can adopt source or widen authority.
+    """
+    task: Dict[str, Any] = {
+        "run_id": run_id,
+        "outcome": outcome,
+        "actor": actor,
+        "idempotency_key": idempotency_key,
+    }
+    if reason:
+        task["reason"] = reason
+    return {
+        "contract_version": contract.CONTRACT_VERSION,
+        "correlation_id": correlation_id,
+        "action": contract.ACTION_ORCHESTRATION_DECIDE,
+        "task": task,
+    }
+
+
 __all__ = [
     "STATE_IDLE",
     "STATE_RUNNING",
@@ -3530,4 +3646,9 @@ __all__ = [
     "memory_freshness_rows",
     "build_memory_code_link_request",
     "build_memory_code_freshness_request",
+    "build_orchestration_save_plan_request",
+    "build_orchestration_confirm_plan_request",
+    "build_orchestration_run_scan_request",
+    "build_orchestration_read_request",
+    "build_orchestration_decide_request",
 ]

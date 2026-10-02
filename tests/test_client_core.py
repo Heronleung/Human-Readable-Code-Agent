@@ -11,7 +11,7 @@ import unittest
 from unittest import mock
 
 from hrca.core import contract
-from hrca.boundary.client_core import BLOCK_TYPE_LABELS, CREDENTIAL_ACTION_MESSAGES, CREDENTIAL_ACTION_PENDING, CREDENTIAL_FAILURE_MESSAGES, CREDENTIAL_MASK, DELTA_INTERPRET_STATE_LABELS, INTENT_CLASS_LABELS, OPERATION_LABELS, PROFILE_ACTION_MESSAGES, PROFILE_FAILURE_MESSAGES, PROPOSAL_STATE_LABELS, PROVIDER_READINESS_STATE_LABELS, PROVIDER_STATUS_MESSAGES, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, TWIN_AVAILABLE, TWIN_CONFLICT, TWIN_EMPTY, TWIN_LOADING, TWIN_STALE, TWIN_UNSUPPORTED, TWIN_STATES, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, LineBuffer, ResponseRouter, behavior_node_label, block_type_label, credential_action_message, delta_interpret_state_label, profile_failure_message, build_add_profile_request, build_compare_draft_request, build_delete_profile_request, build_discard_draft_request, build_fixture_task, build_generate_intent_delta_request, build_get_anchor_request, build_get_code_map_request, build_get_document_request, build_get_draft_request, build_get_profiles_request, build_get_readiness_request, build_get_tree_request, build_get_twin_request, build_interpret_rule_delta_request, build_manage_credential_request, build_open_project_request, build_plan_proposal_request, build_prepare_rule_delta_request, build_remove_credential_request, build_rename_profile_request, build_request, build_reset_draft_request, build_save_draft_request, build_scan_request, build_scan_task, build_set_active_profile_request, build_sync_twin_request, default_fixture_root, format_delta_disclosure, format_delta_interpret_result, format_draft_operations, format_entity_list, format_intent_delta, format_procedural_document, format_proposal, format_provider_readiness, format_twin_projection, format_twin_sync, intent_class_label, is_twin_source_path, operation_label, proposal_state_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, twin_state_from_sync
+from hrca.boundary.client_core import BLOCK_TYPE_LABELS, CREDENTIAL_ACTION_MESSAGES, CREDENTIAL_ACTION_PENDING, CREDENTIAL_FAILURE_MESSAGES, CREDENTIAL_MASK, DELTA_INTERPRET_STATE_LABELS, INTENT_CLASS_LABELS, OPERATION_LABELS, PROFILE_ACTION_MESSAGES, PROFILE_FAILURE_MESSAGES, PROPOSAL_STATE_LABELS, PROVIDER_READINESS_STATE_LABELS, PROVIDER_STATUS_MESSAGES, PROVIDER_UNAVAILABLE, REPOSITORY_UNVERIFIED, TWIN_AVAILABLE, TWIN_CONFLICT, TWIN_EMPTY, TWIN_LOADING, TWIN_STALE, TWIN_UNSUPPORTED, TWIN_STATES, VALIDATION_FAILED, VALIDATION_IDLE, VALIDATION_OK, VALIDATION_RUNNING, LineBuffer, ResponseRouter, behavior_node_label, block_type_label, credential_action_message, delta_interpret_state_label, profile_failure_message, build_add_profile_request, build_compare_draft_request, build_delete_profile_request, build_discard_draft_request, build_fixture_task, build_generate_intent_delta_request, build_get_anchor_request, build_get_code_map_request, build_get_document_request, build_get_draft_request, build_get_profiles_request, build_get_readiness_request, build_get_tree_request, build_get_twin_request, build_interpret_rule_delta_request, build_manage_credential_request, build_open_project_request, build_plan_proposal_request, build_prepare_rule_delta_request, build_remove_credential_request, build_rename_profile_request, build_request, build_reset_draft_request, build_save_draft_request, build_scan_request, build_scan_task, build_set_active_profile_request, build_sync_twin_request, default_fixture_root, format_delta_disclosure, format_delta_interpret_result, format_draft_operations, format_entity_list, format_intent_delta, format_procedural_document, format_proposal, format_provider_readiness, format_twin_projection, format_twin_sync, intent_class_label, is_twin_source_path, operation_label, proposal_state_label, provider_readiness_state_label, provider_status_message, resolve_backend_command, resolve_credential_host_command, twin_state_from_sync, build_orchestration_save_plan_request, build_orchestration_confirm_plan_request, build_orchestration_run_scan_request, build_orchestration_read_request, build_orchestration_decide_request
 
 
 from hrca.boundary.client_core import MEMORY_TWIN_OPENABLE_STATES, MEMORY_TWIN_REFUSED_SUBSTITUTE, build_memory_code_freshness_request, build_memory_code_link_request, memory_freshness_rows, memory_link_rows, memory_twin_actionable_label, memory_twin_candidate_identities, memory_twin_freshness_label, memory_twin_link_is_openable, memory_twin_link_records, memory_twin_open_refusal, memory_twin_selector_for
@@ -1330,6 +1330,112 @@ class MemoryTwinRequestTests(unittest.TestCase):
         self.assertEqual(
             set(link) | {"contract_version", "correlation_id", "action"}, set(request)
         )
+
+
+class OrchestrationRequestTests(unittest.TestCase):
+    """ORCH-BACKBONE-1B: the five contract-3.10.0 builders.
+
+    Each builder is checked against the boundary's actual request shape: the
+    action name the contract declares, the version it stamps, a ``task`` payload
+    and — the part that matters — that nothing the desktop does not own (a root,
+    a capability, an executor, a command, a source binding) can be smuggled into
+    one.
+    """
+
+    def _assert_envelope(self, request, action, correlation_id="c1"):
+        self.assertEqual(contract.CONTRACT_VERSION, request["contract_version"])
+        self.assertEqual(action, request["action"])
+        self.assertEqual(correlation_id, request["correlation_id"])
+        self.assertIsInstance(request["task"], dict)
+        # The desktop names no root and no filesystem path in any of them.
+        self.assertNotIn("path", request)
+        for field in ("root", "capability", "executor", "command", "runner", "credential"):
+            self.assertNotIn(field, request["task"])
+
+    def test_save_plan_carries_only_a_goal_and_a_revision(self):
+        request = build_orchestration_save_plan_request("c1", "scan it", 0, "k1")
+        self._assert_envelope(request, contract.ACTION_ORCHESTRATION_SAVE_PLAN)
+        self.assertEqual("scan it", request["task"]["goal"])
+        self.assertEqual(0, request["task"]["expected_revision"])
+        self.assertEqual("k1", request["task"]["idempotency_key"])
+        # Optional fields are absent rather than sent as nulls.
+        self.assertNotIn("scope", request["task"])
+        self.assertNotIn("extra_requirements", request["task"])
+
+    def test_save_plan_carries_optional_fields_when_given(self):
+        request = build_orchestration_save_plan_request(
+            "c1", "scan it", 2, "k1",
+            scope={"include_paths": ["."], "exclusions": []},
+            extra_requirements=["The application works"],
+            accepted_baseline_ref="ver:1",
+        )
+        self.assertEqual({"include_paths": ["."], "exclusions": []}, request["task"]["scope"])
+        self.assertEqual(["The application works"], request["task"]["extra_requirements"])
+        self.assertEqual("ver:1", request["task"]["accepted_baseline_ref"])
+
+    def test_confirm_plan_pins_the_exact_revision_digest(self):
+        request = build_orchestration_confirm_plan_request("c1", "plan:1", "d" * 64, "k2")
+        self._assert_envelope(request, contract.ACTION_ORCHESTRATION_CONFIRM_PLAN)
+        self.assertEqual("plan:1", request["task"]["plan_id"])
+        self.assertEqual("d" * 64, request["task"]["expected_digest"])
+        self.assertEqual("k2", request["task"]["idempotency_key"])
+
+    def test_run_scan_sends_a_stored_identity_and_nothing_else(self):
+        request = build_orchestration_run_scan_request("c1", "plan:1", "k3")
+        self._assert_envelope(request, contract.ACTION_ORCHESTRATION_RUN_SCAN)
+        self.assertEqual({"plan_id": "plan:1", "idempotency_key": "k3"}, request["task"])
+
+    def test_read_carries_no_fields(self):
+        request = build_orchestration_read_request("c1")
+        self._assert_envelope(request, contract.ACTION_ORCHESTRATION_READ)
+        self.assertEqual({}, request["task"])
+
+    def test_decide_names_the_exact_run_and_the_actor(self):
+        request = build_orchestration_decide_request(
+            "c1", "run:1", "acknowledged", "heron", "k4", "seen"
+        )
+        self._assert_envelope(request, contract.ACTION_ORCHESTRATION_DECIDE)
+        self.assertEqual("run:1", request["task"]["run_id"])
+        self.assertEqual("acknowledged", request["task"]["outcome"])
+        self.assertEqual("heron", request["task"]["actor"])
+        self.assertEqual("seen", request["task"]["reason"])
+
+    def test_decide_omits_an_empty_reason(self):
+        request = build_orchestration_decide_request("c1", "run:1", "rejected", "heron", "k4")
+        self.assertNotIn("reason", request["task"])
+
+    def test_all_five_actions_are_allowlisted_and_declared(self):
+        actions = (
+            contract.ACTION_ORCHESTRATION_SAVE_PLAN,
+            contract.ACTION_ORCHESTRATION_CONFIRM_PLAN,
+            contract.ACTION_ORCHESTRATION_RUN_SCAN,
+            contract.ACTION_ORCHESTRATION_READ,
+            contract.ACTION_ORCHESTRATION_DECIDE,
+        )
+        for action in actions:
+            with self.subTest(action=action):
+                self.assertIn(action, contract.ALLOWED_ACTIONS)
+                self.assertIn(action, contract.ORCHESTRATION_ACTIONS)
+
+    def test_a_39_client_is_still_refused_by_the_exact_version_rule(self):
+        # The increment is additive for a 3.10.0 client, and a client that still
+        # sends 3.9.0 is refused rather than silently negotiated with.
+        from hrca import boundary
+
+        request = build_orchestration_read_request("c1")
+        request["contract_version"] = "3.9.0"
+        response = boundary.handle_request(request)
+        self.assertFalse(response["ok"])
+        self.assertEqual("unknown_contract_version", response["error"]["code"])
+
+    def test_an_unknown_orchestration_shaped_action_is_not_allowed(self):
+        from hrca import boundary
+
+        request = build_orchestration_read_request("c1")
+        request["action"] = "orchestration_invent"
+        response = boundary.handle_request(request)
+        self.assertFalse(response["ok"])
+        self.assertEqual("action_not_allowed", response["error"]["code"])
 
 
 if __name__ == "__main__":

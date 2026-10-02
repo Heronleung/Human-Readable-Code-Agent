@@ -115,12 +115,55 @@ caller text, path, id or stored content can reach the client through it. An
 (`orchestration_store_unavailable`, `orchestration_schema_unsupported`,
 `orchestration_request_invalid`).
 
+## The desktop binding (ORCH-BACKBONE-1B)
+
+The desktop reaches the workflow only through the supervised boundary path.
+`ui/client.py` imports **no** orchestration module — not the store, not the
+service, not the scanner — and holds no second copy of any record.
+
+What `MainWindow` keeps is `_orchestration_workflow`: the last projection the
+backend returned. It is a **cache of a backend projection, not an authority**.
+It is written only from a response, and it is re-read after every mutation, so
+the displayed plan id, run id, coverage and freshness are always the backend's.
+
+| Interaction | What is sent | What is shown |
+| --- | --- | --- |
+| State a goal | `orchestration_save_plan` | The card, then the persisted plan |
+| Confirm the plan | `orchestration_confirm_plan` with the exact persisted digest | Confirmed only once the backend confirms that digest |
+| Dispatch the scan job | `orchestration_run_scan` with the stored plan id | The persisted run outcome |
+| Review / Home | — (a read) | `orchestration_read`'s review and resume projections |
+| Record a decision | `orchestration_decide` against the exact run | The persisted decision |
+
+Three rules the binding enforces:
+
+* **The desktop names nothing it does not own.** No builder sends a root, a
+  capability, an executor, a command or a source binding; the boundary resolves
+  all of them from the confirmed job.
+* **A bounded refusal is shown as a refusal.** A `state: "refused"` response
+  reaches the status line in the backend's own words and triggers a re-read. It
+  is never converted into a success card, and the UI never papers over it.
+* **One key per attempt.** An idempotency key is minted when the developer
+  initiates an action and cleared when it completes, so a repeated click while
+  a request is in flight replays one effect instead of creating a second.
+
+Only the `source.scan` branch of `_drive_job` was rewired. Every other job kind
+keeps its previous behaviour and gains no implied execution support.
+
 ## Reproducing the integrated proof
 
 ```bash
 cd <repo>
 uv run python -m unittest tests.test_orchestration -v
+uv run python -m unittest tests.test_orchestration_desktop -v
 ```
+
+`tests/test_orchestration_desktop.py` drives a real `MainWindow` whose `_send`
+is routed straight into `boundary.handle_request` over an isolated store — no
+fake backend, no stubbed response — and performs goal → plan → confirm → run →
+review → decision, then closes and recreates both the backend session and the
+desktop and asserts the recovered ids are identical with the scanner dispatch
+count unchanged. It also covers the refusals a developer can actually reach: a
+run before confirmation, and a source that moved before an acknowledgement.
 
 `tests/test_orchestration.py` drives the **real boundary request loop** over a
 temporary store and a synthetic project, counting scanner dispatches so "no

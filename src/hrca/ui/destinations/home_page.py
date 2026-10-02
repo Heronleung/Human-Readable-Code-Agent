@@ -63,7 +63,19 @@ class HomeDestination(Destination):
     subtitle = "Where the work stands, and the one next action."
 
     def render(self) -> None:
-        """Render Home from the workspace."""
+        """Render Home.
+
+        When the backend holds a persisted workflow, Home renders *its* resume
+        projection — so a desktop restart reconstructs the same records, ids,
+        freshness and next action from the store rather than from an empty
+        local model. Without one, Home shows the local first-run or workspace
+        state as before.
+        """
+        persisted = self.host.persisted_resume()
+        if isinstance(persisted, dict):
+            self._render_persisted(persisted)
+            return
+
         context = self.workspace.context
         if not context.has_project:
             self._render_first_run()
@@ -74,6 +86,100 @@ class HomeDestination(Destination):
         self._render_attention(resume)
         self._render_recent_changes(resume)
         self._render_history_entry()
+
+    # -- persisted projection ----------------------------------------------
+    def _render_persisted(self, resume: dict) -> None:
+        """Render the backend's resume projection exactly as it returned it."""
+        action = str(resume.get("next_action") or "")
+        card = Card("Continue", str(resume.get("next_action_reason") or ""), self)
+        if action:
+            card.body.addWidget(
+                make_button(
+                    action,
+                    "primary",
+                    accessible=action,
+                    tooltip=str(resume.get("next_action_reason") or ""),
+                    on_click=lambda: self._run_persisted_action(resume),
+                )
+            )
+        self.body.addWidget(card)
+
+        blockers = list(resume.get("blockers") or [])
+        unverified = list(resume.get("unverified") or [])
+        if blockers or unverified:
+            attention = Card(
+                "Needs attention",
+                "Blocking risks, unresolved executions and uncovered requirements. "
+                "These are never hidden.",
+                self,
+            )
+            for reason in blockers:
+                attention.body.addWidget(ListRow(str(reason), "Blocking", "blocked", "Blocked"))
+            for item in unverified:
+                attention.body.addWidget(
+                    ListRow(
+                        str(item.get("label") or ""),
+                        str(item.get("detail") or ""),
+                        "missing",
+                        "Open",
+                    )
+                )
+            self.body.addWidget(attention)
+
+        changes = list(resume.get("changes") or [])
+        if changes:
+            card = Card(
+                "Recorded facts",
+                "Read from the persisted records; nothing is inferred.",
+                self,
+            )
+            card.body.addWidget(
+                ListRow(
+                    "Accepted baseline",
+                    "No accepted baseline is recorded for this project.",
+                    "neutral",
+                    "Unknown",
+                )
+                if not resume.get("accepted_baseline_ref")
+                else ListRow(
+                    "Accepted baseline",
+                    str(resume.get("accepted_baseline_ref")),
+                    "neutral",
+                    "Recorded",
+                )
+            )
+            for item in changes:
+                card.body.addWidget(
+                    ListRow(
+                        str(item.get("label") or ""),
+                        str(item.get("detail") or ""),
+                        "neutral",
+                        "Recorded",
+                    )
+                )
+            card.body.addWidget(
+                ListRow(
+                    "Freshness",
+                    f"The bound source is {resume.get('freshness')}.",
+                    "neutral",
+                    str(resume.get("freshness") or ""),
+                )
+            )
+            self.body.addWidget(card)
+
+        self._render_history_entry()
+
+    def _run_persisted_action(self, resume: dict) -> None:
+        """Send the developer to the view the persisted next action names."""
+        action = str(resume.get("next_action") or "").lower()
+        if "confirm" in action or "goal" in action:
+            self.host.focus_destination("chat")
+        elif "review" in action or "execution" in action:
+            self.host.focus_destination("review")
+        elif "scan" in action or "job" in action:
+            self.host.focus_destination("jobs")
+        else:
+            self.host.focus_destination("review")
 
     # -- first run ----------------------------------------------------------
     def _render_first_run(self) -> None:
