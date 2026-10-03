@@ -438,6 +438,66 @@ class FreshnessTests(_Harness):
 
 
 # ---------------------------------------------------------------------------
+# Liveness probe (cross-platform)
+# ---------------------------------------------------------------------------
+class ProcessAliveProbeTests(unittest.TestCase):
+    """Only a definite death may flip recovery; every ambiguity stays alive.
+
+    The Windows branch is exercised through :func:`service._classify_windows_probe`
+    (the pure decision over ``OpenProcess``/``GetExitCodeProcess`` results), so
+    the whole matrix is testable on any host without ctypes or a Windows box.
+    """
+
+    def test_posix_missing_pid_is_dead(self):
+        with mock.patch.object(service.os, "name", "posix"), \
+             mock.patch.object(service.os, "kill", side_effect=ProcessLookupError):
+            self.assertFalse(service._process_alive(12345))
+
+    def test_posix_inaccessible_pid_stays_alive(self):
+        with mock.patch.object(service.os, "name", "posix"), \
+             mock.patch.object(service.os, "kill", side_effect=PermissionError):
+            self.assertTrue(service._process_alive(12345))
+
+    def test_posix_probe_success_stays_alive(self):
+        with mock.patch.object(service.os, "name", "posix"), \
+             mock.patch.object(service.os, "kill", return_value=None):
+            self.assertTrue(service._process_alive(12345))
+
+    def test_windows_missing_process_is_dead(self):
+        self.assertFalse(
+            service._classify_windows_probe(
+                service._WIN_ERROR_INVALID_PARAMETER, None
+            )
+        )
+
+    def test_windows_access_denied_stays_alive(self):
+        # ERROR_ACCESS_DENIED: the process exists but is not queryable here.
+        self.assertTrue(service._classify_windows_probe(5, None))
+
+    def test_windows_ambiguous_open_failure_stays_alive(self):
+        # Any open failure other than "no such process" is not a definite death.
+        self.assertTrue(service._classify_windows_probe(6, None))
+
+    def test_windows_live_process_stays_alive(self):
+        self.assertTrue(
+            service._classify_windows_probe(None, service._WIN_STILL_ACTIVE)
+        )
+
+    def test_windows_exited_process_is_dead(self):
+        # A valid handle with a final (non-STILL_ACTIVE) exit code is terminated.
+        self.assertFalse(service._classify_windows_probe(None, 0))
+
+    def test_windows_exit_query_failure_stays_alive(self):
+        self.assertTrue(service._classify_windows_probe(None, None))
+
+    def test_process_alive_routes_to_windows_probe_on_nt(self):
+        with mock.patch.object(service.os, "name", "nt"), \
+             mock.patch.object(service, "_process_alive_windows", return_value=False) as win:
+            self.assertFalse(service._process_alive(12345))
+            win.assert_called_once_with(12345)
+
+
+# ---------------------------------------------------------------------------
 # Recovery, schema and privacy
 # ---------------------------------------------------------------------------
 class RecoveryTests(_Harness):

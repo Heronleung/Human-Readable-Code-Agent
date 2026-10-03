@@ -727,7 +727,14 @@ def _recover_orphans(store: store_mod.OrchestrationStore, project_id: str) -> No
 
 
 def _process_alive(pid: int) -> bool:
-    """Return whether ``pid`` is still running. Unknown counts as alive."""
+    """Return whether ``pid`` is still running. Unknown counts as alive.
+
+    POSIX uses a signal-0 probe. Windows uses ``OpenProcess`` plus
+    ``GetExitCodeProcess`` so a *definite* absence is distinguishable from an
+    inaccessible or ambiguous owner, both of which stay alive/conservative.
+    """
+    if os.name == "nt":
+        return _process_alive_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -735,6 +742,56 @@ def _process_alive(pid: int) -> bool:
     except (PermissionError, OSError):
         return True
     return True
+
+
+#: ``PROCESS_QUERY_LIMITED_INFORMATION`` — the least access needed to read a
+#: process's exit status without opening it for termination.
+_WIN_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+#: ``GetExitCodeProcess`` reports this value while a process is still running.
+_WIN_STILL_ACTIVE = 259
+#: ``OpenProcess`` returns this error when the pid names no process.
+_WIN_ERROR_INVALID_PARAMETER = 87
+
+
+def _classify_windows_probe(open_error: Optional[int], exit_code: Optional[int]) -> bool:
+    """Decide alive/dead from a Windows ``OpenProcess``/``GetExitCodeProcess``
+    result. Only a definite "no such process" or a terminated exit code counts
+    as dead; an access-denied, ambiguous or failed query stays alive."""
+    if open_error is not None:
+        return open_error != _WIN_ERROR_INVALID_PARAMETER
+    if exit_code is None:
+        return True
+    return exit_code == _WIN_STILL_ACTIVE
+
+
+def _process_alive_windows(pid: int) -> bool:
+    """Windows liveness probe. Conservative unless the process is definitely
+    gone: ``OpenProcess`` failing with ``ERROR_INVALID_PARAMETER`` means no
+    such process; a valid handle whose exit code is no longer ``STILL_ACTIVE``
+    means a terminated process. Every other outcome counts as alive."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+    handle = kernel32.OpenProcess(
+        _WIN_PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not handle:
+        return _classify_windows_probe(ctypes.get_last_error(), None)
+    exit_code = wintypes.DWORD(0)
+    try:
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return _classify_windows_probe(None, None)
+        return _classify_windows_probe(None, exit_code.value)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 __all__ = [
