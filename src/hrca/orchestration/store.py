@@ -30,6 +30,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import uuid
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -37,6 +38,10 @@ from . import domain
 
 #: The orchestration schema version, owned independently of every other store.
 ORCH_SCHEMA_VERSION = "1.0.0"
+
+#: The busy wait a caller that sets no deadline keeps — the value this store has
+#: always used.
+DEFAULT_LOCK_WAIT_SECONDS = 10.0
 
 ORCH_DIR_NAME = "orchestration"
 DATABASE_FILENAME = "orchestration.db"
@@ -192,15 +197,44 @@ def new_id(prefix: str) -> str:
 class OrchestrationStore:
     """A thin, transactional owner of the orchestration namespace."""
 
-    def __init__(self, base_dir: str) -> None:
+    def __init__(self, base_dir: str, deadline: Optional[float] = None) -> None:
         self.base_dir = base_dir
         self._db_path = database_path(base_dir)
+        #: Optional monotonic instant a store operation must not wait past.
+        #: ``None`` — the default for every existing caller — keeps the store's
+        #: own busy wait, so the admitted orchestration family is unchanged.
+        #: A caller that passes it has already subtracted its own reserve.
+        self.deadline = deadline
+
+    def _lock_wait(self) -> float:
+        """Return the seconds this connection may wait on a lock."""
+        if self.deadline is None:
+            return DEFAULT_LOCK_WAIT_SECONDS
+        return max(0.0, min(DEFAULT_LOCK_WAIT_SECONDS, self.deadline - time.monotonic()))
+
+    def _refresh_lock_wait(self, connection: sqlite3.Connection) -> float:
+        """Re-apply the remaining allowance to an open connection's busy wait.
+
+        Only the writes that follow a budget-consuming phase need this: their
+        connection may have been opened before the caller spent its time, so the
+        busy timeout it took at connect is stale by the time the write commits.
+        A caller that set no deadline gets the store's own default back, exactly
+        as before — this never widens a wait, it re-derives it.
+        """
+        allowance = self._lock_wait()
+        try:
+            connection.execute("PRAGMA busy_timeout = %d" % int(allowance * 1000.0))
+        except sqlite3.Error:
+            pass
+        return allowance
 
     # -- connection ---------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
         try:
             os.makedirs(store_dir(self.base_dir), exist_ok=True)
-            connection = sqlite3.connect(self._db_path, timeout=10.0, isolation_level=None)
+            connection = sqlite3.connect(
+                self._db_path, timeout=self._lock_wait(), isolation_level=None
+            )
         except (OSError, sqlite3.Error) as error:
             raise StoreError(REASON_STORE_UNAVAILABLE) from error
         connection.row_factory = sqlite3.Row
@@ -334,6 +368,10 @@ class OrchestrationStore:
             self._remember(
                 connection, stored.project_id, idempotency_key, payload_digest, result, now
             )
+            # The draft write is reached after the turn has done its work, so its
+            # commit waits on what is left *now*, not on what was left when the
+            # connection opened.
+            self._refresh_lock_wait(connection)
             connection.execute("COMMIT")
             return result
         except StoreError:

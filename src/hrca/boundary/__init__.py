@@ -92,6 +92,7 @@ class WorkspaceSession:
         advisory_transport: Any = None,
         delta_transport: Any = None,
         runner: Any = None,
+        agent_transport: Any = None,
     ) -> None:
         self.root: Optional[str] = None
         self.store_base: str = store_base or storage.app_data_dir()
@@ -117,11 +118,27 @@ class WorkspaceSession:
         # runner double). When absent the run-package handler constructs the
         # real container runner lazily.
         self.runner = runner
+        # Backend-owned agent model adapter, injected by trusted application
+        # composition (tests inject a deterministic ScriptedProvider). Normal
+        # runtime configures none, so an ``agent_turn`` request refuses honestly
+        # without invoking anything. The adapter is never selected by a model,
+        # a request payload or the network.
+        self.agent_transport = agent_transport
+        # Backend-owned local graph-runtime initializer, created on demand once
+        # an adapter is configured. It owns exactly one bounded child, one owned
+        # deadline timer and one daemon loader thread; the child and the timer
+        # are released when the session closes, and the loader thread is not
+        # cancellable — which is why an expiry with that half outstanding writes
+        # the whole *process* off instead of pretending to stop it.
+        self.agent_runtime = None
 
     def open(self, root: str) -> None:
         self.root = root
 
     def close(self) -> None:
+        if self.agent_runtime is not None:
+            self.agent_runtime.close()
+            self.agent_runtime = None
         self.root = None
 
 
@@ -163,7 +180,7 @@ def run_loop(
     ``store_base`` overrides the Twin app-data directory (tests use a temp dir;
     normal operation uses the per-user app-data location).
     """
-    session = WorkspaceSession(store_base)
+    session = WorkspaceSession(store_base, agent_transport=_agent_transport())
     for raw in stdin:
         line = raw[:-1] if raw.endswith("\n") else raw
         if line == "":
@@ -177,6 +194,9 @@ def run_loop(
             _emit(stdout, contract.build_error(None, "malformed_request"))
             continue
         _emit(stdout, handle_request(request, session))
+    # Backend shutdown releases everything the session owns — including any
+    # initialization child still running — so no owned process outlives the loop.
+    session.close()
     return 0
 
 
@@ -192,6 +212,81 @@ def _emit(stdout: TextIO, payload: Dict[str, Any]) -> None:
         text = contract.dumps(contract.build_error(None, "message_too_large"))
     stdout.write(text + "\n")
     stdout.flush()
+
+
+#: The offline acceptance hook. It names a scenario in the worker's own closed
+#: registry; unset — the normal case — means no agent adapter at all, so the
+#: turn refuses honestly. An environment value can therefore never become an
+#: arbitrary factory, import path or argv: the registry is code-owned and the
+#: worker's argv is fixed.
+AGENT_OFFLINE_SCENARIO_ENV = "HRCA_AGENT_OFFLINE_SCENARIO"
+
+#: The live-model selection hook. It must name the one approved model *and* the
+#: credential must be present; either alone configures nothing. It is a name,
+#: not a URL, a path, a provider factory or a key: the endpoint, the model, the
+#: thinking mode, the token caps and the gate are all code-owned.
+AGENT_LIVE_MODEL_ENV = "HRCA_AGENT_LIVE_MODEL"
+
+
+def _offline_agent_transport() -> Any:
+    """Return the closed offline agent adapter for acceptance, or ``None``."""
+    name = os.environ.get(AGENT_OFFLINE_SCENARIO_ENV, "").strip()
+    if not name:
+        return None
+    from ..agent import worker as agent_worker
+    from ..agent import worker_host as agent_worker_host
+
+    if name not in agent_worker.SCENARIOS:
+        return None
+    # Constructing the provider spawns nothing; the child is created per call.
+    return agent_worker_host.WorkerProvider(name)
+
+
+def _agent_transport() -> Any:
+    """Return the configured agent adapter, or ``None`` for honest unavailability.
+
+    Two *explicit* configurations, and nothing else:
+
+    * an offline acceptance scenario, which is a code-owned closed fixture name;
+    * a **live** model, which requires both the code-owned model selection
+      variable to name the one approved model *and* the credential to be
+      present. Either alone yields ``None``.
+
+    Unset is the ordinary runtime: no adapter, a bounded refusal on every turn,
+    and no session read or reopen that quietly becomes a remote call.
+    """
+    offline = _offline_agent_transport()
+    if offline is not None:
+        return offline
+
+    from ..integrations import deepseek_live
+    from ..integrations import live_gate as live_gate_mod
+
+    selected = os.environ.get(AGENT_LIVE_MODEL_ENV, "").strip()
+    if selected != deepseek_live.MODEL_ID or not deepseek_live.credential_present():
+        return None
+    from ..agent import worker_host as agent_worker_host
+
+    # The runner selects the gate profile explicitly. A missing value keeps the
+    # legacy profile for every existing caller; an unknown value is unavailable
+    # rather than silently falling back to the consumed legacy gate.
+    profile_key = os.environ.get(
+        live_gate_mod.GATE_PROFILE_ENV, live_gate_mod.PROFILE_LEGACY
+    )
+    profile = live_gate_mod.PROFILES.get(profile_key)
+    if profile is None:
+        return None
+
+    # Constructing the provider spawns nothing and bills nothing; the live call
+    # happens in the owned child, one per turn, through the selected gate
+    # ledger. The run/case identity is a transport from the runner, not
+    # authority: the gate checks it against the persisted claim before admitting
+    # anything.
+    return agent_worker_host.LiveWorkerProvider(
+        gate=live_gate_mod.LiveGate(profile=profile),
+        run_id=os.environ.get(live_gate_mod.RUN_ID_ENV, "").strip(),
+        case_id=os.environ.get(live_gate_mod.CASE_ID_ENV, "").strip(),
+    )
 
 
 def _correlation_id(request: Any) -> Optional[str]:
@@ -338,6 +433,13 @@ def _process(request: Any, session: WorkspaceSession) -> Dict[str, Any]:
     # the registry's authority ledger therefore stays exactly as it was.
     elif action in contract.ORCHESTRATION_ACTIONS:
         result = _orchestration_result(action, request, session)
+    # AGENT-LOOP-1: the bounded agent turn. Its turn action is
+    # provider-reaching, so it lives on the chain — the registry's authority
+    # ledger explicitly excludes a provider/network surface, and keeping the
+    # family here leaves that ledger exactly as it was. The session read is its
+    # read-only companion and travels with it for the same single-owner reason.
+    elif action in contract.AGENT_ACTIONS:
+        result = _agent_result(action, request, session)
     else:  # pragma: no cover - guarded by the allowlist above
         raise contract.ContractError("action_not_allowed")
 
@@ -378,6 +480,151 @@ def _orchestration_result(
         # A location, corruption or conflict refusal is a bounded domain
         # outcome, not a protocol fault.
         return {"state": "refused", "reason": error.reason}
+
+
+def _agent_result(
+    action: str, request: Dict[str, Any], session: "WorkspaceSession"
+) -> Dict[str, Any]:
+    """Dispatch the AGENT-LOOP-1 bounded agent family (contract 3.12.0).
+
+    Same two negative shapes as the orchestration family, kept apart the same
+    way: a **domain refusal** — no adapter configured, an exhausted budget, a
+    conflicting idempotency key, an unaccepted model answer — is a successful
+    response carrying ``state: "refused"`` and a code-owned reason sentence,
+    while an **infrastructure fault** is a contract error with a fixed catalogue
+    message. ``agent_model_unavailable`` is deliberately *not* a fault: the
+    ordinary product state today is that no model adapter is configured, and
+    that is reported honestly rather than as an error.
+    """
+    from ..agent import executor as agent_service
+    from ..agent import session_store as agent_store
+
+    try:
+        return _agent_dispatch(action, request, session)
+    except agent_service.Refused as error:
+        return {"state": "refused", "reason": error.reason}
+    except agent_store.StoreError as error:
+        if error.reason in (
+            agent_store.REASON_SCHEMA_NEWER,
+            agent_store.REASON_SCHEMA_MALFORMED,
+        ):
+            raise contract.ContractError("agent_schema_unsupported") from error
+        if error.reason == agent_store.REASON_STORE_UNAVAILABLE:
+            raise contract.ContractError("agent_store_unavailable") from error
+        return {"state": "refused", "reason": error.reason}
+
+
+def _agent_runtime(session: "WorkspaceSession"):
+    """Return the session's runtime initializer, creating it on demand.
+
+    ``None`` when no adapter is configured: without one no turn can proceed, so
+    there is nothing to initialize.
+    """
+    if session.agent_transport is None:
+        return None
+    if session.agent_runtime is None:
+        from ..agent import runtime as agent_runtime
+
+        session.agent_runtime = agent_runtime.RuntimeInitializer()
+    return session.agent_runtime
+
+
+def _agent_dispatch(
+    action: str, request: Dict[str, Any], session: "WorkspaceSession"
+) -> Dict[str, Any]:
+    """Validate one agent request and run its operation."""
+    from ..agent import executor as agent_service
+    from ..agent import runtime as agent_runtime_mod
+
+    task = request.get("task") or {}
+    if not isinstance(task, dict):
+        raise contract.ContractError("agent_request_invalid")
+    if not session.root:
+        raise contract.ContractError("agent_request_invalid")
+
+    if action == contract.ACTION_AGENT_INITIALIZE:
+        # Explicit, bounded, separately-owned initialization: it starts a
+        # code-owned child that loads the runtime and returns immediately, so no
+        # request ever blocks on a cold import.
+        initializer = _agent_runtime(session)
+        if initializer is None:
+            return {
+                "state": agent_runtime_mod.RUNTIME_UNAVAILABLE,
+                "detail": agent_runtime_mod.DETAIL_UNAVAILABLE,
+                "dispose_process": False,
+                "deadline_seconds": agent_runtime_mod.RUNTIME_INIT_DEADLINE_SECONDS,
+            }
+        scenario = task.get("scenario")
+        if scenario is not None and not isinstance(scenario, str):
+            raise contract.ContractError("agent_request_invalid")
+        state = initializer.start(scenario) if scenario else initializer.start()
+        return {
+            "state": state,
+            "detail": initializer.detail,
+            # Two code-owned facts the supervisor needs in order to enforce the
+            # initialization at the process boundary rather than trusting this
+            # process to cooperate: how long the whole initialization may take,
+            # and whether this process has to be replaced.
+            "dispose_process": bool(
+                initializer.must_dispose
+                or agent_runtime_mod.process_disposed()
+            ),
+            "deadline_seconds": initializer.deadline_seconds,
+        }
+
+    if action == contract.ACTION_AGENT_SESSION:
+        initializer = _agent_runtime(session)
+        return {
+            "state": "ok",
+            # Availability is a backend fact, reported without invoking
+            # anything: normal runtime configures no adapter, so the surface can
+            # show an honest unavailable state instead of a control that would
+            # silently do nothing. Runtime readiness and adapter availability are
+            # separate facts, reported separately.
+            "adapter_configured": session.agent_transport is not None,
+            "graph_available": agent_service.graph_available(),
+            "runtime_state": (
+                initializer.state if initializer else agent_runtime_mod.RUNTIME_UNAVAILABLE
+            ),
+            "runtime_detail": (
+                initializer.detail if initializer else agent_runtime_mod.DETAIL_UNAVAILABLE
+            ),
+            "runtime_disposed": bool(
+                agent_runtime_mod.process_disposed()
+                or (initializer is not None and initializer.must_dispose)
+            ),
+            "session": agent_service.read_session(
+                store_base=session.store_base, root=session.root
+            ),
+        }
+
+    goal = task.get("goal")
+    if not isinstance(goal, str) or not goal.strip():
+        raise contract.ContractError("agent_request_invalid")
+    key = task.get("idempotency_key")
+    if not isinstance(key, str) or not key.strip():
+        raise contract.ContractError("agent_request_invalid")
+    initializer = _agent_runtime(session)
+    disposed = bool(
+        agent_runtime_mod.process_disposed()
+        or (initializer is not None and initializer.must_dispose)
+    )
+    ready = bool(
+        initializer is not None
+        and initializer.state == agent_runtime_mod.RUNTIME_READY
+    )
+    return {
+        "state": "ok",
+        "turn": agent_service.run_turn(
+            store_base=session.store_base,
+            root=session.root,
+            goal=goal,
+            idempotency_key=key.strip(),
+            adapter=session.agent_transport,
+            runtime_ready=ready,
+            runtime_disposed=disposed,
+        ),
+    }
 
 
 def _orchestration_dispatch(

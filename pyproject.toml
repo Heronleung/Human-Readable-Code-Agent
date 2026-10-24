@@ -34,6 +34,12 @@ hrca-memory-package = "hrca.memory_package_cli:main"
 [project.optional-dependencies]
 desktop = ["PySide6>=6.6"]
 packaging = ["pyinstaller>=6.6"]
+# The bounded agent loop's StateGraph runtime. Optional on purpose: the core
+# keeps its zero-runtime-dependency posture and the base project stays
+# installable on Python 3.9. LangGraph itself requires >=3.10, so the marker
+# keeps the extra absent below that floor — where the agent graph reports
+# itself honestly unavailable instead of failing to import.
+agent = ["langgraph==1.2.14; python_version >= '3.10'"]
 
 [project.urls]
 Homepage = "https://github.com/Heronleung/Human-Readable-Code-Agent"

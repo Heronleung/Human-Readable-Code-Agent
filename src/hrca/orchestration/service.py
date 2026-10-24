@@ -71,12 +71,14 @@ def _scanner_identity() -> Tuple[str, Dict[str, str]]:
     return manifest_mod.scanner_identity()
 
 
-def _store(store_base: str, root: Optional[str]) -> store_mod.OrchestrationStore:
+def _store(
+    store_base: str, root: Optional[str], deadline: Optional[float] = None
+) -> store_mod.OrchestrationStore:
     try:
         store_mod.assert_outside_project(store_base, root)
     except store_mod.StoreError as error:
         raise Refused(error.reason) from error
-    return store_mod.OrchestrationStore(store_base)
+    return store_mod.OrchestrationStore(store_base, deadline=deadline)
 
 
 def _observe(root: str, scope: domain.Scope) -> domain.SourceManifest:
@@ -167,11 +169,12 @@ def save_plan(
     idempotency_key: str,
     extra_requirements: Sequence[str] = (),
     provenance: str = domain.PROVENANCE_SCAFFOLD,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Observe the scope and append one draft plan revision."""
     if not root:
         raise Refused(REFUSAL_NO_PROJECT)
-    store = _store(store_base, root)
+    store = _store(store_base, root, deadline)
     store.ensure_schema()
 
     observed = _observe(root, scope)
@@ -555,6 +558,7 @@ def read_workflow(
     store_base: str,
     root: Optional[str],
     recover_orphans: bool = True,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Return the scoped workflow, its review projection and its resume.
 
@@ -564,7 +568,7 @@ def read_workflow(
     """
     if not root:
         raise Refused(REFUSAL_NO_PROJECT)
-    store = _store(store_base, root)
+    store = _store(store_base, root, deadline)
     store.ensure_schema()
     project_id = project_id_for(root)
 

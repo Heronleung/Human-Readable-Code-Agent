@@ -41,7 +41,7 @@ from typing import Any, Dict, Optional
 #
 # 3.9.0 was additive over 3.8.0: it added the M4.5/v2b Memory Code Twin link
 # pair and removed or altered nothing.
-CONTRACT_VERSION = "3.10.0"
+CONTRACT_VERSION = "3.13.0"
 
 # Correlation identifier: a client-generated opaque string that the boundary
 # echoes verbatim so a client can match each response to its in-flight request.
@@ -374,6 +374,21 @@ ORCHESTRATION_ACTIONS = frozenset(
         ACTION_ORCHESTRATION_DECIDE,
     }
 )
+# The AGENT-LOOP-1 bounded agent turn. One action runs at most one bounded turn
+# and reads the agent's own session store; the other reads that session's
+# durable projection. The turn action is a *provider-reaching* action, so it
+# lives on the protected dispatch chain (never the handler registry whose
+# authority ledger excludes provider/network access) and refuses honestly when
+# no model adapter is configured. Neither action dispatches a scanner, a
+# command, a container or a repository write, and a ``propose_scan`` choice
+# creates a draft plan only — confirmation and the scan stay separate human
+# actions on the orchestration lifecycle.
+ACTION_AGENT_TURN = "agent_turn"
+ACTION_AGENT_SESSION = "agent_session"
+ACTION_AGENT_INITIALIZE = "agent_initialize"
+AGENT_ACTIONS = frozenset(
+    {ACTION_AGENT_TURN, ACTION_AGENT_SESSION, ACTION_AGENT_INITIALIZE}
+)
 
 ALLOWED_ACTIONS = (
     SCAN_ACTIONS
@@ -396,6 +411,7 @@ ALLOWED_ACTIONS = (
     | MEMORY_REVISION_ACTIONS
     | MEMORY_CODE_LINK_ACTIONS
     | ORCHESTRATION_ACTIONS
+    | AGENT_ACTIONS
 )
 
 # Task-level ``allowed_actions`` that the read-only slice permits. A task that
@@ -565,6 +581,9 @@ _ERROR_MESSAGES = {
     "orchestration_store_unavailable": "the orchestration store is unavailable",
     "orchestration_schema_unsupported": "the orchestration schema is not supported",
     "orchestration_request_invalid": "the orchestration request is not valid",
+    "agent_store_unavailable": "the agent session store is unavailable",
+    "agent_schema_unsupported": "the agent session schema is not supported",
+    "agent_request_invalid": "the agent request is not valid",
 }
 
 ERROR_CODES = frozenset(_ERROR_MESSAGES)
